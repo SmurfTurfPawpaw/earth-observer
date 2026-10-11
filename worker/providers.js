@@ -13,5 +13,6 @@ import { createProviderStore } from './storage.js';
 export function workerProviders(options = {}) {
   return [aircraftProxy(options), gbfsProxy(options), transitProxy({ ...options, historyEnabled: false }), cctvProxy(options),
     weatherProxy(options), cycloneProxy(options), firePerimetersProxy(options),
-    intelligenceProxy({ ...options, snapshotStore: createProviderStore(options.env) }), economicsProxy(options)];
+    intelligenceProxy({ ...options, snapshotStore: createProviderStore(options.env) }),
+    economicsProxy({ ...options, snapshotStore: createProviderStore(options.env) })];
 }

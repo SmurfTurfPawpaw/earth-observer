@@ -96,16 +96,20 @@ function balanced(rows) {
     buckets.get(key).push(row);
   }
   const groups = [...buckets.values()].sort((a, b) => b[0].indexedAt.localeCompare(a[0].indexedAt) || a[0].url.localeCompare(b[0].url));
-  const selected = [], countryCounts = new Map(), publisherCounts = new Map();
-  for (let pass = 0; selected.length < 80; pass++) {
-    let added = 0;
-    for (const group of groups) {
-      const row = group[pass]; if (!row || selected.length >= 80) continue;
+  const layers = [];
+  for (const group of groups) group.forEach((row, offset) => (layers[offset] ||= []).push(row));
+  const ordered = layers.flat(), selected = [], chosen = new Set(), countryCounts = new Map(), publisherCounts = new Map();
+  // Revisit skipped rows at each quota relaxation. Advancing only a per-group
+  // offset discarded the sole record from many publishers in one country.
+  for (const [countryLimit, publisherLimit] of [[8, 4], [16, 8], [40, 16], [80, 80]]) {
+    for (const row of ordered) {
+      if (chosen.has(row)) continue;
+      if (selected.length >= 80) break;
       const country = row.mentionedCountries[0] || '?';
-      if (pass < 3 && ((countryCounts.get(country) || 0) >= 8 || (publisherCounts.get(row.source) || 0) >= 4)) continue;
-      selected.push(row); added++; countryCounts.set(country, (countryCounts.get(country) || 0) + 1); publisherCounts.set(row.source, (publisherCounts.get(row.source) || 0) + 1);
+      if ((countryCounts.get(country) || 0) >= countryLimit || (publisherCounts.get(row.source) || 0) >= publisherLimit) continue;
+      selected.push(row); chosen.add(row); countryCounts.set(country, (countryCounts.get(country) || 0) + 1); publisherCounts.set(row.source, (publisherCounts.get(row.source) || 0) + 1);
     }
-    if (!added && pass >= 3) break;
+    if (selected.length >= 80) break;
   }
   return selected.sort((a, b) => b.indexedAt.localeCompare(a.indexedAt) || a.url.localeCompare(b.url));
 }
@@ -119,7 +123,7 @@ export function createGkgSnapshot({ reports, processedBatches, generatedAt }) {
   const retained = new Set(batches.map((entry) => entry.id)), categories = {};
   for (const category of GKG_CATEGORIES) {
     const unique = new Map();
-    const rows = reports.filter((row) => row.category === category && retained.has(row.batch)).sort((a, b) => b.indexedAt.localeCompare(a.indexedAt));
+    const rows = reports.filter((row) => row.category === category && retained.has(row.batch)).sort((a, b) => b.indexedAt.localeCompare(a.indexedAt) || a.url.localeCompare(b.url));
     for (const row of rows) if (!unique.has(row.url)) unique.set(row.url, row);
     categories[category] = { reports: balanced([...unique.values()]) };
   }

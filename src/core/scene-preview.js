@@ -15,7 +15,13 @@ export async function showSavedScene(store = createBrowserStore()) {
     if (!view || fingerprint(view) !== record.fingerprint) return;
     if (liveSceneReady) return;
     const url = URL.createObjectURL(record.blob);
-    image.onload = image.onerror = () => URL.revokeObjectURL(url); image.src = url;
+    image.onload = () => URL.revokeObjectURL(url);
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      target.hidden = true;
+      document.querySelectorAll('.preview-credits').forEach((node) => node.remove());
+    };
+    image.src = url;
     if (record.credits) {
       const credits = document.createElement('small'); credits.className = 'preview-credits'; credits.textContent = record.credits;
       document.getElementById('credits')?.append(credits);
@@ -26,10 +32,18 @@ export async function showSavedScene(store = createBrowserStore()) {
 export function installScenePreview(viewer, { store, cameraView, getState }) {
   let wanted = true, lastSave = 0, capturing = false, stopped = false;
   const preview = document.getElementById('scene-preview');
-  const hide = () => { liveSceneReady = true; if (preview) preview.hidden = true; document.querySelectorAll('.preview-credits').forEach((node) => node.remove()); };
-  const move = viewer.camera.moveEnd.addEventListener(() => { wanted = true; });
+  const hide = () => {
+    if (liveSceneReady) return;
+    liveSceneReady = true;
+    if (preview) preview.hidden = true;
+    document.querySelectorAll('.preview-credits').forEach((node) => node.remove());
+  };
+  const moveStart = viewer.camera.moveStart.addEventListener(hide);
+  const move = viewer.camera.moveEnd.addEventListener(() => { wanted = true; hide(); });
   const post = viewer.scene.postRender.addEventListener(() => {
-    if (viewer.scene.globe.tilesLoaded) hide();
+    // A rendered partial globe is usable. Waiting for every tile could leave a
+    // stale opaque preview covering the live scene indefinitely on a slow link.
+    hide();
     if (stopped || capturing || !wanted || !viewer.scene.globe.tilesLoaded || Date.now() - lastSave < 10000) return;
     // Complex registered notices are shown only by their live renderer, never flattened into an image.
     const state = getState();
@@ -49,5 +63,5 @@ export function installScenePreview(viewer, { store, cameraView, getState }) {
     } catch { capturing = false; }
   });
   viewer.canvas.addEventListener('pointerdown', hide, { passive: true });
-  return () => { stopped = true; move(); post(); hide(); viewer.canvas.removeEventListener('pointerdown', hide); };
+  return () => { stopped = true; moveStart(); move(); post(); hide(); viewer.canvas.removeEventListener('pointerdown', hide); };
 }

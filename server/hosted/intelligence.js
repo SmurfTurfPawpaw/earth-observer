@@ -2,6 +2,7 @@ import { readResponseJsonCapped } from '../providers/common/http.js';
 import { GROUPING_NOTE, normalizeGdelt, normalizeGdacs, normalizeUsgs, groupReports } from './intelligence-sources.js';
 import { gdeltQueryUrl } from './gdelt-query.js';
 import { createGdeltSnapshotReader } from './gdelt-snapshot.js';
+import { createDiscoveryIndex, discoveryQueryText, DISCOVERY_INDEX_MAX_BYTES } from '../../src/core/discovery-index.js';
 export { gdeltQueryUrl } from './gdelt-query.js';
 
 const CATEGORIES = ['all', 'disasters', 'geopolitics', 'economy'];
@@ -12,10 +13,10 @@ export function intelligenceQuery(params) {
   for (const key of params.keys()) if (!['category', 'country', 'q'].includes(key) || params.getAll(key).length !== 1) throw new TypeError('Unknown or repeated filter');
   const category = params.get('category') || 'all';
   const country = String(params.get('country') || '').toUpperCase();
-  const q = String(params.get('q') || '').normalize('NFKC').trim().replace(/\s+/g, ' ');
+  const q = discoveryQueryText(String(params.get('q') || '').normalize('NFKC').trim().replace(/\s+/g, ' '));
   if (!CATEGORIES.includes(category)) throw new TypeError('Unknown category');
   if (country && (!/^[A-Z]{2}$/.test(country) || ['ZZ', 'EU', 'UN', 'QO', 'XA', 'XB'].includes(country) || !COUNTRIES.of(country))) throw new TypeError('Use a valid two-letter country code');
-  if (q.length > 64 || (q && (!/^[\p{L}\p{N}\s'-]+$/u.test(q) || (q.match(/[\p{L}\p{N}]/gu)?.length || 0) < 2))) throw new TypeError('Topic must contain 2–64 letters, digits, spaces, apostrophes or hyphens');
+  if (q.length > 64 || (q && (!/^[\p{L}\p{N}\s'.’\-]+$/u.test(q) || (q.match(/[\p{L}\p{N}]/gu)?.length || 0) < 2))) throw new TypeError('Topic must contain 2–64 letters, digits, spaces, apostrophes, dots or hyphens');
   return { category, country, countryName: country ? COUNTRIES.of(country) : '', q };
 }
 
@@ -24,6 +25,7 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
   snapshotStore, snapshotReader = createGdeltSnapshotReader({ fetchImpl, now, store: snapshotStore }),
   allowLiveGdeltFallback = env.GDELT_LIVE_FALLBACK === '1' } = {}) {
   const cache = new Map(), pending = new Map(), failures = new Map(), attempts = new Map();
+  const index = createDiscoveryIndex({ now, maxRecords: 440 });
   const providerFailures = new Map();
   const policies = {
     gdelt: { name: 'The GDELT Project', url: 'https://www.gdeltproject.org/', ttl: 300000, timeout: 15000, cooldown: 300000, minGap: 6000 },
@@ -35,10 +37,13 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
     const scheduled = snapshotReader ? await snapshotReader(filters) : null;
     if ((scheduled && scheduled.state.status !== 'unavailable') || !allowLiveGdeltFallback) return scheduled || { records: [], state: {
       id: 'gdelt', name: policies.gdelt.name, url: policies.gdelt.url, status: 'unavailable', stale: false, reason: 'Scheduled GDELT snapshot unavailable' } };
-    const fallback = await read('gdelt', `gdelt:${filters.category}:${filters.country}:${filters.q.toLowerCase()}`, gdeltQueryUrl(filters), (payload, stamp) => normalizeGdelt(payload, stamp, filters.category));
+    // Search terms stay in the metadata index, including controlled fallback.
+    const coarse = { ...filters, q: '' };
+    const fallback = await read('gdelt', `gdelt:${filters.category}:${filters.country}`, gdeltQueryUrl(coarse), (payload, stamp) => normalizeGdelt(payload, stamp, filters.category));
     fallback.state = { ...fallback.state, mode: 'live-fallback',
       coverage: 'Controlled live GDELT discovery query: at most 80 title/link records from the last 24 hours. Country filters search text mentions; results are a bounded sample and do not establish comprehensive coverage or event locations.',
       reason: [fallback.state.reason, 'Controlled live fallback; scheduled discovery snapshot unavailable'].filter(Boolean).join('; ') };
+    fallback.indexSource.coverage = fallback.state.coverage;
     return fallback;
   }
   async function read(id, key, url, normalize) {
@@ -82,9 +87,15 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
     const stale = Boolean(entry && (now() - entry.at >= policy.ttl || failures.has(key)));
     const expired = Boolean(entry && now() - entry.at > 86400000);
     if (expired) reason = 'Cached results exceeded the 24-hour staleness limit';
-    return { records: expired ? [] : entry?.records || [], state: {
+    const status = entry && !expired ? stale ? 'stale' : 'ready' : reason?.includes('in progress') || reason?.includes('limited') ? 'busy' : 'unavailable';
+    return { records: expired ? [] : entry?.records || [], indexSource: {
+      id, generation: entry ? `${key}:${new Date(entry.at).toISOString()}` : `${key}:unavailable`, status,
+      expiresAt: entry ? new Date(entry.at + 86400000).toISOString() : null,
+      coverage: id === 'gdelt' ? 'Controlled coarse GDELT discovery sample; local topic search does not query article text.' :
+        'Official hazard metadata from the last seven days; GDACS reports countries and USGS supplies no authoritative country codes.',
+    }, state: {
       id, name: policy.name, url: policy.url,
-      status: entry && !expired ? stale ? 'stale' : 'ready' : reason?.includes('in progress') || reason?.includes('limited') ? 'busy' : 'unavailable',
+      status,
       stale, retrievedAt: entry ? new Date(entry.at).toISOString() : null,
       ageMs: entry ? Math.max(0, now() - entry.at) : null,
       refreshIntervalMs: policy.ttl,
@@ -109,16 +120,26 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
         jobs.push(read('gdacs', 'gdacs:global', gdacs.href, normalizeGdacs));
       }
       const results = await Promise.all(jobs);
-      const topic = filters.q.toLowerCase().split(/\s+/).filter(Boolean);
-      const reports = results.flatMap((result) => result.records).filter((report) => {
+      for (const result of results) {
+        const source = result.indexSource || { id: result.state.id, generation: result.state.retrievedAt || 'unavailable',
+          expiresAt: result.state.retrievedAt ? new Date(Date.parse(result.state.retrievedAt) + 86400000).toISOString() : null,
+          status: result.state.status, coverage: result.state.coverage || '' };
+        index.replaceSource({ ...source, records: result.indexRecords || result.records });
+      }
+      const indexState = index.getState();
+      const reports = filters.q ? index.search({ ...filters, limit: 440 }).reports : results.flatMap((result) => result.records).filter((report) => {
         if (filters.country && report.sourceId !== 'gdelt' && !report.countries?.includes(filters.country)) return false;
-        if (topic.length && report.sourceId !== 'gdelt' && !topic.every((word) => `${report.title} ${report.country || ''}`.toLowerCase().includes(word))) return false;
         return true;
       });
+      const grouped = groupReports(reports, 80, { preserveOrder: Boolean(filters.q) });
       const sources = results.map((result) => result.state);
       if (filters.country && ['all', 'disasters'].includes(filters.category)) sources.push({ id: 'usgs', name: policies.usgs.name, url: policies.usgs.url, status: 'not-applicable', stale: false, reason: 'USGS summary has no authoritative country codes; country-filtered hazards use GDACS' });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' });
-      res.end(JSON.stringify({ reports: groupReports(reports), sources, filters, retrievedAt: new Date(now()).toISOString(),
+      res.end(JSON.stringify({ reports: grouped, sources, filters, retrievedAt: new Date(now()).toISOString(),
+        indexRecords: indexState.records, indexVersion: indexState.indexVersion,
+        indexCoverage: { schemaVersion: indexState.schemaVersion, recordCount: indexState.recordCount, byteLength: indexState.byteLength,
+          maxRecords: 440, maxBytes: DISCOVERY_INDEX_MAX_BYTES, omittedRecords: indexState.omittedRecords,
+          sources: indexState.sources, note: indexState.note },
         grouping: GROUPING_NOTE, coverage: `${results[0].state.coverage || 'GDELT discovery sample unavailable.'} Official hazard reports cover the last seven days. GDACS filters use reported countries. These are not geographic proof.`,
         nextRefreshMs: 300000 }));
     });

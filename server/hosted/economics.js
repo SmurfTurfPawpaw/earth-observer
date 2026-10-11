@@ -2,6 +2,9 @@ import { readResponseJsonCapped } from '../providers/common/http.js';
 import { ECONOMICS_INDICATORS, economicsCountry } from '../../src/core/economics-catalog.js';
 
 const DAY = 86400_000;
+const SAVED_MAX_BYTES = 64 * 1024;
+const SAVED_KEYS = new Set(['schemaVersion', 'country', 'retrievedAt', 'datasetUpdatedDate', 'observations']);
+const OBSERVATION_KEYS = new Set(['indicator', 'year', 'value', 'footnote']);
 const SOURCE = Object.freeze({ id: 'worldbank-wdi', name: 'The World Bank · World Development Indicators',
   sourceId: '2', url: 'https://data.worldbank.org/', license: 'CC BY 4.0',
   licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
@@ -60,13 +63,69 @@ export function normalizeEconomics(payload, country, retrievedAt, nowMs = Date.n
     source: { ...SOURCE, status: 'ready', stale: false, retrievedAt }, nextRefreshMs: DAY };
 }
 
+function economicsSnapshot(data) {
+  return { schemaVersion: 1, country: data.country.id, retrievedAt: data.retrievedAt,
+    datasetUpdatedDate: data.datasetUpdatedDate,
+    observations: data.indicators.flatMap((item) => item.history.map((row) => ({
+      indicator: item.id, year: row.year, value: row.value, ...(row.footnote ? { footnote: row.footnote } : {}),
+    }))) };
+}
+
+/** Persistent records contain only dated observations; reviewed metadata is rebuilt locally. */
+export function validateEconomicsSnapshot(saved, country, nowMs = Date.now()) {
+  const at = Date.parse(saved?.retrievedAt);
+  const selected = economicsCountry(country.id || country);
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved) || saved.schemaVersion !== 1 ||
+      Object.keys(saved).some((key) => !SAVED_KEYS.has(key)) || saved.country !== selected.id ||
+      typeof saved.retrievedAt !== 'string' || !Number.isFinite(at) || new Date(at).toISOString() !== saved.retrievedAt ||
+      at > nowMs || nowMs - at > 7 * DAY || !Array.isArray(saved.observations) || saved.observations.length > 50 ||
+      new TextEncoder().encode(JSON.stringify(saved)).byteLength > SAVED_MAX_BYTES)
+    throw new Error('Invalid or expired annual snapshot');
+  if (saved.datasetUpdatedDate !== null && (typeof saved.datasetUpdatedDate !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(saved.datasetUpdatedDate) ||
+      !Number.isFinite(Date.parse(`${saved.datasetUpdatedDate}T00:00:00.000Z`)) ||
+      new Date(`${saved.datasetUpdatedDate}T00:00:00.000Z`).toISOString().slice(0, 10) !== saved.datasetUpdatedDate ||
+      saved.datasetUpdatedDate > saved.retrievedAt.slice(0, 10))) throw new Error('Invalid annual dataset date');
+  const rows = saved.observations.map((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row) || Object.keys(row).some((key) => !OBSERVATION_KEYS.has(key)) ||
+        typeof row.indicator !== 'string' || !Number.isInteger(row.year) ||
+        row.value !== null && !Number.isFinite(row.value) ||
+        Object.hasOwn(row, 'footnote') && (typeof row.footnote !== 'string' || !row.footnote || clean(row.footnote) !== row.footnote))
+      throw new Error('Invalid saved annual observation');
+    return { indicator: { id: row.indicator }, countryiso3code: selected.id, date: String(row.year), value: row.value,
+      ...(row.footnote ? { footnote: row.footnote } : {}) };
+  });
+  // A seven-day-old December retrieval keeps its original ten-year window in January.
+  const data = normalizeEconomics([{ page: 1, pages: 1, total: rows.length, sourceid: '2', lastupdated: saved.datasetUpdatedDate }, rows],
+    selected, saved.retrievedAt, at);
+  return { at, data };
+}
+
 /** A fixed WDI series allowlist, bounded cache and shared refresh; no constructor fetch. */
 export function economicsProxy({ fetchImpl = fetch, now = Date.now, ttlMs = DAY, maxKeys = 40,
-  timeoutMs = 15000, maxPending = 4, cooldownMs = 300000,
+  timeoutMs = 15000, maxPending = 4, cooldownMs = 300000, snapshotStore, storageTimeoutMs = 1000,
   onProviderError = (details) => console.warn('[economics] acquisition unavailable', JSON.stringify(details)) } = {}) {
-  const cache = new Map(), pending = new Map();
+  const cache = new Map(), pending = new Map(), restoreAttempts = new Map();
   let retryAt = 0, failures = 0;
   const touch = (key, entry) => { cache.delete(key); cache.set(key, entry); while (cache.size > maxKeys) cache.delete(cache.keys().next().value); };
+  const optionalStorage = async (task) => {
+    let timer;
+    try {
+      return await Promise.race([Promise.resolve().then(task).catch(() => null),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), storageTimeoutMs); })]);
+    } finally { clearTimeout(timer); }
+  };
+  const restore = async (key, country) => {
+    if (!snapshotStore?.get || now() - (restoreAttempts.get(key) ?? -Infinity) < 60000) return;
+    restoreAttempts.delete(key); restoreAttempts.set(key, now());
+    while (restoreAttempts.size > maxKeys) restoreAttempts.delete(restoreAttempts.keys().next().value);
+    try {
+      const saved = await optionalStorage(() => snapshotStore.get(`economics:annual:${key}`));
+      if (!saved) return;
+      const restored = validateEconomicsSnapshot(saved, country, now());
+      if (!cache.has(key) || restored.at > cache.get(key).at) touch(key, restored);
+    } catch {} // Storage is optional and cannot change upstream availability or backoff.
+  };
   async function getSnapshot(value = 'WLD') {
     const country = economicsCountry(value);
     const key = country.id;
@@ -74,10 +133,12 @@ export function economicsProxy({ fetchImpl = fetch, now = Date.now, ttlMs = DAY,
     let reason;
     if (!entry || now() - entry.at >= ttlMs) {
       if (pending.has(key)) await pending.get(key);
-      else if (retryAt > now()) reason = 'World Bank provider retry is paused after an upstream failure';
       else if (pending.size >= maxPending) reason = 'Economic source requests are busy; try again shortly';
       else {
         const work = (async () => {
+          await restore(key, country);
+          if (cache.has(key) && now() - cache.get(key).at < ttlMs) return;
+          if (retryAt > now()) { reason = 'World Bank provider retry is paused after an upstream failure'; return; }
           const signal = AbortSignal.timeout(timeoutMs);
           let stage = 'request', httpStatus = null, responseType = null;
           try {
@@ -100,6 +161,7 @@ export function economicsProxy({ fetchImpl = fetch, now = Date.now, ttlMs = DAY,
             stage = 'validate';
             const data = normalizeEconomics(payload, country, new Date(at).toISOString(), at);
             touch(key, { at, data }); failures = 0; retryAt = 0;
+            if (snapshotStore?.put) await optionalStorage(() => snapshotStore.put(`economics:annual:${key}`, economicsSnapshot(data)));
           } catch (error) {
             const errorName = ['Error', 'TypeError', 'SyntaxError', 'TimeoutError', 'AbortError', 'RangeError'].includes(error.name) ? error.name : 'UnknownError';
             const kind = errorName === 'TimeoutError' || errorName === 'AbortError' ? 'timeout' :
@@ -124,7 +186,7 @@ export function economicsProxy({ fetchImpl = fetch, now = Date.now, ttlMs = DAY,
     if (entry && ageMs <= 7 * DAY) {
       touch(key, entry);
       return { ...entry.data, status: stale ? 'stale' : 'ready', source: { ...entry.data.source,
-        status: stale ? 'stale' : 'ready', stale, ageMs, retryAt: retryAt || null,
+        status: stale ? 'stale' : 'ready', stale, ageMs, ageCalculatedAt: new Date(now()).toISOString(), retryAt: retryAt || null,
         ...(stale ? { reason: reason || 'Cached annual data; upstream refresh is pending' } : {}) } };
     }
     return unavailable(country, { ...SOURCE, status: 'unavailable', stale: false, ageMs, retryAt: retryAt || null },
@@ -138,8 +200,10 @@ export function economicsProxy({ fetchImpl = fetch, now = Date.now, ttlMs = DAY,
     try { country = economicsQuery(url.searchParams); }
     catch (error) { res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify({ error: error.message })); return; }
     const data = await getSnapshot(country.id);
+    const maxAge = Math.max(0, Math.min(3600, Math.floor((ttlMs - (data.source.ageMs || 0)) / 1000)));
     res.writeHead(200, { 'Content-Type': 'application/json',
-      'Cache-Control': data.status === 'ready' ? 'public, max-age=3600' : 'no-store' });
+      'Cache-Control': data.status === 'ready' && maxAge > 0 ? `public, max-age=${maxAge}` : 'no-store',
+      ...(Number.isFinite(data.source.ageMs) ? { 'X-Feed-Age-Ms': String(data.source.ageMs) } : {}) });
     res.end(JSON.stringify(data));
   });
   return { name: 'hosted-economics', getSnapshot, configureServer: install, configurePreviewServer: install };

@@ -2,9 +2,13 @@
 
 The owner requested this work on 11 October 2026: test the platform with agents
 acting as visitors, record their activity and friction, and use aggregated demand
-to improve crawling, indexing, loading and intelligence. This document defines
-the next acceptance slice. It does not claim that a visitor analytics system or
-a general web crawler is already deployed.
+to improve crawling, indexing, loading and intelligence. The current worktree
+implements a bounded metadata index, optional aggregate-demand counter and
+demand-guided GKG sampling, plus persistent World Bank annual snapshots. These
+changes are **pending release, not verified live**. No general web crawler has
+been implemented; acquisition uses the existing reviewed feeds and one fixed
+scheduled GKG bulk batch. This document separates those implementations from the
+remaining journey and deployment acceptance checks.
 
 ## Observe actual journeys
 
@@ -28,12 +32,20 @@ Agent traces are test traffic; exclude them from all demand counts. Several
 successful agent journeys are useful regression evidence, not proof of real
 human usability or production capacity at 300 simultaneous visitors.
 
+The existing first-visit and returning/mobile traces under `.qa/` contain actual
+local HTTP requests, static inspection and synthetic contract checks. Their
+browser surfaces were unavailable at that time, so those traces do not establish
+real clicks, mobile layout or an offline reload. A later parent browser record
+does establish one 390×844 Larger-text check and actual warm startup/framing
+observations. Complete the remaining independent journeys against the final
+immutable release rather than treating the earlier partial traces as full runs.
+
 ## Crawl → index → rank → serve
 
 Google documents separate discovery/crawling, indexing and serving stages. This
-platform should use the same separation at its own scale, with a curated source
-catalogue and dated evidence. It should not claim Google's coverage or ranking
-quality. [Google Search stages](https://developers.google.com/search/docs/fundamentals/how-search-works/)
+platform follows that separation at its own scale through curated acquisition,
+metadata indexing and serving; it has no general page crawler or Google-scale
+coverage/ranking. [Google Search stages](https://developers.google.com/search/docs/fundamentals/how-search-works/)
 
 ```mermaid
 flowchart LR
@@ -68,20 +80,58 @@ flowchart LR
    synchronously for each search. Report the index's coverage and last refresh;
    a zero-result sample must not be presented as proof that no event occurred.
 
+The implemented [metadata index](DISCOVERY_SEARCH.md) canonicalizes URL/kind,
+preserves source generations and dates, and retains at most 600 records/2 MiB
+of serialized metadata; the API uses a tighter 440-record cap. Country-name
+aliases and every reviewed GKG label are searchable. Exact known theme IDs are
+translated to labels by the browser/API entry points. All query terms must match
+metadata, with explicit match reasons and relevance/date/provenance/diversity
+ordering. No ordering value establishes confidence, truth or popularity.
+
+The browser keeps ordinary free-text searches local. The scheduled reader uses
+one shared acquisition rather than a new upstream query for each search. Browser
+and legacy API now share related-report grouping with query relevance preserved;
+all original primary/related source dates and links survive. Compact topic labels
+follow the selected category. Source expiry and individual GKG batch expiry apply
+to searches and default groups, including failed-refresh and clear-query paths.
+The source/parity regressions are implemented; deployment must verify their
+presence in the published artifact.
+
+The [annual economic facts](ECONOMIC_FACTS.md) Worker path can lazily reuse strict
+`EARTH_STORE` snapshots across instances, at most 50 observations/64 KiB per
+supported economy. Restoration preserves the original retrieval date and the
+24-hour freshness/seven-day stale bounds. This persistence change is also pending
+release; it introduces no startup dataset sweep or observation interpolation.
+
 ## Aggregate demand without private search histories
 
-For example, 300 search actions about a permitted topic can raise its refresh
-priority, build a useful topic landing page and warm its results. That is a
-count of searches; it is not a claim of 300 distinct people.
+The implemented [counter](AGGREGATE_DEMAND.md) starts unchecked on each page and
+records only an explicitly consented, accepted form-submit action matching a
+reviewed subject or category/country overview. The outgoing payload is exactly
+`{subjectId, country, consent:true}`. Arbitrary raw queries, publisher searches,
+precise coordinates, identity, device fingerprints and notebook contents are
+excluded. Matching a known label does not create consent. Mounted panels,
+refreshes, polling and map movement do not increment the counter.
 
-The first collection slice should be explicit opt-in and count reviewed topic
-IDs plus coarse country filters only. Keep queries local by default; do not retain
-raw arbitrary searches, precise coordinates, identity, device fingerprints or
-private notebook contents. Hashing a raw query does not remove its sensitivity.
-Use bounded daily aggregates, a minimum reporting threshold, retention expiry,
-rate limits and a public explanation of the collected fields. Bot/agent runs are
-excluded. Test demand scheduling with synthetic fixtures rather than publishing
-fake popularity or changing real visitor counts.
+The public summary reports only groups with at least **300 accepted actions**
+over seven UTC calendar days, rounded down to 100-action buckets. These are
+consented search actions, not unique people or proof of representative interest.
+The 300-action threshold and 300 reviewed YouTube comments do not establish
+capacity for 300 concurrent visitors. Preview/local/marked agent traffic is
+excluded; tests used synthetic summaries and storage, with no real demand POSTs
+or manufactured production counts. Physical idle-period deletion still requires
+the scoped lifecycle/scheduler configuration described in the counter document.
+
+The scheduled [sampling integration](INTELLIGENCE_PRIORITY.md) reads one fixed
+owned public summary and uses only its validated, rounded reviewed subjects.
+It preserves at least 60 of 80 balanced records per category and lets at most 20
+slots favor demanded metadata, within the existing 10,000-candidate budget and
+publisher/country/theme limits. Unavailable or unmatched demand preserves the
+balanced baseline. Source URLs, dates and verification cautions stay unchanged.
+The official archive count and acquisition cadence remain fixed. General page
+crawling, demand-built topic landing pages and arbitrary cache warming remain
+future work. The counter and sampling integration require the pending release
+and actual hosted checks before being described as live.
 
 New source acquisition still requires rights and coverage checks even when demand
 is high. Publish the source catalogue, freshness limits, ranking explanation and

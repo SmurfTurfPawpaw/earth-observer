@@ -59,7 +59,7 @@ test('new filters cancel an older response, encode only bounded API filters, and
   const url = new URL(lastUrl, 'https://earth-observer.test');
   assert.equal(url.pathname, '/api/intelligence');
   assert.equal(url.searchParams.get('category'), 'economy');
-  assert.equal(url.searchParams.get('q'), 'port trade');
+  assert.equal(url.searchParams.has('q'), false);
   assert.equal(env.timers.size, 1);
   env.feed.destroy();
 });
@@ -100,4 +100,98 @@ test('saved browser reports retain their age and revalidation replaces them only
   assert.equal(requests, 2); assert.equal(env.feed.getState().payload.sources[0].stale, undefined);
   env.feed.close(); callback('http://localhost/api/intelligence?category=all'); await settle(); assert.equal(requests, 2);
   env.feed.destroy(); assert.equal(unsubscribed, true);
+});
+
+function indexedPayload() {
+  const retrievedAt = new Date(100000).toISOString();
+  const records = [{ id: 'ukraine-trade', sourceId: 'gdelt', kind: 'topic-mention', source: 'world.example',
+    url: 'https://world.example/article', category: 'economy', themes: ['WB_698_TRADE', 'SANCTIONS'],
+    mentionedCountries: ['UA'], indexedAt: retrievedAt, retrievedAt },
+  { id: 'belgium-fire', sourceId: 'gdelt', kind: 'topic-mention', source: 'regional.example',
+    url: 'https://regional.example/article', category: 'disasters', themes: ['DISASTER_FIRE'],
+    mentionedCountries: ['BE'], indexedAt: retrievedAt, retrievedAt }];
+  return { ...payload, reports: records, indexRecords: records, indexCoverage: { schemaVersion: 1,
+    sources: [{ id: 'gdelt', generation: 'one', expiresAt: new Date(100000 + 86400000).toISOString(), coverage: 'Reviewed topic metadata' }] } };
+}
+test('country names, topics and publisher domains search all indexed metadata without another request or transmitting free text', async () => {
+  const urls = [], env = environment(async (url) => { urls.push(url); return Response.json(indexedPayload()); });
+  await env.feed.open();
+  await env.feed.setFilters({ category: 'all', q: 'Ukraine trade' });
+  assert.deepEqual(env.feed.getState().payload.reports.map((report) => report.id), ['ukraine-trade']);
+  assert.ok(env.feed.getState().payload.reports[0].matchReasons.some((reason) => reason.includes('Country mentioned')));
+  await env.feed.setFilters({ category: 'all', q: 'regional.example' });
+  assert.deepEqual(env.feed.getState().payload.reports.map((report) => report.id), ['belgium-fire']);
+  assert.equal(urls.length, 1); assert.equal(new URL(urls[0], 'https://example.test').searchParams.has('q'), false);
+  assert.equal(env.feed.getState().payload.indexedRecords, 2);
+  await env.feed.setFilters({ category: 'all', q: 'WB_698_TRADE' });
+  assert.equal(env.feed.getState().filters.q, 'Trade');
+  assert.equal(env.feed.getState().error, null);
+  assert.deepEqual(env.feed.getState().payload.reports.map((report) => report.id), ['ukraine-trade']);
+  await env.feed.setFilters({ category: 'all', q: '' });
+  assert.deepEqual(env.feed.getState().payload.reports.map((report) => report.id), ['ukraine-trade', 'belgium-fire']);
+  assert.equal(urls.length, 1); env.feed.destroy();
+});
+test('a query changed during acquisition uses the new local query without aborting or duplicating the shared fetch', async () => {
+  const body = Promise.withResolvers(), began = Promise.withResolvers(); let count = 0, signal;
+  const env = environment(async (_url, init) => { count++; signal = init.signal; began.resolve(); return { ok: true, json: () => body.promise }; });
+  const opening = env.feed.open(); await began.promise;
+  const searching = env.feed.setFilters({ category: 'all', q: 'Ukraine' });
+  assert.equal(signal.aborted, false); assert.equal(count, 1);
+  body.resolve(indexedPayload()); await Promise.all([opening, searching]);
+  assert.deepEqual(env.feed.getState().payload.reports.map((report) => report.id), ['ukraine-trade']); env.feed.destroy();
+});
+test('local searches discard expired metadata and invalid text cannot trigger requests', async () => {
+  let count = 0; const env = environment(async () => { count++; return Response.json(indexedPayload()); });
+  await env.feed.open(); env.feed.close(); env.advance(86400001);
+  await env.feed.setFilters({ category: 'all', q: 'Ukraine' });
+  assert.equal(env.feed.getState().payload.reports.length, 0); assert.equal(env.feed.getState().payload.indexedRecords, 0);
+  assert.equal(count, 1);
+  assert.equal(await env.feed.setFilters({ category: 'all', q: '<private>' }), false);
+  assert.match(env.feed.getState().error, /Search needs/); assert.equal(count, 1); env.feed.destroy();
+});
+test('clearing a local search cannot resurrect expired grouped cards or related source links', async () => {
+  const incoming = indexedPayload();
+  // One GKG batch expires before the next coarse feed-refresh boundary.
+  incoming.indexRecords[0].indexedAt = new Date(100000 - 86400000 + 60000).toISOString();
+  incoming.reports = [{ ...incoming.indexRecords[0], relatedReports: [incoming.indexRecords[1]] }];
+  const env = environment(async () => Response.json(incoming)); await env.feed.open();
+  assert.equal(env.feed.getState().payload.reports[0].id, 'ukraine-trade');
+  env.advance(120000); await env.feed.setFilters({ category: 'all', q: '' });
+  assert.equal(env.feed.getState().payload.indexedRecords, 1);
+  assert.equal(env.feed.getState().payload.reports[0].id, 'belgium-fire');
+  assert.deepEqual(env.feed.getState().payload.reports[0].relatedReports, []);
+  await env.feed.setFilters({ category: 'all', q: 'Ukraine' });
+  assert.equal(env.feed.getState().payload.reports.length, 0);
+  await env.feed.setFilters({ category: 'all', q: '' });
+  assert.deepEqual(env.feed.getState().payload.reports.map((report) => report.id), ['belgium-fire']); env.feed.destroy();
+});
+test('reopening after expiry and a failed refresh removes old cards and local searches preserve the failure warning', async () => {
+  let requests = 0;
+  const env = environment(async () => { if (++requests > 1) throw new Error('Source refresh failed'); return Response.json(indexedPayload()); });
+  await env.feed.open(); env.feed.close(); env.advance(86400001);
+  assert.equal(await env.feed.open(), false);
+  assert.equal(env.feed.getState().payload.reports.length, 0);
+  assert.equal(env.feed.getState().payload.indexedRecords, 0);
+  assert.equal(env.feed.getState().payload.sources[0].status, 'stale');
+  assert.equal(env.feed.getState().payload.sources[0].stale, true);
+  await env.feed.setFilters({ category: 'all', q: 'Trade' });
+  await env.feed.setFilters({ category: 'all', q: '' });
+  assert.equal(env.feed.getState().payload.reports.length, 0);
+  assert.match(env.feed.getState().error, /Source refresh failed/);
+  assert.equal(requests, 2); env.feed.destroy();
+});
+test('local hazard searches retain related source links and each original observation date', async () => {
+  const stamp = new Date(100000).toISOString();
+  const records = ['usgs', 'gdacs'].map((sourceId) => ({ id: sourceId, sourceId, kind: 'hazard-report',
+    title: 'Earthquake report', url: `https://${sourceId}.example/report`, source: sourceId,
+    category: 'disasters', eventType: 'EQ', lat: 42, lon: 4, observedAt: stamp, retrievedAt: stamp }));
+  const incoming = { ...payload, reports: records, indexRecords: records, indexCoverage: { schemaVersion: 1,
+    sources: records.map(({ sourceId }) => ({ id: sourceId, generation: 'one', expiresAt: new Date(86500000).toISOString() })) } };
+  const env = environment(async () => Response.json(incoming)); await env.feed.open();
+  await env.feed.setFilters({ category: 'all', q: 'Earthquake' });
+  const result = env.feed.getState().payload;
+  assert.equal(result.matchCount, 2); assert.equal(result.reports.length, 1);
+  assert.equal(result.reports[0].relatedReports.length, 1);
+  assert.equal(result.reports[0].observedAt, stamp); assert.equal(result.reports[0].relatedReports[0].observedAt, stamp);
+  assert.match(result.reports[0].relatedReports[0].relatedReason, /may use the same measurements/); env.feed.destroy();
 });

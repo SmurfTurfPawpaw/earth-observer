@@ -1,4 +1,8 @@
 import { createEconomicsPanel } from './economics.js';
+import { ECONOMICS_COUNTRIES } from './economics-catalog.js';
+import { canonicalDiscoveryRecord, createDiscoveryIndex, discoveryQueryText, DISCOVERY_INDEX_NOTE } from './discovery-index.js';
+import { createDemandTracker } from './demand.js';
+import { groupReports } from './intelligence-grouping.js';
 
 const CATEGORIES = [['all', 'All topics'], ['disasters', 'Disasters'], ['geopolitics', 'Geopolitics'], ['economy', 'Economics & trade']];
 
@@ -28,7 +32,8 @@ export function intelligenceReportDetails(report) {
 export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args), documentRef = globalThis.document,
   onChange = () => {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
   let opened = false, destroyed = false, request, pending, timer, generation = 0, activeUrl;
-  let payload = null, error = null, loading = false, refreshedAt = null;
+  let payload = null, sourcePayload = null, error = null, acquisitionError = null, loading = false, refreshedAt = null, indexed = false;
+  const index = createDiscoveryIndex({ now });
   let filters = { category: 'all', country: '', q: '' };
   const getState = () => ({ opened, loading, payload, error, refreshedAt, filters: { ...filters } });
   const emit = () => { if (!destroyed) onChange(getState()); };
@@ -41,18 +46,49 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
     timer = setTimeoutImpl(() => { timer = undefined; void refresh(true); }, delay);
   }
   function cancel() { ++generation; request?.abort(); request = null; pending = null; loading = false; stopTimer(); }
+  function derive() {
+    if (!sourcePayload) { payload = null; return; }
+    if (indexed) {
+      const result = index.search({ ...filters, limit: 440 });
+      const key = (record) => `${record.sourceId}|${record.kind}|${record.url}`;
+      const retained = new Set(index.getState().records.map(key));
+      const current = (record) => { const canonical = canonicalDiscoveryRecord(record); return canonical && retained.has(key(canonical)); };
+      const grouped = sourcePayload.reports.flatMap((report) => {
+        const related = (report.relatedReports || []).filter(current);
+        if (current(report)) return [{ ...report, relatedReports: related }];
+        if (related.length) { const [primary, ...rest] = related; return [{ ...primary, relatedReports: rest }]; }
+        return [];
+      });
+      payload = { ...sourcePayload, ...(filters.q ? { ...result, reports: groupReports(result.reports, 80, { preserveOrder: true }) } : { reports: grouped }), indexedRecords: result.indexedRecords,
+        indexVersion: result.indexVersion, localSearch: true, searchCoverage: result.coverage, ranking: result.ranking };
+    } else if (filters.q) {
+      const terms = filters.q.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      const reports = sourcePayload.reports.filter((report) => terms.every((term) =>
+        [report.title, report.source, report.country, ...report.mentionedCountries || []].join(' ').toLocaleLowerCase().includes(term)));
+      payload = { ...sourcePayload, reports, localSearch: true, searchCoverage: 'This older response contains only the displayed report sample. Refresh online for the full metadata index.', matchCount: reports.length };
+    } else payload = sourcePayload;
+    if (acquisitionError) payload = { ...payload, sources: payload.sources.map((source) => ({ ...source,
+      stale: true, status: source.status === 'ready' ? 'stale' : source.status,
+      reason: [source.reason, 'Latest refresh failed; retained metadata keeps its original dates'].filter(Boolean).join(' · ') })) };
+  }
+  function accept(next) {
+    indexed = false;
+    try { if (next.indexCoverage?.schemaVersion === 1 && Array.isArray(next.indexRecords)) { index.replacePayload(next); indexed = true; } } catch { index.clear(); }
+    if (!indexed) index.clear();
+    sourcePayload = next; derive();
+  }
   function refresh(force = false) {
     if (destroyed || !opened || documentRef?.hidden) return Promise.resolve(false);
     if (pending) return pending;
-    if (!force && payload && refreshedAt !== null && now() - refreshedAt < (Number(payload.nextRefreshMs) || 300000)) { arm(); return Promise.resolve(true); }
+    if (!force && sourcePayload && refreshedAt !== null && now() - refreshedAt < (Number(sourcePayload.nextRefreshMs) || 300000)) { derive(); emit(); arm(); return Promise.resolve(true); }
     const controller = new AbortController(), owner = ++generation;
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]);
-    request = controller; loading = true; error = null; stopTimer(); emit();
+    request = controller; loading = true; error = null; stopTimer(); derive(); emit();
     const work = (async () => {
       try {
         const query = new URLSearchParams({ category: filters.category });
         if (filters.country) query.set('country', filters.country);
-        if (filters.q) query.set('q', filters.q);
+        // Free-text stays in this browser. Shared acquisition is bounded by category/country.
         activeUrl = new URL(`/api/intelligence?${query}`, globalThis.location?.origin || 'http://localhost').href;
         const response = await fetchImpl(`/api/intelligence?${query}`, { signal, headers: { Accept: 'application/json' } });
         if (!response.ok) {
@@ -65,12 +101,13 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
         const mode = response.headers?.get?.('x-browser-cache');
         const cachedAt = Number(response.headers?.get?.('x-browser-cached-at')) || null;
         const stored = ['STALE', 'OFFLINE'].includes(mode);
-        payload = stored ? { ...next, browserCache: mode, sources: next.sources.map((source) => ({ ...source, stale: true,
-          reason: [source.reason, mode === 'OFFLINE' ? 'Saved browser copy; reconnect for updates' : 'Saved browser copy; updating in the background'].filter(Boolean).join(' · ') })) } : next;
+        acquisitionError = null;
+        accept(stored ? { ...next, browserCache: mode, sources: next.sources.map((source) => ({ ...source, stale: true,
+          reason: [source.reason, mode === 'OFFLINE' ? 'Saved browser copy; reconnect for updates' : 'Saved browser copy; updating in the background'].filter(Boolean).join(' · ') })) } : next);
         refreshedAt = cachedAt || now(); error = null; return true;
       } catch (failure) {
         if (controller.signal.aborted || generation !== owner) return false;
-        error = failure.message || 'Intelligence sources are temporarily unavailable'; return false;
+        acquisitionError = error = failure.message || 'Intelligence sources are temporarily unavailable'; derive(); return false;
       } finally {
         if (generation === owner && !destroyed) { request = null; pending = null; loading = false; emit(); arm(); }
       }
@@ -90,14 +127,25 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
   });
   return {
     getState, refresh,
-    open() { if (destroyed) return Promise.resolve(false); opened = true; emit(); return refresh(); },
+    open() { if (destroyed) return Promise.resolve(false); opened = true; derive(); emit(); return refresh(); },
     close() { opened = false; cancel(); emit(); },
     setFilters(values) {
-      const next = { category: values.category || 'all', country: String(values.country || '').trim().toUpperCase(), q: String(values.q || '').trim().slice(0, 65) };
-      if (JSON.stringify(next) === JSON.stringify(filters)) return refresh(true);
-      cancel(); filters = next; payload = null; refreshedAt = null; error = null; emit(); return refresh();
+      const next = { category: values.category || 'all', country: String(values.country || '').trim().toUpperCase(), q: discoveryQueryText(values.q).slice(0, 65) };
+      const invalid = !CATEGORIES.some(([id]) => id === next.category) ? 'Choose an available topic' : next.country && !/^[A-Z]{2}$/.test(next.country) ? 'Choose a country' :
+        next.q && (next.q.length > 64 || !/^[\p{L}\p{N}\s'.’\-]+$/u.test(next.q) || (next.q.match(/[\p{L}\p{N}]/gu)?.length || 0) < 2) ? 'Search needs 2–64 letters, digits, spaces, periods, apostrophes or hyphens' : null;
+      if (invalid) { error = invalid; emit(); return Promise.resolve(false); }
+      const sameAcquisition = next.category === filters.category && next.country === filters.country;
+      filters = next; error = sameAcquisition ? acquisitionError : null;
+      if (sameAcquisition) {
+        derive(); emit();
+        // A pending coarse acquisition will derive using the latest local query when it arrives.
+        if (pending) return pending;
+        if (sourcePayload) { arm(); return Promise.resolve(true); }
+        return refresh();
+      }
+      cancel(); index.clear(); indexed = false; sourcePayload = null; payload = null; acquisitionError = null; refreshedAt = null; emit(); return refresh();
     },
-    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); unsubscribe?.(); documentRef?.removeEventListener?.('visibilitychange', visibility); },
+    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); index.clear(); sourcePayload = null; unsubscribe?.(); documentRef?.removeEventListener?.('visibilitychange', visibility); },
   };
 }
 
@@ -113,21 +161,28 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
   const form = node('form', 'intelligence-filters');
   const category = node('select'); category.setAttribute('aria-label', 'Intelligence topic');
   for (const [value, label] of CATEGORIES) { const option = node('option', '', label); option.value = value; category.append(option); }
-  const country = node('input'); country.type = 'text'; country.placeholder = 'Country code, e.g. BE'; country.maxLength = 2; country.setAttribute('aria-label', 'Country mentions, two-letter code');
-  const query = node('input'); query.type = 'search'; query.placeholder = 'Reviewed topic or publisher'; query.maxLength = 64; query.setAttribute('aria-label', 'Search reviewed topics and publisher domains in the sample');
-  const search = node('button', '', 'Apply filters'); search.type = 'submit';
+  const country = node('select'); country.setAttribute('aria-label', 'Country mentioned or reported');
+  const allCountries = node('option', '', 'All countries'); allCountries.value = ''; country.append(allCountries);
+  for (const item of ECONOMICS_COUNTRIES.filter((item) => item.iso2 && item.iso2 !== 'JG').sort((a, b) => a.name.localeCompare(b.name))) {
+    const option = node('option', '', item.name); option.value = item.iso2; country.append(option);
+  }
+  const query = node('input'); query.type = 'search'; query.placeholder = 'Topic, country or publisher'; query.maxLength = 64; query.setAttribute('aria-label', 'Search collected metadata locally');
+  const search = node('button', '', 'Search'); search.type = 'submit';
   form.append(category, country, query, search);
-  const note = node('p', 'intelligence-meta', 'GDELT cards show machine-extracted topic mentions and source links, with no copied headlines or article text. Search matches reviewed topics and publisher domains. Country filters match countries mentioned, while GDACS uses reported countries; neither establishes the location of a news claim.');
+  const note = node('p', 'intelligence-meta', 'Search stays in this browser and covers collected metadata. GDELT links are machine-extracted topic mentions; country mentions do not establish incident locations.');
   const status = node('p', 'intelligence-status'); status.setAttribute('role', 'status');
-  const sources = node('div', 'intelligence-sources');
+  const coverage = node('details', 'intelligence-coverage'); coverage.append(node('summary', '', 'Sources, coverage and freshness'));
+  const sources = node('div', 'intelligence-sources'); coverage.append(sources);
+  const demandContainer = node('details', 'intelligence-demand-options'); demandContainer.append(node('summary', '', 'Help improve coverage · optional'));
   const actions = node('div', 'intelligence-actions');
   const refresh = node('button', '', 'Refresh sources'); refresh.type = 'button'; actions.append(refresh);
   const list = node('div', 'intelligence-list');
   const economicFacts = node('section', 'economics-section');
   const footer = node('p', 'intelligence-meta'); footer.append('News discovery: ', link('The GDELT Project', 'https://www.gdeltproject.org/'), '. Original publishers retain their rights. No article text or images are copied. ',
     link('Research and coverage notes', 'https://github.com/SmurfTurfPawpaw/earth-observer/blob/main/docs/MAXINOMICS_RESEARCH.md'));
-  container.replaceChildren(form, note, economicFacts, status, sources, actions, list, footer);
+  container.replaceChildren(form, note, economicFacts, status, coverage, actions, demandContainer, list, footer);
   const economics = createEconomicsPanel({ container: economicFacts, fetchImpl, documentRef });
+  const demand = createDemandTracker({ container: demandContainer, fetchImpl, documentRef });
   let renderedPayload;
   function reportContent(report, related = false) {
     const detail = intelligenceReportDetails(report);
@@ -138,8 +193,13 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
     block.append(meta);
     if (detail.countries) block.append(node('p', 'intelligence-meta', detail.countries));
     block.append(node('p', 'intelligence-meta', detail.dates.map(([label, value]) => { const stamp = intelligenceTime(value); return stamp ? `${label} ${stamp}` : null; }).filter(Boolean).join(' · ') || 'Publication and event times are unavailable'));
-    if (report.timeMeaning) block.append(node('p', 'intelligence-meta', String(report.timeMeaning)));
-    if (report.verification) block.append(node('p', 'intelligence-meta', String(report.verification)));
+    if (Array.isArray(report.matchReasons) && report.matchReasons.length) block.append(node('p', 'intelligence-meta', report.matchReasons.slice(0, 3).join(' ')));
+    if (report.timeMeaning || report.verification) {
+      const sourceDetail = node('details'); sourceDetail.append(node('summary', '', 'Source context'));
+      if (report.timeMeaning) sourceDetail.append(node('p', 'intelligence-meta', String(report.timeMeaning)));
+      if (report.verification) sourceDetail.append(node('p', 'intelligence-meta', String(report.verification)));
+      block.append(sourceDetail);
+    }
     if (report.relatedReason) block.append(node('p', 'intelligence-meta', String(report.relatedReason)));
     if (!related && detail.canNavigate && typeof onNavigate === 'function') {
       const button = node('button', '', 'View reported location'); button.type = 'button';
@@ -153,17 +213,18 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
     return block;
   }
   function render(state) {
-    refresh.disabled = state.loading; search.disabled = state.loading;
+    refresh.disabled = state.loading;
     container.setAttribute('aria-busy', String(state.loading));
-    const message = state.loading ? 'Loading source metadata…' : state.error ? `${state.error}${state.payload ? ' · Previous results remain displayed.' : ''}` : state.payload ? `${state.payload.reports.length} report groups · ${state.payload.coverage || 'Bounded source sample'}` : 'Open this panel to load public intelligence sources.';
+    const message = state.loading ? 'Loading source metadata…' : state.error ? `${state.error}${state.payload ? ' · Previous results remain displayed.' : ''}` : state.payload ?
+      `${state.payload.reports.length} groups${Number.isFinite(state.payload.matchCount) ? ` · ${state.payload.matchCount} matching records` : ''}${Number.isFinite(state.payload.indexedRecords) ? ` · ${state.payload.indexedRecords} indexed records` : ''}${state.payload.browserCache ? ' · saved browser copy' : ''}` : 'Open this panel to load public intelligence sources.';
     status.textContent = message; onStatus(message);
     if (!state.payload) { renderedPayload = null; list.replaceChildren(); sources.replaceChildren(); return; }
     if (renderedPayload === state.payload) return;
     renderedPayload = state.payload;
     const discovery = state.payload.sources.find((source) => source.id === 'gdelt');
     note.textContent = discovery?.mode && discovery.mode !== 'scheduled-gkg' ?
-      'This discovery source supplies bounded headline and link metadata. Country filters search news mentions or GDACS reported countries. A mention does not establish a news claim’s location.' :
-      'GDELT cards show machine-extracted topic mentions and source links, with no copied headlines or article text. Search matches reviewed topics and publisher domains. Country filters match countries mentioned, while GDACS uses reported countries; neither establishes the location of a news claim.';
+      'Search stays in this browser. These source cards contain bounded headline and link metadata; country mentions do not establish incident locations.' :
+      'Search stays in this browser. GDELT links are machine-extracted topic mentions, without copied headlines or article text; country mentions do not establish incident locations.';
     const sourceRows = state.payload.sources.map((source) => {
       const row = node('p', 'intelligence-meta');
       row.append(link(String(source.name || source.id), source.url), ` · ${source.status || 'unknown'}${source.stale ? ' · older cached data' : ''}`);
@@ -173,7 +234,8 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
       if (source.retryAt) row.append(` · retry after ${intelligenceTime(source.retryAt)}`);
       return row;
     });
-    sources.replaceChildren(...sourceRows);
+    sources.replaceChildren(node('p', 'intelligence-meta', state.payload.coverage || 'Bounded source sample'),
+      node('p', 'intelligence-meta', state.payload.searchCoverage || DISCOVERY_INDEX_NOTE), ...sourceRows);
     if (!state.payload.reports.length) {
       list.replaceChildren(node('p', 'intelligence-meta', state.payload.sources.some((source) => source.status === 'unavailable') ? 'No matching reports are available. Some providers are unavailable; their official websites remain linked above.' : 'No reports match the current filters in this bounded sample.'));
     } else list.replaceChildren(...state.payload.reports.slice(0, 80).map((report) => reportContent(report)));
@@ -183,15 +245,16 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
     if (category.value === 'economy') void economics.open(country.value || 'WLD'); else economics.close();
     void feed.setFilters({ category: category.value, country: country.value, q: query.value });
   };
-  const submit = (event) => { event.preventDefault(); apply(); };
+  const submit = (event) => { event.preventDefault(); apply(); void demand.noteSearch({ category: category.value, country: country.value, q: query.value }); };
   const refreshClick = () => { void feed.refresh(true); if (category.value === 'economy') void economics.refresh(true); };
   form.addEventListener('submit', submit); refresh.addEventListener('click', refreshClick);
   category.addEventListener('change', apply);
+  country.addEventListener('change', apply);
   render(feed.getState());
   return {
     open() { if (category.value === 'economy') void economics.open(country.value || 'WLD'); return feed.open(); },
     close() { economics.close(); feed.close(); },
     refresh: refreshClick,
-    destroy() { economics.destroy(); feed.destroy(); form.removeEventListener('submit', submit); category.removeEventListener('change', apply); refresh.removeEventListener('click', refreshClick); container.replaceChildren(); }
+    destroy() { demand.destroy(); economics.destroy(); feed.destroy(); form.removeEventListener('submit', submit); category.removeEventListener('change', apply); country.removeEventListener('change', apply); refresh.removeEventListener('click', refreshClick); container.replaceChildren(); }
   };
 }

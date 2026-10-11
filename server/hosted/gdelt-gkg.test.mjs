@@ -87,6 +87,23 @@ test('all-topic serving reserves each GKG category even when current diplomacy r
   for (const category of ['geopolitics', 'economy', 'disasters']) assert.ok(selected.filter((report) => report.category === category).length >= 10);
 });
 
+test('quota relaxation revisits skipped single-record publishers without inventing or duplicating rows', () => {
+  const make = (index, publisher = `publisher-${index}`) => gkgTopicReport({ url: `https://${publisher}.example/${index}`,
+    themes: ['WB_698_TRADE'], mentionedCountries: ['UA'], batch: BATCH, retrievedAt: RETRIEVED, category: 'economy' });
+  const batch = { id: BATCH, retrievedAt: RETRIEVED, rows: 120, matchedRecords: 120 };
+  for (const reports of [Array.from({ length: 120 }, (_, i) => make(i)), Array.from({ length: 12 }, (_, i) => make(i)),
+    Array.from({ length: 120 }, (_, i) => make(i, 'only-publisher'))]) {
+    const snapshot = createGkgSnapshot({ reports, generatedAt: RETRIEVED, processedBatches: [batch] });
+    const selected = snapshot.categories.economy.reports;
+    assert.equal(selected.length, Math.min(80, reports.length));
+    assert.equal(new Set(selected.map((report) => report.url)).size, selected.length);
+    assert.ok(selected.every((report) => reports.includes(report)), 'all records retain their original provenance');
+    assert.deepEqual(validateGkgSnapshot(snapshot, NOW), snapshot);
+    const repeat = createGkgSnapshot({ reports: [...reports].reverse(), generatedAt: RETRIEVED, processedBatches: [batch] });
+    assert.deepEqual(repeat.categories.economy.reports.map((report) => report.url), selected.map((report) => report.url), 'selection is deterministic for equivalent rows');
+  }
+});
+
 test('shared GKG reader filters country mentions and reviewed topics, never publisher country, live queries or stale invented timestamps', async () => {
   let time = NOW, requests = 0;
   const read = createGdeltSnapshotReader({ now: () => time, fetchImpl: async () => { requests++; return requests === 1 ? Response.json(fixture()) : new Response('', { status: 503 }); } });

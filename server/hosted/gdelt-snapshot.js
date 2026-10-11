@@ -1,7 +1,8 @@
 import { readResponseJsonCapped } from '../providers/common/http.js';
 import { normalizeGdelt, safeReportUrl } from './intelligence-sources.js';
 import { gdeltQueryUrl } from './gdelt-query.js';
-import { validateGkgSnapshot, GKG_THEMES, gkgCoverage, gkgBatchTime } from './gdelt-gkg.js';
+import { validateGkgSnapshot, gkgCoverage, gkgBatchTime } from './gdelt-gkg.js';
+import { createDiscoveryIndex } from '../../src/core/discovery-index.js';
 
 export const GDELT_SNAPSHOT_URL = 'https://github.com/SmurfTurfPawpaw/earth-observer/releases/download/intelligence-data/gdelt.snapshot.json';
 export const GDELT_SNAPSHOT_CATEGORIES = Object.freeze(['geopolitics', 'economy', 'disasters']);
@@ -63,6 +64,7 @@ export function validateGdeltSnapshot(payload, nowMs = Date.now()) {
 /** One shared release acquisition for every visitor filter, with optional persistent last-good state. */
 export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, store, timeoutMs = 12000 } = {}) {
   let cached, pending, restoreWork, retryAt = 0, failures = 0, lastFailure = null;
+  const index = createDiscoveryIndex({ now, maxRecords: 240, maxBytes: GDELT_SNAPSHOT_MAX_BYTES });
   const restore = () => restoreWork ||= (async () => {
     try {
       const saved = await store?.get('gdelt:snapshot');
@@ -104,14 +106,12 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
     const coverage = gkg ? `Scheduled GDELT topic-mention sample: at most 80 links per topic from ${batchCoverage.processedBatches.length} processed 15-minute batches in a rolling 24-hour window; ${batchCoverage.sampleGaps.length} intervals missing between the sampled endpoints. Country filters match countries mentioned in the source article, not publisher country or incident location. Topic searches match reviewed theme labels and publisher domains, not article text or headlines. This is a bounded sample; no match does not establish absence.` :
       'Scheduled GDELT discovery sample: at most 80 title/link records per topic from a 24-hour query. Country and topic filters match only titles in this sample; an empty result does not establish absence or complete coverage. Publisher country is not an event location.';
     const categories = filters.category === 'all' ? GDELT_SNAPSHOT_CATEGORIES : [filters.category];
-    const topic = String(filters.q || '').normalize('NFKC').toLowerCase().split(/\s+/).filter(Boolean);
-    const country = String(filters.countryName || '').normalize('NFKC').toLowerCase();
-    const records = available ? categories.flatMap((key) => cached.snapshot.categories[key]?.reports || []).filter((report) => {
-      if (gkg && now() - Date.parse(report.indexedAt) > MAX_AGE_MS) return false;
-      const text = `${report.title}${gkg ? ` ${report.source} ${report.themes.map((theme) => GKG_THEMES[theme][1]).join(' ')}` : ''}`.normalize('NFKC').toLowerCase();
-      return (gkg ? !filters.country || report.mentionedCountries.includes(filters.country) : !country || text.includes(country)) && topic.every((word) => text.includes(word));
-    }) : [];
-    return { records, state: { ...SOURCE, status: available ? stale ? 'stale' : 'ready' : 'unavailable', stale,
+    const status = available ? stale ? 'stale' : 'ready' : 'unavailable';
+    const indexSource = { id: 'gdelt', generation: cached?.snapshot.generatedAt || 'unavailable', status, coverage,
+      expiresAt: generated === null ? null : new Date(generated + MAX_AGE_MS).toISOString() };
+    index.replaceSource({ ...indexSource, records: available ? GDELT_SNAPSHOT_CATEGORIES.flatMap((key) => cached.snapshot.categories[key]?.reports || []) : [] });
+    const indexed = index.getState(), records = index.search({ ...filters, limit: 240 }).reports;
+    return { records, indexRecords: indexed.records, indexSource, indexVersion: indexed.indexVersion, state: { ...SOURCE, status, stale,
       mode: gkg ? 'scheduled-gkg' : 'scheduled-snapshot', kind: gkg ? 'topic-mention' : 'article-link', generatedAt: cached?.snapshot.generatedAt || null,
       retrievedAt: cached ? gkg ? cached.snapshot.coverage.processedBatches.at(-1).retrievedAt : new Date(Math.min(...categories.map((key) => Date.parse(cached.snapshot.categories[key].retrievedAt)))).toISOString() : null,
       snapshotRetrievedAt: cached ? new Date(cached.acquiredAt).toISOString() : null,

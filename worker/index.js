@@ -8,6 +8,7 @@ import { createFirmsHandler } from './firms.js';
 import { createContextHandler } from './context.js';
 import { createWindArtifactHandler } from './wind.js';
 import { createWorkerFetch } from './fetch.js';
+import { handleDemand } from './demand.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -49,6 +50,9 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
       url.pathname = localPath;
       const internal = new Request(url, request);
       try {
+        // Aggregate actions own their methods and never enter public provider caches.
+        const demandResponse = await handleDemand(internal, env, { now });
+        if (demandResponse) return secured(demandResponse);
         // Authenticated extension handlers own their methods and body admission.
         for (const handle of handlers) { const response = await handle(internal, env, ctx); if (response) return secured(response); }
         if (internal.method !== 'GET' && !(internal.method === 'POST' && localPath === '/api/overpass')) return secured(jsonError('Method Not Allowed', 405));

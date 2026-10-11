@@ -68,7 +68,8 @@ test('provider failure serves explicit stale results with backoff shared across 
   assert.equal(stale.payload.sources[0].ageMs, 301000);
   await read('/?category=economy');
   const different = await read('/?category=economy&q=shipping');
-  assert.equal(different.payload.sources[0].status, 'unavailable');
+  assert.equal(different.payload.sources[0].status, 'stale', 'topic changes search the same retained coarse sample');
+  assert.deepEqual(different.payload.reports, [], 'unmatched local terms do not manufacture new metadata');
   assert.ok(different.payload.sources[0].retryAt > clock);
   assert.equal(requests, 2);
 });

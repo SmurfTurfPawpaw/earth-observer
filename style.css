@@ -282,6 +282,14 @@ body.side-panel-open #navigation { right: 388px; }
 .command-footer { padding: 10px 18px; color: var(--muted); border-top: 1px solid var(--line); font-size: calc(10px * var(--reading-scale, 1)); }
 .credits .preview-credits { position: static; display: block; padding: 0; }
 .intelligence-filters > input, .intelligence-filters > select { flex: 1 1 110px; width: 0; }
+.intelligence-coverage, .intelligence-demand-options { margin: 10px 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }
+.intelligence-coverage > summary, .intelligence-demand-options > summary, .intelligence-card details > summary { cursor: pointer; color: #b5c6d2; font-size: calc(10px * var(--reading-scale, 1)); line-height: 1.6; }
+.intelligence-demand { margin-top: 9px; }
+.intelligence-demand label { display: flex; align-items: center; gap: 7px; font-size: calc(11px * var(--reading-scale, 1)); }
+.intelligence-demand input { margin: 0; accent-color: var(--accent); }
+.intelligence-demand p { margin-top: 8px; }
+.intelligence-card details { margin-top: 9px; }
+.intelligence-card details p { margin-top: 7px; }
 .community-section { margin-top: 22px; padding-top: 15px; border-top: 1px solid var(--line); font-size: calc(11px * var(--reading-scale, 1)); }
 .community-section > summary { cursor: pointer; font-weight: 600; }
 .community-section > summary > span { margin-left: 6px; font-size: calc(9px * var(--reading-scale, 1)); font-weight: 400; }

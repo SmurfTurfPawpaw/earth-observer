@@ -15,7 +15,11 @@ When permission is granted, the app selects a rounded local position and a 10 km
 area; searching a place works without sharing device location. Camera position,
 radius and layer choices restore on reload. View preferences and private notes
 stay in the browser; rounded map coordinates are used to acquire nearby feeds.
-There is no visitor analytics or session-information collector.
+Raw searches, identity and precise location are excluded from the optional,
+default-off topic-interest counter. It records only explicit searches for reviewed
+subjects and selected country filters as bounded daily totals. Public summaries
+require 300 actions and round down to 100-action buckets; these are not unique-user
+counts. Private sessions and notebook contents are never uploaded by this counter.
 
 The static interface paints while the 3D engine loads. Production builds
 precompress text and JSON Lines using Brotli and gzip, cache versioned engine
@@ -120,6 +124,7 @@ reference years. Forecast wind grids refresh every six hours and retain model,
 run, valid time and source credits; predictions are not measured wind.
 
 - [Intelligence sources and limitations](docs/INTELLIGENCE_SOURCES.md)
+- [Local metadata search and ranking](docs/DISCOVERY_SEARCH.md), [optional aggregate interest](docs/AGGREGATE_DEMAND.md), and [demand-guided sampling](docs/INTELLIGENCE_PRIORITY.md)
 - [Economic facts](docs/ECONOMIC_FACTS.md), [scheduled news](docs/GDELT_SNAPSHOTS.md), and [forecast grids](docs/WIND_SNAPSHOTS.md)
 - [Private/public evidence and moderation](docs/COMMUNITY.md)
 - [Maxinomics research and exact coverage](docs/MAXINOMICS_RESEARCH.md): 65 dated videos in the requested window; official transcripts were unavailable. Unverified reposts and primary-source checks are distinguished explicitly.

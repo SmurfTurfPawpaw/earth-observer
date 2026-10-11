@@ -28,6 +28,8 @@ There is no startup polling. A visible, opened economic panel requests its selec
 
 Validated annual responses are fresh for 24 hours. After a failed refresh, the same economy's previous values remain explicitly marked stale for at most seven days after retrieval. Provider failures use an exponential cooldown, honoring bounded `Retry-After` values. No data or an expired copy produces an unavailable state with an empty indicators array. Browser cache age uses its actual stored timestamp; a saved stale/offline copy is labeled and a successful background update refreshes the displayed values.
 
+The hosted Worker also reuses strict, minimal annual snapshots in `EARTH_STORE` across instances. Each of the 218 supported economy keys (including World) has one finite storage location. A restore is lazy and coalesced with its requested economy's refresh; no startup scan or background polling is introduced. Each snapshot is limited to 50 observations and 64 KiB, validates country and canonical dates, and reconstructs credits/definitions from the reviewed catalog. Storage operations have a one-second optional deadline and cannot turn valid upstream data into a provider failure. The original retrieval date remains authoritative; the HTTP age header advances on edge hits, and ready response caching stops at the remaining 24-hour freshness boundary.
+
 ## Validation evidence
 
 Thirteen focused backend/UI tests cover country/filter rejection, true zeroes and null gaps, source and observation validation, canonical request sharing, LRU/pending bounds, response caps, cooldown/staleness expiry, country-switch cancellation, annual formatting and browser cache revalidation. Synthetic test values are not real country statistics.
