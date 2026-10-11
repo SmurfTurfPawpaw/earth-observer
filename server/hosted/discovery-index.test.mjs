@@ -5,7 +5,7 @@ import { createGkgSnapshot, gkgTopicReport } from './gdelt-gkg.js';
 import { GDELT_SNAPSHOT_URL, validateGdeltSnapshot } from './gdelt-snapshot.js';
 import { gdeltQueryUrl } from './gdelt-query.js';
 import { createDiscoveryIndex } from '../../src/core/discovery-index.js';
-import { createEonetSnapshot, EONET_SNAPSHOT_URL } from './eonet-snapshot.js';
+import { createEonetSnapshot, EONET_SNAPSHOT_URL, EONET_QUERY_URL } from './eonet-snapshot.js';
 
 const NOW = Date.parse('2026-10-11T10:05:00.000Z'), ISO = new Date(NOW).toISOString(), BATCH = '20261011100000';
 function snapshot() {
@@ -51,11 +51,12 @@ test('API candidates retain every source cap while the default display stays gro
     properties: { url: `https://earthquake.usgs.gov/event/${i}`, title: `Earthquake ${i}`, time: NOW - i * 1000 } })) };
   const gdacs = { features: Array.from({ length: 100 }, (_, i) => ({ geometry: { coordinates: [i / 10, 50] }, properties: {
     eventid: i + 1, eventtype: 'FL', name: `Flood ${i}`, fromdate: ISO, country: 'Belgium', affectedcountries: [{ iso2: 'BE' }], url: { report: `https://www.gdacs.org/report/${i}` } } })) };
-  const eonet = await createEonetSnapshot({ events: Array.from({ length: 60 }, (_, i) => ({ id: `EONET_${i + 1}`, title: `Curated wildfire ${i}`,
+  const eonetInput = { events: Array.from({ length: 60 }, (_, i) => ({ id: `EONET_${i + 1}`, title: `Curated wildfire ${i}`,
     categories: [{ id: 'wildfires' }], sources: [{ id: 'GDACS', url: `https://www.gdacs.org/report/${i}` }],
-    closed: null, geometry: [{ date: ISO }] })) }, { retrievedAt: ISO, nowMs: NOW });
+    closed: null, geometry: [{ date: ISO }] })) };
+  const eonet = await createEonetSnapshot(eonetInput, { retrievedAt: ISO, nowMs: NOW });
   let requests = 0;
-  const read = endpoint(intelligenceProxy({ now: () => NOW, fetchImpl: async (url) => { requests++; return Response.json(url === GDELT_SNAPSHOT_URL ? large : url === EONET_SNAPSHOT_URL ? eonet : url.includes('usgs.gov') ? usgs : gdacs); } }));
+  const read = endpoint(intelligenceProxy({ now: () => NOW, fetchImpl: async (url) => { requests++; return Response.json(url === GDELT_SNAPSHOT_URL ? large : url === EONET_QUERY_URL ? eonetInput : url === EONET_SNAPSHOT_URL ? eonet : url.includes('usgs.gov') ? usgs : gdacs); } }));
   const result = await read('/?category=all');
   assert.equal(requests, 4); assert.equal(result.payload.indexRecords.length, 500); assert.equal(result.payload.reports.length, 80);
   assert.ok(result.payload.indexCoverage.byteLength <= 2 * 1024 * 1024);

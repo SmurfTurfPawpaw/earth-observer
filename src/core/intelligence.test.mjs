@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createIntelligenceFeed, safeIntelligenceUrl, intelligenceTime, intelligenceReportDetails } from './intelligence.js';
+import { createIntelligenceFeed, safeIntelligenceUrl, intelligenceTime, intelligenceReportDetails, INTELLIGENCE_REFRESH_MS } from './intelligence.js';
 
 const payload = { reports: [{ id: 'one', title: 'Linked report', url: 'https://example.test/' }], sources: [{ id: 'gdelt', status: 'ready' }], nextRefreshMs: 300000 };
 function environment(fetchImpl) {
-  const events = new Map(), timers = new Map(); let clock = 100000, nextTimer = 0;
+  const events = new Map(), windowEvents = new Map(), timers = new Map(); let clock = 100000, nextTimer = 0;
   const states = [], documentRef = { hidden: false, addEventListener: (name, callback) => events.set(name, callback), removeEventListener: (name) => events.delete(name) };
-  const feed = createIntelligenceFeed({ fetchImpl, documentRef, now: () => clock, onChange: (state) => states.push(state),
+  const windowRef = { addEventListener: (name, callback) => windowEvents.set(name, callback), removeEventListener: (name) => windowEvents.delete(name) };
+  const feed = createIntelligenceFeed({ fetchImpl, documentRef, windowRef, now: () => clock, onChange: (state) => states.push(state),
     setTimeoutImpl: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; }, clearTimeoutImpl: (id) => timers.delete(id) });
-  return { feed, timers, states, documentRef, events, advance: (ms) => { clock += ms; }, visibility: () => events.get('visibilitychange')?.() };
+  return { feed, timers, states, documentRef, events, windowEvents, advance: (ms) => { clock += ms; }, visibility: () => events.get('visibilitychange')?.(),
+    reconnect: () => windowEvents.get('online')?.(), fireTimer() { const [id, timer] = timers.entries().next().value; timers.delete(id); clock += timer.delay; timer.callback(); } };
 }
 const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 
@@ -29,13 +31,67 @@ test('only an opened visible panel fetches, cache survives close, and refresh ti
   assert.equal(await env.feed.refresh(), false);
   await env.feed.open(); assert.equal(requests, 1); assert.equal(env.timers.size, 1);
   env.feed.close(); assert.equal(env.timers.size, 0);
-  env.advance(100000); await env.feed.open(); assert.equal(requests, 1);
-  assert.equal([...env.timers.values()][0].delay, 200000);
+  env.advance(25000); await env.feed.open(); assert.equal(requests, 1);
+  assert.equal([...env.timers.values()][0].delay, 35000);
   env.documentRef.hidden = true; env.visibility();
   assert.equal(env.timers.size, 0); assert.equal(await env.feed.refresh(true), false);
-  env.advance(300000); env.documentRef.hidden = false; env.visibility(); await settle();
+  env.advance(60000); env.documentRef.hidden = false; env.visibility(); await settle();
   assert.equal(requests, 2);
-  env.feed.destroy(); assert.equal(env.timers.size, 0); assert.equal(env.events.size, 0);
+  env.feed.destroy(); assert.equal(env.timers.size, 0); assert.equal(env.events.size, 0); assert.equal(env.windowEvents.size, 0);
+});
+
+test('visible delivery checks every minute independently of source hints and forces transport revalidation', async () => {
+  const calls = [], env = environment(async (url, init) => { calls.push({ url, init }); return Response.json(payload); });
+  await env.feed.open();
+  assert.equal(INTELLIGENCE_REFRESH_MS, 60000);
+  assert.equal(calls[0].init.cache, undefined, 'First open may paint the browser snapshot immediately');
+  assert.equal([...env.timers.values()][0].delay, 60000, 'The old five-minute response hint cannot slow delivery checks');
+  env.fireTimer(); await settle();
+  assert.equal(calls.length, 2); assert.equal(calls[1].init.cache, 'no-cache');
+  assert.equal([...env.timers.values()][0].delay, 60000);
+  assert.ok(calls.every(({ url }) => !new URL(url, 'https://fixture.invalid').searchParams.has('q')));
+  env.feed.close(); assert.equal(env.timers.size, 0); env.reconnect(); await settle(); assert.equal(calls.length, 2);
+  env.feed.destroy();
+});
+
+test('automatic revalidation retains dated records during body loading, and hiding cancels late delivery', async () => {
+  const body = Promise.withResolvers(), began = Promise.withResolvers(); let calls = 0, signal;
+  const original = indexedPayload();
+  const env = environment(async (_url, init) => {
+    if (++calls === 1) return Response.json(original);
+    signal = init.signal; began.resolve(); return { ok: true, json: () => body.promise };
+  });
+  await env.feed.open(); await env.feed.setFilters({ category: 'all', q: 'Ukraine trade' });
+  env.fireTimer(); await began.promise;
+  assert.equal(env.feed.getState().loading, true);
+  assert.deepEqual(env.feed.getState().payload.reports.map(({ id }) => id), ['ukraine-trade']);
+  assert.equal(env.feed.getState().payload.reports[0].indexedAt, original.reports[0].indexedAt);
+  env.documentRef.hidden = true; env.visibility(); assert.equal(signal.aborted, true); assert.equal(env.timers.size, 0);
+  body.resolve({ ...original, reports: [] }); await settle();
+  assert.deepEqual(env.feed.getState().payload.reports.map(({ id }) => id), ['ukraine-trade'], 'Canceled delivery cannot replace the retained local search');
+  assert.equal(env.feed.getState().loading, false); env.feed.destroy();
+});
+
+test('reconnecting revalidates retained failed metadata promptly, keeps source dates, and pauses when hidden', async () => {
+  const calls = [], original = indexedPayload();
+  const env = environment(async (url, init) => {
+    calls.push({ url, init });
+    if (calls.length === 2) throw new Error('Connection interrupted');
+    return Response.json(original);
+  });
+  await env.feed.open(); await env.feed.setFilters({ category: 'all', q: 'Ukraine' });
+  env.fireTimer(); await settle();
+  assert.match(env.feed.getState().error, /Connection interrupted/);
+  assert.equal(env.feed.getState().payload.reports[0].retrievedAt, original.reports[0].retrievedAt);
+  assert.equal(env.feed.getState().payload.sources[0].stale, true);
+  assert.match(env.feed.getState().payload.sources[0].reason, /retained metadata keeps its original dates/);
+  env.documentRef.hidden = true; env.visibility(); env.reconnect(); await settle(); assert.equal(calls.length, 2);
+  env.documentRef.hidden = false; env.visibility(); await settle();
+  assert.equal(calls.length, 3, 'Visible resumption retries a failed acquisition immediately');
+  assert.equal(env.feed.getState().error, null); assert.equal(env.feed.getState().payload.sources[0].stale, undefined);
+  env.reconnect(); await settle(); assert.equal(calls.length, 4); assert.equal(calls[3].init.cache, 'no-cache');
+  assert.ok(calls.every(({ url }) => !url.includes('Ukraine') && !new URL(url, 'https://fixture.invalid').searchParams.has('q')));
+  env.feed.destroy(); assert.equal(env.windowEvents.size, 0);
 });
 
 test('closing or hiding during body loading prevents late publication and permits a clean retry', async () => {

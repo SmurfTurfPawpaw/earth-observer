@@ -13,3 +13,5 @@ qa-artifacts/
 .validation-path
 .DS_Store
 .qa/
+.wrangler/
+collector-worker/wrangler.jsonc

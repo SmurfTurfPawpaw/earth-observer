@@ -3,6 +3,7 @@ import { applyModelAtmosphereWorkaround } from '../app/atmosphereCompat.js';
 import { viewerGlobeAltitude } from './globe-framing.js';
 import { CSS_PIXEL_RENDERING, installGlobeRenderingPolicy } from './rendering-policy.js';
 import { observeStreetMapCoverage, streetMapCoverageNotice } from './basemap-coverage.js';
+import { installAstronomy } from './astronomy.js';
 
 const NASA_TILES = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg';
 
@@ -35,7 +36,7 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     shadows: false,
     contextOptions: { webgl: { alpha: false, antialias: true } },
   });
-  let renderingPolicy;
+  let renderingPolicy, astronomy;
   try {
     viewer.targetFrameRate = 60;
     renderingPolicy = installGlobeRenderingPolicy(viewer);
@@ -49,7 +50,8 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     viewer.scene.screenSpaceCameraController.maximumZoomDistance = viewerGlobeAltitude(viewer, .65);
     // Cesium's surface mode keeps mapped markers legible while occluding the far side.
     viewer.scene.globe.depthTestAgainstTerrain = false;
-    viewer.clock.shouldAnimate = true;
+    astronomy = installAstronomy(viewer);
+    viewer.earthTime = astronomy;
     applyModelAtmosphereWorkaround(viewer.scene);
 
     const nasa = new Cesium.UrlTemplateImageryProvider({
@@ -120,7 +122,7 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     viewer.earthBasemap = basemap;
     basemap.ready = ensureMap();
     const destroyViewer = viewer.destroy.bind(viewer);
-    viewer.destroy = () => { renderingPolicy.destroy(); mapCoverage?.destroy(); mapLifetime.abort(); mapProvider?.destroy(); return destroyViewer(); };
+    viewer.destroy = () => { astronomy.destroy(); renderingPolicy.destroy(); mapCoverage?.destroy(); mapLifetime.abort(); mapProvider?.destroy(); return destroyViewer(); };
     // Paint inexpensive bundled imagery first; NASA detail fills in without a blank globe.
     const baseReady = Cesium.TileMapServiceImageryProvider.fromUrl(
       Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'),
@@ -159,6 +161,7 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     ];
     return viewer;
   } catch (error) {
+    astronomy?.destroy();
     renderingPolicy?.destroy();
     viewer.destroy();
     throw error;

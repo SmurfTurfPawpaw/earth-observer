@@ -3,7 +3,7 @@ import { GROUPING_NOTE, normalizeGdelt, normalizeGdacs, normalizeUsgs, groupRepo
 import { gdeltQueryUrl } from './gdelt-query.js';
 import { createGdeltSnapshotReader } from './gdelt-snapshot.js';
 import { createEonetSnapshotReader, EONET_SOURCE } from './eonet-snapshot.js';
-import { createDiscoveryIndex, discoveryQueryText, DISCOVERY_INDEX_MAX_BYTES } from '../../src/core/discovery-index.js';
+import { canonicalDiscoveryRecord, createDiscoveryIndex, discoveryQueryText, DISCOVERY_INDEX_MAX_BYTES } from '../../src/core/discovery-index.js';
 export { gdeltQueryUrl } from './gdelt-query.js';
 
 const CATEGORIES = ['all', 'disasters', 'geopolitics', 'economy'];
@@ -31,9 +31,26 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
   const providerFailures = new Map();
   const policies = {
     gdelt: { name: 'The GDELT Project', url: 'https://www.gdeltproject.org/', ttl: 300000, timeout: 15000, cooldown: 300000, minGap: 6000 },
-    usgs: { name: 'U.S. Geological Survey', url: 'https://earthquake.usgs.gov/', ttl: 300000, timeout: 10000, cooldown: 60000, minGap: 1000 },
-    gdacs: { name: 'Global Disaster Alert and Coordination System, GDACS', url: 'https://www.gdacs.org/', ttl: 600000, timeout: 12000, cooldown: 120000, minGap: 1000 },
+    usgs: { name: 'U.S. Geological Survey', url: 'https://earthquake.usgs.gov/', ttl: 60000, timeout: 10000, cooldown: 60000, minGap: 1000 },
+    gdacs: { name: 'Global Disaster Alert and Coordination System, GDACS', url: 'https://www.gdacs.org/', ttl: 60000, timeout: 12000, cooldown: 120000, minGap: 1000 },
   };
+  async function optionalStorage(task) {
+    let timer;
+    try { return await Promise.race([Promise.resolve().then(task).catch(() => null),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), 1000); })]); }
+    finally { clearTimeout(timer); }
+  }
+  async function restoreHazard(id, key) {
+    const saved = await optionalStorage(() => snapshotStore?.get(`intelligence:${key}`));
+    if (saved?.schemaVersion !== 1 || !Number.isFinite(saved.at) || saved.at < 0 || saved.at > now() + 5000 ||
+        now() - saved.at > 86400000 || !Array.isArray(saved.records) || saved.records.length > 100 ||
+        new TextEncoder().encode(JSON.stringify(saved)).byteLength > 300000) return;
+    const records = saved.records.map(canonicalDiscoveryRecord);
+    if (records.some((record) => !record || record.kind !== 'hazard-report' || record.sourceId !== id ||
+        record.retrievedAt !== new Date(saved.at).toISOString() ||
+        !(id === 'usgs' ? /^https:\/\/earthquake\.usgs\.gov\// : /^https:\/\/(www\.)?gdacs\.org\//).test(record.url))) return;
+    if (!cache.has(key) || saved.at > cache.get(key).at) { cache.delete(key); cache.set(key, { at: saved.at, records }); trim(cache); }
+  }
   function trim(map) { while (map.size > MAX_KEYS) map.delete(map.keys().next().value); }
   async function readNews(filters) {
     const scheduled = snapshotReader ? await snapshotReader(filters) : null;
@@ -57,8 +74,20 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
       else if ((failures.get(key)?.retryAt || 0) > at || (providerFailures.get(id)?.retryAt || 0) > at) reason = `${(failures.get(key) || providerFailures.get(id)).reason}; retry paused by backoff`;
       else if (at - (attempts.get(id) ?? -Infinity) < policy.minGap) reason = 'Provider refresh rate is limited; try again shortly';
       else {
-        attempts.set(id, at);
         const work = (async () => {
+          if (id !== 'gdelt' && snapshotStore) {
+            await restoreHazard(id, key);
+            if (cache.has(key) && now() - cache.get(key).at < policy.ttl) return;
+            const savedFailure = await optionalStorage(() => snapshotStore.get(`intelligence:failure:${id}`));
+            if (Number.isFinite(savedFailure?.retryAt) && savedFailure.retryAt > now() && savedFailure.retryAt <= now() + 86400000) {
+              providerFailures.set(id, { count: 1, retryAt: savedFailure.retryAt, reason: 'Provider retry paused by shared backoff' }); return;
+            }
+            if (snapshotStore.claim) {
+              const claimed = await optionalStorage(() => snapshotStore.claim(`intelligence:${id}`, now(), policy.ttl));
+              if (claimed !== true) { reason = 'Shared source refresh already in progress; retained metadata stays dated'; await restoreHazard(id, key); return; }
+            }
+          }
+          attempts.set(id, now());
           const signal = AbortSignal.timeout(policy.timeout);
           try {
             const response = await fetchImpl(url, { signal, redirect: 'error', headers: HEADER });
@@ -70,16 +99,21 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
             }
             const payload = await readResponseJsonCapped(response, 2 * 1024 * 1024, signal);
             signal.throwIfAborted();
-            const retrievedAt = new Date(now()).toISOString();
+            const completedAt = now(), retrievedAt = new Date(completedAt).toISOString();
             const records = normalize(payload, retrievedAt);
-            cache.delete(key); cache.set(key, { at: now(), records }); trim(cache);
+            cache.delete(key); cache.set(key, { at: completedAt, records }); trim(cache);
             failures.delete(key); providerFailures.delete(id);
+            if (id !== 'gdelt' && snapshotStore) {
+              await optionalStorage(() => snapshotStore.put(`intelligence:${key}`, { schemaVersion: 1, at: completedAt, records: records.map(canonicalDiscoveryRecord) }));
+              await optionalStorage(() => snapshotStore.put(`intelligence:failure:${id}`, { retryAt: 0 }));
+            }
           } catch (error) {
             const previous = providerFailures.get(id)?.count || 0;
             const count = Math.min(previous + 1, 6);
             const reason = error.httpStatus === 429 ? 'Provider rate limit (HTTP 429)' : error.httpStatus ? `Provider HTTP ${error.httpStatus}` : error.name === 'TimeoutError' ? 'Provider request timed out' : 'Provider response temporarily unavailable';
             const failure = { count, retryAt: now() + Math.max(Math.min(policy.cooldown * 2 ** (count - 1), 3600000), error.retryAfterMs || 0), reason };
             failures.set(key, failure); trim(failures); providerFailures.set(id, failure);
+            if (id !== 'gdelt' && snapshotStore) await optionalStorage(() => snapshotStore.put(`intelligence:failure:${id}`, { retryAt: failure.retryAt }));
           }
         })().finally(() => pending.delete(key));
         pending.set(key, work); await work;
@@ -140,14 +174,14 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
       const grouped = groupReports(reports, 80, { preserveOrder: Boolean(filters.q) });
       const sources = results.map((result) => result.state);
       if (filters.country && ['all', 'disasters'].includes(filters.category)) sources.push({ id: 'usgs', name: policies.usgs.name, url: policies.usgs.url, status: 'not-applicable', stale: false, reason: 'USGS summary has no authoritative country codes; country-filtered hazards use GDACS' });
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=15' });
       res.end(JSON.stringify({ reports: grouped, sources, filters, retrievedAt: new Date(now()).toISOString(),
         indexRecords: indexState.records, indexVersion: indexState.indexVersion,
         indexCoverage: { schemaVersion: indexState.schemaVersion, recordCount: indexState.recordCount, byteLength: indexState.byteLength,
           maxRecords: 500, maxBytes: DISCOVERY_INDEX_MAX_BYTES, omittedRecords: indexState.omittedRecords,
           sources: indexState.sources, note: indexState.note },
         grouping: GROUPING_NOTE, coverage: `${results[0].state.coverage || 'GDELT discovery sample unavailable.'} Official hazard reports cover the last seven days. GDACS filters use reported countries. ${eonetReader ? `${EONET_SOURCE.name} supplies a bounded curated event sample; geometry dates can precede the seven-day query window and are not verified incident times. ` : ''}These are not geographic proof.`,
-        nextRefreshMs: 300000 }));
+        nextRefreshMs: 60000 }));
     });
   };
   return { name: 'hosted-intelligence', configureServer: install, configurePreviewServer: install };

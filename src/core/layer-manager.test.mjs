@@ -31,6 +31,48 @@ function engine(calls) {
   };
 }
 
+test('recorded mode pauses live display and polling without changing saved intent; visibility cannot resume it', async () => {
+  const calls = [], env = environment(async () => engine(calls));
+  await env.manager.setEnabled('test', true); const saved = env.saved.get(STORAGE_KEY);
+  await env.manager.setTimelineMode('history');
+  assert.equal(env.manager.getState().test.enabled, true); assert.equal(env.manager.getState().test.settledEnabled, false);
+  assert.equal(env.manager.getState().test.status, 'paused'); assert.equal(env.manager.isEffectivelyEnabled('test'), false);
+  assert.equal(env.saved.get(STORAGE_KEY), saved); assert.equal(env.timers.size, 0);
+  assert.equal(await env.manager.refresh('test'), false); const updates = calls.filter((value) => value === 'update').length;
+  env.document.hidden = true; env.visibility(); env.document.hidden = false; env.visibility(); await settle();
+  assert.equal(calls.filter((value) => value === 'update').length, updates); assert.equal(env.timers.size, 0);
+  await env.manager.setTimelineMode('live');
+  assert.equal(env.manager.getState().test.settledEnabled, true); assert.equal(env.manager.isEffectivelyEnabled('test'), true);
+  assert.equal(env.saved.get(STORAGE_KEY), saved); assert.equal(env.timers.size, 1); assert.equal(calls.filter((value) => value === 'init').length, 1);
+  await env.manager.destroy();
+});
+
+test('recorded mode supersedes an in-flight enable and restores only the latest user intent', async () => {
+  const calls = [], loaded = Promise.withResolvers(), env = environment(() => loaded.promise);
+  const enabling = env.manager.setEnabled('test', true); await settle();
+  const pausing = env.manager.setTimelineMode('history'); loaded.resolve(engine(calls));
+  assert.equal(await enabling, false); await pausing;
+  assert.equal(calls.includes('enable'), false); assert.equal(env.manager.getState().test.enabled, true);
+  await env.manager.setEnabled('test', false); await env.manager.setTimelineMode('live');
+  assert.equal(calls.includes('enable'), false); assert.equal(env.manager.getState().test.enabled, false);
+  assert.equal(JSON.parse(env.saved.get(STORAGE_KEY)).layers.test.enabled, false);
+  await env.manager.destroy();
+});
+
+test('history aborts an owned live refresh and rapid return to Live cannot allow stale re-enabling', async () => {
+  const calls = [], began = Promise.withResolvers(); let updates = 0;
+  const env = environment(async () => ({ ...engine(calls), update(_viewer, { signal }) {
+    if (++updates !== 1) { calls.push('update'); return; }
+    began.resolve(signal); return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+  } }));
+  const enabling = env.manager.setEnabled('test', true), signal = await began.promise;
+  const pause = env.manager.setTimelineMode('history'); assert.equal(signal.aborted, true);
+  const resume = env.manager.setTimelineMode('live'); await Promise.all([enabling, pause, resume]);
+  assert.equal(env.manager.getState().test.enabled, true); assert.equal(env.manager.getState().test.settledEnabled, true);
+  assert.equal(env.manager.getState().test.status, 'ready'); assert.equal(env.timers.size, 1);
+  await env.manager.destroy();
+});
+
 test('imports only on enable, initializes once, polls only while enabled and cleans up', async () => {
   const calls = [];
   const env = environment(async () => { calls.push('load'); return engine(calls); });

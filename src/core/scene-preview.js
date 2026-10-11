@@ -52,7 +52,7 @@ export function installScenePreview(viewer, { store, cameraView, getState,
     if (stopped || capturing || !wanted || !viewer.scene.globe.tilesLoaded || Date.now() - lastSave < 10000) return;
     // Complex registered notices are shown only by their live renderer, never flattened into an image.
     const state = getState();
-    if (state.wind?.enabled || state.cctv?.enabled || state.transit?.enabled) return;
+    if (state.timelinePaused || state.wind?.enabled || state.cctv?.enabled || state.transit?.enabled) return;
     capturing = true; wanted = false; lastSave = Date.now();
     try {
       const canvas = document.createElement('canvas'), source = viewer.canvas;

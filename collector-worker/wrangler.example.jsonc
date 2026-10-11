@@ -1,0 +1,13 @@
+{
+  "name": "earth-observer-collector",
+  "main": "index.js",
+  "compatibility_date": "2026-10-11",
+  "workers_dev": true,
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": { "EARTH_TARGET_ORIGIN": "https://giovannicallebaut.com" },
+  "kv_namespaces": [
+    // After creating the optional namespace, uncomment and replace its real ID:
+    // { "binding": "COLLECTOR_STATE", "id": "YOUR_KV_NAMESPACE_ID" }
+  ],
+  "observability": { "enabled": true }
+}

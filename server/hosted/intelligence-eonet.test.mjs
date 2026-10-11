@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { intelligenceProxy } from './intelligence.js';
-import { createEonetSnapshot, EONET_SNAPSHOT_URL } from './eonet-snapshot.js';
+import { createEonetSnapshot, EONET_QUERY_URL, EONET_SNAPSHOT_URL } from './eonet-snapshot.js';
 
 const NOW = Date.parse('2026-10-11T10:00:00Z'), ISO = new Date(NOW).toISOString();
 function endpoint(plugin) {
@@ -19,18 +19,22 @@ async function fixture(count = 2) {
 }
 const news = () => ({ records: [], indexRecords: [], indexSource: { id: 'gdelt', generation: 'empty-fixture', expiresAt: new Date(NOW + 86400000).toISOString() },
   state: { id: 'gdelt', name: 'Synthetic scheduled news', status: 'ready', retrievedAt: ISO } });
+const rawEvents = (snapshot) => ({ events: snapshot.records.map((r) => ({ id: r.eventId, title: r.title,
+  categories: r.eonetCategories, sources: r.referencedSources, closed: r.closedAt,
+  geometry: r.sourceGeometryAt ? [{ date: r.sourceGeometryAt }] : [] })) });
 
-test('the public default shares one EONET release read across visitors and searches its complete metadata locally', async () => {
+test('the public default shares one direct EONET acquisition across visitors and searches its complete metadata locally', async () => {
   const snapshot = await fixture(60), gate = Promise.withResolvers(), calls = [];
   const read = endpoint(intelligenceProxy({ now: () => NOW, snapshotReader: async () => news(), fetchImpl: async (url) => {
     calls.push(url); await gate.promise;
-    if (url === EONET_SNAPSHOT_URL) return Response.json(snapshot);
+    if (url === EONET_QUERY_URL) return Response.json(rawEvents(snapshot));
+    if (url === EONET_SNAPSHOT_URL) assert.fail('A healthy live source does not need the scheduled fallback');
     if (url.startsWith('https://earthquake.usgs.gov/') || url.startsWith('https://www.gdacs.org/')) return Response.json({ features: [] });
     throw new Error('Unexpected acquisition');
   } }));
   assert.equal(calls.length, 0); const visitors = Array.from({ length: 12 }, () => read('/?category=disasters&q=volcanoes'));
   gate.resolve(); const results = await Promise.all(visitors);
-  assert.equal(calls.filter((url) => url === EONET_SNAPSHOT_URL).length, 1); assert.equal(calls.length, 3);
+  assert.equal(calls.filter((url) => url === EONET_QUERY_URL).length, 1); assert.equal(calls.length, 3);
   for (const { status, payload } of results) {
     assert.equal(status, 200); assert.equal(payload.indexRecords.length, 60); assert.equal(payload.reports.length, 60);
     assert.equal(payload.indexCoverage.maxRecords, 500);
@@ -46,7 +50,7 @@ test('the public default shares one EONET release read across visitors and searc
 test('country and non-disaster filters exclude EONET without withdrawing its acquired global generation', async () => {
   const snapshot = await fixture(), calls = [];
   const read = endpoint(intelligenceProxy({ now: () => NOW, snapshotReader: async () => news(), fetchImpl: async (url) => {
-    calls.push(url); return Response.json(url === EONET_SNAPSHOT_URL ? snapshot : { features: [] });
+    calls.push(url); return Response.json(url === EONET_QUERY_URL ? rawEvents(snapshot) : url === EONET_SNAPSHOT_URL ? snapshot : { features: [] });
   } }));
   const first = await read('/?category=all'); const source = first.payload.indexCoverage.sources.find((item) => item.id === 'eonet');
   assert.equal(first.payload.reports.length, 2);
@@ -55,13 +59,13 @@ test('country and non-disaster filters exclude EONET without withdrawing its acq
   assert.deepEqual(country.payload.indexCoverage.sources.find((item) => item.id === 'eonet'), source);
   assert.equal(country.payload.indexRecords.filter((item) => item.sourceId === 'eonet').length, 2);
   const economy = await read('/?category=economy'); assert.equal(economy.payload.sources.find((item) => item.id === 'eonet').status, 'not-applicable');
-  await read('/?category=all'); assert.equal(calls.filter((url) => url === EONET_SNAPSHOT_URL).length, 1);
+  await read('/?category=all'); assert.equal(calls.filter((url) => url === EONET_QUERY_URL).length, 1);
 });
 
 test('source retrieval age expires EONET independently of historical geometry and API response time', async () => {
   let clock = NOW, failing = false; const snapshot = await fixture();
   const read = endpoint(intelligenceProxy({ now: () => clock, snapshotReader: async () => news(), fetchImpl: async (url) => {
-    if (url === EONET_SNAPSHOT_URL) return failing ? new Response('', { status: 503 }) : Response.json(snapshot);
+    if (url === EONET_QUERY_URL || url === EONET_SNAPSHOT_URL) return failing ? new Response('', { status: 503 }) : Response.json(url === EONET_QUERY_URL ? rawEvents(snapshot) : snapshot);
     return Response.json({ features: [] });
   } }));
   const first = await read(); assert.equal(first.payload.reports.length, 2);

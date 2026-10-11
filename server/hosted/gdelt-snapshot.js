@@ -7,7 +7,9 @@ import { createDiscoveryIndex } from '../../src/core/discovery-index.js';
 export const GDELT_SNAPSHOT_URL = 'https://github.com/SmurfTurfPawpaw/earth-observer/releases/download/intelligence-data/gdelt.snapshot.json';
 export const GDELT_SNAPSHOT_CATEGORIES = Object.freeze(['geopolitics', 'economy', 'disasters']);
 export const GDELT_SNAPSHOT_MAX_BYTES = 1024 * 1024;
-const REFRESH_MS = 1800000, MAX_AGE_MS = 86400000, FUTURE_MS = 300000;
+export const GDELT_RELEASE_CHECK_INTERVAL_MS = 60000;
+const RETRIEVAL_WINDOW_MS = 1800000, STALE_AGE_MS = 1800000, MAX_AGE_MS = 86400000, FUTURE_MS = 300000;
+const safeEtag = (value) => typeof value === 'string' && value.length <= 256 && /^(?:W\/)?"[\x21\x23-\x7e]{1,240}"$/.test(value) ? value : null;
 const SOURCE = Object.freeze({ id: 'gdelt', name: 'The GDELT Project', url: 'https://www.gdeltproject.org/' });
 const REPORT_KEYS = new Set(['id', 'title', 'url', 'sourceId', 'source', 'aggregator', 'aggregatorUrl', 'category',
   'publishedAt', 'observedAt', 'indexedAt', 'retrievedAt', 'timeMeaning', 'publisherCountry', 'language', 'verification', 'relatedReports']);
@@ -36,7 +38,7 @@ export function validateGdeltSnapshot(payload, nowMs = Date.now()) {
     const entry = payload.categories[category];
     if (!object(entry) || entry.queryUrl !== gdeltQueryUrl({ category }) || !Array.isArray(entry.reports) || entry.reports.length > 80) throw new Error('Invalid GDELT snapshot category');
     const retrieved = stamp(entry.retrievedAt);
-    if (retrieved > generated || generated - retrieved > REFRESH_MS || retrieved > nowMs + FUTURE_MS) throw new Error('Invalid GDELT snapshot retrieval window');
+    if (retrieved > generated || generated - retrieved > RETRIEVAL_WINDOW_MS || retrieved > nowMs + FUTURE_MS) throw new Error('Invalid GDELT snapshot retrieval window');
     const seen = new Set();
     const reports = entry.reports.map((report) => {
       if (!object(report) || Object.keys(report).some((key) => !REPORT_KEYS.has(key)) ||
@@ -73,24 +75,52 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
         new Promise((resolve) => { timer = setTimeout(() => resolve(null), storageDeadlineMs); })]);
     } finally { clearTimeout(timer); }
   };
+  const readSaved = () => optionalStorage(async () => {
+    const saved = await store?.get('gdelt:snapshot');
+    if (!saved || !Number.isFinite(saved.acquiredAt) || saved.acquiredAt > now() + FUTURE_MS) return;
+    const checkedAt = saved.checkedAt ?? saved.acquiredAt;
+    if (!Number.isFinite(checkedAt) || checkedAt < saved.acquiredAt || checkedAt > now() + FUTURE_MS) return;
+    return { acquiredAt: saved.acquiredAt, checkedAt, etag: safeEtag(saved.etag), snapshot: validateGdeltSnapshot(saved.snapshot, now()) };
+  });
   const restore = () => restoreWork ||= (async () => {
-    const restored = await optionalStorage(async () => {
-      const saved = await store?.get('gdelt:snapshot');
-      if (!saved || !Number.isFinite(saved.acquiredAt) || saved.acquiredAt > now() + FUTURE_MS) return;
-      return { acquiredAt: saved.acquiredAt, snapshot: validateGdeltSnapshot(saved.snapshot, now()) };
-    });
+    const restored = await readSaved();
     // Timed-out persistence has no side effects if it eventually settles.
     if (restored && !cached) cached = restored;
   })();
   async function acquire() {
     try {
+      const claimed = await optionalStorage(() => store?.claim?.('gdelt:release-check', now(), GDELT_RELEASE_CHECK_INTERVAL_MS));
+      if (claimed === false) {
+        // Another instance owns the bounded check. Reuse its completed publication when available.
+        const saved = await readSaved();
+        const previousGenerated = cached ? Date.parse(cached.snapshot.generatedAt) : -Infinity;
+        if (saved && (Date.parse(saved.snapshot.generatedAt) > previousGenerated ||
+            Date.parse(saved.snapshot.generatedAt) === previousGenerated && saved.checkedAt >= (cached.checkedAt ?? cached.acquiredAt))) {
+          cached = saved; failures = 0; lastFailure = null;
+        }
+        // Retry a shared-state read soon if the owner has not finished, without another network acquisition.
+        retryAt = cached && now() - (cached.checkedAt ?? cached.acquiredAt) < GDELT_RELEASE_CHECK_INTERVAL_MS ? 0 : now() + 1000;
+        return;
+      }
       const signal = AbortSignal.timeout(timeoutMs);
-      const response = await fetchImpl(GDELT_SNAPSHOT_URL, { signal, redirect: 'follow', headers: { Accept: 'application/json' } });
-      if (!response.ok) { await response.body?.cancel(); throw new Error('Scheduled release unavailable'); }
-      const payload = await readResponseJsonCapped(response, GDELT_SNAPSHOT_MAX_BYTES, signal);
-      signal.throwIfAborted();
-      const snapshot = validateGdeltSnapshot(payload, now());
-      cached = { acquiredAt: now(), snapshot }; failures = 0; retryAt = 0; lastFailure = null;
+      const etag = safeEtag(cached?.etag);
+      const response = await fetchImpl(GDELT_SNAPSHOT_URL, { signal, redirect: 'follow', headers: {
+        Accept: 'application/json', 'Cache-Control': 'no-cache', ...(etag ? { 'If-None-Match': etag } : {}),
+      } });
+      if (response.status === 304) {
+        await response.body?.cancel(); signal.throwIfAborted();
+        if (!cached || !etag) throw new Error('Unexpected unchanged release response');
+        validateGdeltSnapshot(cached.snapshot, now());
+        // Revalidation changes the check clock, never generation or retrieval provenance.
+        cached = { ...cached, checkedAt: now() };
+      } else {
+        if (!response.ok) { await response.body?.cancel(); throw new Error('Scheduled release unavailable'); }
+        const payload = await readResponseJsonCapped(response, GDELT_SNAPSHOT_MAX_BYTES, signal);
+        signal.throwIfAborted();
+        const snapshot = validateGdeltSnapshot(payload, now()), acquiredAt = now();
+        cached = { acquiredAt, checkedAt: acquiredAt, etag: safeEtag(response.headers.get('etag')), snapshot };
+      }
+      failures = 0; retryAt = 0; lastFailure = null;
       const saved = cached;
       await optionalStorage(() => store?.put('gdelt:snapshot', saved));
     } catch (error) {
@@ -101,7 +131,7 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
   }
   return async (filters) => {
     await restore();
-    if ((!cached || now() - cached.acquiredAt >= REFRESH_MS) && retryAt <= now()) {
+    if ((!cached || now() - (cached.checkedAt ?? cached.acquiredAt) >= GDELT_RELEASE_CHECK_INTERVAL_MS) && retryAt <= now()) {
       pending ||= acquire().finally(() => { pending = null; });
     }
     if (pending) await pending;
@@ -112,7 +142,7 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
     const expired = ageMs !== null && ageMs > MAX_AGE_MS || gkg && !batchCoverage.processedBatches.length;
     const available = Boolean(cached && !expired);
     const sourceAgeMs = gkg && batchCoverage.processedBatches.length ? Math.max(0, now() - Date.parse(batchCoverage.windowEnd)) : ageMs;
-    const stale = available && (ageMs > REFRESH_MS || sourceAgeMs > REFRESH_MS || Boolean(lastFailure));
+    const stale = available && (ageMs > STALE_AGE_MS || sourceAgeMs > STALE_AGE_MS || Boolean(lastFailure));
     const local = Boolean(filters.country || filters.q);
     const coverage = gkg ? `Scheduled GDELT topic-mention sample: at most 80 links per topic from ${batchCoverage.processedBatches.length} processed 15-minute batches in a rolling 24-hour window; ${batchCoverage.sampleGaps.length} intervals missing between the sampled endpoints. Country filters match countries mentioned in the source article, not publisher country or incident location. Topic searches match reviewed theme labels and publisher domains, not article text or headlines. This is a bounded sample; no match does not establish absence.` :
       'Scheduled GDELT discovery sample: at most 80 title/link records per topic from a 24-hour query. Country and topic filters match only titles in this sample; an empty result does not establish absence or complete coverage. Publisher country is not an event location.';
@@ -126,7 +156,8 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
       mode: gkg ? 'scheduled-gkg' : 'scheduled-snapshot', kind: gkg ? 'topic-mention' : 'article-link', generatedAt: cached?.snapshot.generatedAt || null,
       retrievedAt: cached ? gkg ? cached.snapshot.coverage.processedBatches.at(-1).retrievedAt : new Date(Math.min(...categories.map((key) => Date.parse(cached.snapshot.categories[key].retrievedAt)))).toISOString() : null,
       snapshotRetrievedAt: cached ? new Date(cached.acquiredAt).toISOString() : null,
-      ageMs, sourceAgeMs, refreshIntervalMs: REFRESH_MS, retryAt: retryAt || null, coverage, filtersAppliedLocally: local,
+      snapshotCheckedAt: cached ? new Date(cached.checkedAt ?? cached.acquiredAt).toISOString() : null,
+      ageMs, sourceAgeMs, refreshIntervalMs: GDELT_RELEASE_CHECK_INTERVAL_MS, sourceCadenceMs: 900000, retryAt: retryAt || null, coverage, filtersAppliedLocally: local,
       ...(batchCoverage ? { processedBatches: batchCoverage.processedBatches, sampleGaps: batchCoverage.sampleGaps, windowStart: batchCoverage.windowStart, windowEnd: batchCoverage.windowEnd, countryMeaning: 'country-mentioned' } : {}),
       reason: expired ? 'Scheduled GDELT snapshot exceeded the 24-hour age limit' : !available ? lastFailure || 'Scheduled GDELT snapshot unavailable' :
         [stale ? lastFailure || 'Older scheduled discovery sample' : gkg ? 'Scheduled machine-extracted topic sample' : 'Scheduled discovery sample', local ? gkg ? 'Local filters apply only to reviewed topics, domains and country mentions' : 'Local filters apply only to this bounded title sample' : 'At most 80 records per topic'].join('; ') } };

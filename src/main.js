@@ -12,6 +12,7 @@ import { loadBasemapMode, saveBasemapMode } from './core/basemap-state.js';
 import { streetMapCoverageNotice } from './core/basemap-coverage.js';
 import { recoverInitialCameraView } from './core/globe-framing.js';
 import { installContextRecovery } from './core/context-recovery.js';
+import { createTimeline } from './core/timeline.js';
 
 let viewer;
 let manager;
@@ -19,7 +20,7 @@ let shell;
 let destroyed = false;
 let describeBasemap = () => {};
 let contextRecovery;
-let area = null, intelligence, notebook, panelLoading = {}, locationRevision = 0, warmTimer;
+let area = null, intelligence, notebook, timeline, panelLoading = {}, locationRevision = 0, warmTimer;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -98,6 +99,7 @@ function warmTools() {
 
 async function handlePanel({ panel, open }) {
   if (!['news', 'notebook'].includes(panel)) return;
+  if (panel === 'news' && open && manager?.isTimelinePaused()) timeline?.live();
   if (!open) { (panel === 'news' ? intelligence : notebook)?.close(); return; }
   if (!panelLoading[panel]) panelLoading[panel] = (async () => {
     if (panel === 'news') {
@@ -169,13 +171,23 @@ export async function start() {
     }));
     disposers.push(manager.subscribe(rememberWorkspace));
     disposers.push(shell.subscribePanels(handlePanel));
-    disposers.push(installScenePreview(viewer, { store, cameraView, getState: manager.getState }));
+    disposers.push(installScenePreview(viewer, { store, cameraView, getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
+    timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch,
+      async onTimeChange(state) {
+        if (state.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
+        await manager.setTimelineMode(state.mode);
+        window.dispatchEvent(new CustomEvent('earth-observer:timechange', { detail: state }));
+      },
+      onNavigate(report) { setCameraView(viewer, { ...cameraView(viewer), lat: report.lat, lon: report.lon, alt: 200000, pitch: -90 }, true); },
+    });
+    disposers.push(() => timeline.destroy());
     const locateButton = document.getElementById('locate'); locateButton.disabled = false; locateButton.addEventListener('click', locate); disposers.push(() => locateButton.removeEventListener('click', locate));
     const radius = document.getElementById('local-radius');
     const radiusChange = () => { if (area) { setArea({ ...area, radiusKm: Number(radius.value) }); setCameraView(viewer, localCameraView(area), true); rememberWorkspace(); } };
     radius.addEventListener('change', radiusChange); disposers.push(() => radius.removeEventListener('change', radiusChange));
     const resetButton = document.getElementById('reset-session'); resetButton.disabled = false;
     const reset = async () => {
+      timeline.live();
       ++locationRevision; locateButton.disabled = false;
       const storage = safeStorage(); try { storage?.removeItem(SESSION_KEY); storage?.removeItem(STORAGE_KEY); } catch {}
       area = null; manager.setLocalArea(null); await manager.restore(['earthquakes']);

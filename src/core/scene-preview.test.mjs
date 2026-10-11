@@ -193,3 +193,10 @@ test('registered notices still prevent flattening complex layers into saved imag
     dispose();
   }
 });
+
+test('recorded-time rendering cannot replace the startup Live scene preview', async (t) => {
+  const f = await fixture(t), dispose = f.install({ timelinePaused: true });
+  f.viewer.scene.globe.tilesLoaded = true; f.viewer.scene.postRender.raise();
+  assert.equal(f.drawings(), 0); assert.equal(f.writes.length, 0);
+  dispose();
+});

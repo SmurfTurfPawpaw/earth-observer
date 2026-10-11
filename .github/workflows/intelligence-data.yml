@@ -2,7 +2,7 @@ name: Refresh discovery metadata
 
 on:
   schedule:
-    - cron: '17,47 * * * *'
+    - cron: '2,17,32,47 * * * *'
   workflow_dispatch:
 
 concurrency:

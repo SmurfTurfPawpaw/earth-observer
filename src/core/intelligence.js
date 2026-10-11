@@ -6,6 +6,8 @@ import { groupReports } from './intelligence-grouping.js';
 import { createPrimaryContextPanel } from './primary-context.js';
 
 const CATEGORIES = [['all', 'All topics'], ['disasters', 'Disasters'], ['geopolitics', 'Geopolitics'], ['economy', 'Economics & trade']];
+// Delivery checks are independent of each provider's publication or retrieval cadence.
+export const INTELLIGENCE_REFRESH_MS = 60000;
 
 export function safeIntelligenceUrl(value) {
   try {
@@ -31,6 +33,7 @@ export function intelligenceReportDetails(report) {
 
 /** An opened, visible panel owns its requests; no constructor or closed-panel fetch. */
 export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args), documentRef = globalThis.document,
+  windowRef = documentRef?.defaultView || globalThis.window,
   onChange = () => {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
   let opened = false, destroyed = false, request, pending, timer, generation = 0, activeUrl;
   let payload = null, sourcePayload = null, error = null, acquisitionError = null, loading = false, refreshedAt = null, indexed = false;
@@ -42,7 +45,7 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
   function arm() {
     stopTimer();
     if (!opened || documentRef?.hidden || destroyed) return;
-    const interval = Math.max(60000, Math.min(1800000, Number(payload?.nextRefreshMs) || 300000));
+    const interval = INTELLIGENCE_REFRESH_MS;
     const delay = error || refreshedAt === null || payload?.browserCache ? interval : Math.max(1000, interval - (now() - refreshedAt));
     timer = setTimeoutImpl(() => { timer = undefined; void refresh(true); }, delay);
   }
@@ -81,7 +84,8 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
   function refresh(force = false) {
     if (destroyed || !opened || documentRef?.hidden) return Promise.resolve(false);
     if (pending) return pending;
-    if (!force && sourcePayload && refreshedAt !== null && now() - refreshedAt < (Number(sourcePayload.nextRefreshMs) || 300000)) { derive(); emit(); arm(); return Promise.resolve(true); }
+    const revalidate = force || Boolean(acquisitionError || sourcePayload?.browserCache);
+    if (!revalidate && sourcePayload && refreshedAt !== null && now() - refreshedAt < INTELLIGENCE_REFRESH_MS) { derive(); emit(); arm(); return Promise.resolve(true); }
     const controller = new AbortController(), owner = ++generation;
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]);
     request = controller; loading = true; error = null; stopTimer(); derive(); emit();
@@ -91,7 +95,7 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
         if (filters.country) query.set('country', filters.country);
         // Free-text stays in this browser. Shared acquisition is bounded by category/country.
         activeUrl = new URL(`/api/intelligence?${query}`, globalThis.location?.origin || 'http://localhost').href;
-        const response = await fetchImpl(`/api/intelligence?${query}`, { signal, headers: { Accept: 'application/json' } });
+        const response = await fetchImpl(`/api/intelligence?${query}`, { signal, headers: { Accept: 'application/json' }, ...(revalidate ? { cache: 'no-cache' } : {}) });
         if (!response.ok) {
           const detail = response.status === 400 ? await response.json().catch(() => null) : null;
           throw new Error(detail?.error || `Intelligence feed HTTP ${response.status}`);
@@ -119,7 +123,9 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
     if (documentRef?.hidden) { cancel(); emit(); }
     else if (opened) void refresh();
   }
+  const reconnect = () => { if (opened && !destroyed && !documentRef?.hidden) void refresh(true); };
   documentRef?.addEventListener?.('visibilitychange', visibility);
+  windowRef?.addEventListener?.('online', reconnect);
   const unsubscribe = fetchImpl?.subscribe?.((url) => {
     if (!opened || destroyed || documentRef?.hidden || url !== activeUrl) return;
     const owner = generation;
@@ -146,7 +152,7 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
       }
       cancel(); index.clear(); indexed = false; sourcePayload = null; payload = null; acquisitionError = null; refreshedAt = null; emit(); return refresh();
     },
-    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); index.clear(); sourcePayload = null; unsubscribe?.(); documentRef?.removeEventListener?.('visibilitychange', visibility); },
+    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); index.clear(); sourcePayload = null; unsubscribe?.(); documentRef?.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); },
   };
 }
 
@@ -173,6 +179,7 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
   const note = node('p', 'intelligence-meta', 'Search stays in this browser and covers collected metadata. GDELT links are machine-extracted topic mentions; country mentions do not establish incident locations.');
   const status = node('p', 'intelligence-status'); status.setAttribute('role', 'status');
   const coverage = node('details', 'intelligence-coverage'); coverage.append(node('summary', '', 'Sources, coverage and freshness'));
+  coverage.append(node('p', 'intelligence-meta', 'Checks for new metadata every minute while this panel is open and visible. Source update times and availability vary.'));
   const sources = node('div', 'intelligence-sources'); coverage.append(sources);
   const demandContainer = node('details', 'intelligence-demand-options'); demandContainer.append(node('summary', '', 'Help improve coverage · optional'));
   const actions = node('div', 'intelligence-actions');
@@ -187,7 +194,7 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
   const demand = createDemandTracker({ container: demandContainer, fetchImpl, documentRef });
   const research = createPrimaryContextPanel(researchContainer, { fetchImpl, store, documentRef,
     url: `${import.meta.env?.BASE_URL || '/'}research/primary-context.json` });
-  let renderedPayload;
+  let renderedPayload, renderedReports;
   function reportContent(report, related = false) {
     const detail = intelligenceReportDetails(report);
     const block = node(related ? 'li' : 'article', related ? '' : 'intelligence-card');
@@ -224,10 +231,10 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
   function render(state) {
     refresh.disabled = state.loading;
     container.setAttribute('aria-busy', String(state.loading));
-    const message = state.loading ? 'Loading source metadata…' : state.error ? `${state.error}${state.payload ? ' · Previous results remain displayed.' : ''}` : state.payload ?
+    const message = state.loading ? state.payload ? 'Checking for updates · previous results remain available…' : 'Loading source metadata…' : state.error ? `${state.error}${state.payload ? ' · Previous results remain displayed.' : ''}` : state.payload ?
       `${state.payload.reports.length} groups${Number.isFinite(state.payload.matchCount) ? ` · ${state.payload.matchCount} matching records` : ''}${Number.isFinite(state.payload.indexedRecords) ? ` · ${state.payload.indexedRecords} indexed records` : ''}${state.payload.browserCache ? ' · saved browser copy' : ''}` : 'Open this panel to load public intelligence sources.';
     status.textContent = message; onStatus(message);
-    if (!state.payload) { renderedPayload = null; list.replaceChildren(); sources.replaceChildren(); return; }
+    if (!state.payload) { renderedPayload = null; renderedReports = undefined; list.replaceChildren(); sources.replaceChildren(); return; }
     if (renderedPayload === state.payload) return;
     renderedPayload = state.payload;
     const discovery = state.payload.sources.find((source) => source.id === 'gdelt');
@@ -245,6 +252,11 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
     });
     sources.replaceChildren(node('p', 'intelligence-meta', state.payload.coverage || 'Bounded source sample'),
       node('p', 'intelligence-meta', state.payload.searchCoverage || DISCOVERY_INDEX_NOTE), ...sourceRows);
+    // Revalidation must not recreate unchanged cards and collapse an investigation
+    // the visitor has open. Freshness/source notices can update independently.
+    const reportSignature = JSON.stringify([state.payload.reports.slice(0, 80), !state.payload.reports.length && state.payload.sources.some((source) => source.status === 'unavailable')]);
+    if (renderedReports === reportSignature) return;
+    renderedReports = reportSignature;
     if (!state.payload.reports.length) {
       list.replaceChildren(node('p', 'intelligence-meta', state.payload.sources.some((source) => source.status === 'unavailable') ? 'No matching reports are available. Some providers are unavailable; their official websites remain linked above.' : 'No reports match the current filters in this bounded sample.'));
     } else list.replaceChildren(...state.payload.reports.slice(0, 80).map((report) => reportContent(report)));

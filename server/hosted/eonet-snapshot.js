@@ -5,6 +5,7 @@ export const EONET_SNAPSHOT_URL = 'https://github.com/SmurfTurfPawpaw/earth-obse
 export const EONET_SNAPSHOT_MAX_BYTES = 100 * 1024;
 export const EONET_UPSTREAM_MAX_BYTES = 2 * 1024 * 1024;
 export const EONET_REFRESH_MS = 1800000, EONET_MAX_AGE_MS = 86400000;
+export const EONET_LIVE_REFRESH_MS = 60000;
 export const EONET_SOURCE = Object.freeze({ id: 'eonet', name: 'NASA EONET', url: 'https://eonet.gsfc.nasa.gov/' });
 const CATEGORIES = Object.freeze({ wildfires: 'Wildfires', severeStorms: 'Severe Storms', volcanoes: 'Volcanoes' });
 const FUTURE_MS = 300000;
@@ -115,9 +116,9 @@ export async function validateEonetSnapshot(payload, nowMs = Date.now()) {
   return { ...payload, source: { ...EONET_SOURCE }, records, coverage: { ...payload.coverage } };
 }
 
-/** Shared fixed release acquisition. Visitor filters never reach EONET or linked publishers. */
+/** Shared direct metadata acquisition; the owned release is an outage fallback only. */
 export function createEonetSnapshotReader({ fetchImpl = fetch, now = Date.now, store, timeoutMs = 12000, storageTimeoutMs = 1000 } = {}) {
-  let cached, pending, restoreWork, retryAt = 0, failures = 0, lastFailure = null;
+  let cached, pending, restoreWork, retryAt = 0, failures = 0, lastFailure = null, lastAttemptAt = null, fallbackRetryAt = 0, busy = false;
   const storageDeadlineMs = Number.isFinite(storageTimeoutMs) ? Math.max(1, Math.min(5000, storageTimeoutMs)) : 1000;
   const optionalStorage = async (task) => {
     let timer;
@@ -126,60 +127,137 @@ export function createEonetSnapshotReader({ fetchImpl = fetch, now = Date.now, s
         new Promise((resolve) => { timer = setTimeout(() => resolve(null), storageDeadlineMs); })]);
     } finally { clearTimeout(timer); }
   };
-  const restore = () => restoreWork ||= (async () => {
+  const restoreSnapshot = async () => {
     const restored = await optionalStorage(async () => {
       const saved = await store?.get('eonet:snapshot');
       if (!saved || !Number.isFinite(saved.acquiredAt) || saved.acquiredAt > now() + FUTURE_MS) return;
-      return { acquiredAt: saved.acquiredAt, snapshot: await validateEonetSnapshot(saved.snapshot, now()) };
+      const snapshot = await validateEonetSnapshot(saved.snapshot, now());
+      if (saved.acquiredAt < Date.parse(snapshot.retrievedAt)) return;
+      const mode = saved.mode === 'live-eonet' ? 'live-eonet' : 'scheduled-eonet-fallback';
+      // Legacy scheduled entries remain fallback copies, never fresh live checks.
+      const policy = { retryAt: 0, failures: 0, lastFailure: null, lastAttemptAt: mode === 'live-eonet' ? saved.acquiredAt : null, fallbackRetryAt: 0 };
+      if (Number.isFinite(saved.retryAt) && saved.retryAt >= 0 && saved.retryAt <= now() + EONET_MAX_AGE_MS &&
+          Number.isInteger(saved.failures) && saved.failures >= 0 && saved.failures <= 6 &&
+          (saved.lastAttemptAt === null || Number.isFinite(saved.lastAttemptAt) && saved.lastAttemptAt <= now() + FUTURE_MS)) {
+        policy.retryAt = saved.retryAt; policy.failures = saved.failures; policy.lastAttemptAt = saved.lastAttemptAt;
+        policy.lastFailure = saved.failures ? 'Previous live EONET acquisition unavailable; retry is bounded' : null;
+      }
+      if (Number.isFinite(saved.fallbackRetryAt) && saved.fallbackRetryAt >= 0 && saved.fallbackRetryAt <= now() + EONET_MAX_AGE_MS) policy.fallbackRetryAt = saved.fallbackRetryAt;
+      return { cached: { acquiredAt: saved.acquiredAt, snapshot, mode }, policy };
     });
     // Timed-out work has no cache side effects, even when the store settles later.
-    if (restored && !cached) cached = restored;
-  })();
-  async function acquire() {
+    if (restored && (!cached || Date.parse(restored.cached.snapshot.retrievedAt) > Date.parse(cached.snapshot.retrievedAt))) {
+      cached = restored.cached;
+      if (lastAttemptAt === null || restored.policy.lastAttemptAt >= lastAttemptAt)
+        ({ retryAt, failures, lastFailure, lastAttemptAt, fallbackRetryAt } = restored.policy);
+      busy = false;
+    }
+  };
+  const restorePolicy = async () => {
+    const saved = await optionalStorage(() => store?.get('eonet:live-policy'));
+    if (saved && Number.isFinite(saved.lastAttemptAt) && saved.lastAttemptAt >= 0 && saved.lastAttemptAt <= now() + FUTURE_MS &&
+        Number.isFinite(saved.retryAt) && saved.retryAt >= 0 && saved.retryAt <= now() + EONET_MAX_AGE_MS &&
+        Number.isInteger(saved.failures) && saved.failures >= 0 && saved.failures <= 6 && (lastAttemptAt === null || saved.lastAttemptAt >= lastAttemptAt)) {
+      ({ retryAt, failures, lastAttemptAt } = saved);
+      lastFailure = failures ? 'Previous live EONET acquisition unavailable; retry is bounded' : null;
+    }
+  };
+  const restore = () => restoreWork ||= (async () => { await restoreSnapshot(); await restorePolicy(); })();
+  const retryAfter = (response) => {
+    const raw = response.headers.get('retry-after');
+    const delay = /^\d+$/.test(raw || '') ? Number(raw) * 1000 : Date.parse(raw || '') - now();
+    return Number.isFinite(delay) ? Math.max(0, Math.min(EONET_MAX_AGE_MS, delay)) : 0;
+  };
+  const usable = () => cached && now() - Date.parse(cached.snapshot.retrievedAt) < EONET_MAX_AGE_MS;
+  async function fallback() {
+    if (usable() || fallbackRetryAt > now()) return;
+    fallbackRetryAt = now() + EONET_REFRESH_MS;
+    const signal = AbortSignal.timeout(timeoutMs);
     try {
-      const signal = AbortSignal.timeout(timeoutMs);
-      const response = await fetchImpl(EONET_SNAPSHOT_URL, { signal, redirect: 'follow', headers: { Accept: 'application/json' } });
+      const response = await fetchImpl(EONET_SNAPSHOT_URL, { signal, redirect: 'follow', credentials: 'omit', headers: { Accept: 'application/json' } });
       if (!response.ok) {
-        const retry = response.headers.get('retry-after');
-        const retryMs = /^\d+$/.test(retry || '') ? Number(retry) * 1000 : Date.parse(retry || '') - now();
-        await response.body?.cancel();
-        throw Object.assign(new Error('Scheduled EONET release unavailable'), { httpStatus: response.status,
-          retryAfterMs: Number.isFinite(retryMs) ? Math.max(0, Math.min(EONET_MAX_AGE_MS, retryMs)) : 0 });
+        fallbackRetryAt = now() + Math.max(EONET_REFRESH_MS, retryAfter(response));
+        await response.body?.cancel(); return;
       }
       const payload = await readResponseJsonCapped(response, EONET_SNAPSHOT_MAX_BYTES, signal);
       signal.throwIfAborted();
       const snapshot = await validateEonetSnapshot(payload, now()); signal.throwIfAborted();
-      cached = { acquiredAt: now(), snapshot }; failures = 0; retryAt = 0; lastFailure = null;
-      const saved = cached;
-      await optionalStorage(() => store?.put('eonet:snapshot', saved));
+      if (!cached || Date.parse(snapshot.retrievedAt) >= Date.parse(cached.snapshot.retrievedAt))
+        cached = { acquiredAt: now(), snapshot, mode: 'scheduled-eonet-fallback' };
+    } catch { /* Outage fallback never clears live backoff or changes original source dates. */ }
+  }
+  async function acquire() {
+    await restorePolicy();
+    if (retryAt > now() || lastAttemptAt !== null && lastAttemptAt + EONET_LIVE_REFRESH_MS > now()) return;
+    if (store?.claim) {
+      const claimed = await optionalStorage(() => store.claim('eonet:live', now(), EONET_LIVE_REFRESH_MS));
+      if (claimed !== true) {
+        busy = true; retryAt = Math.max(retryAt, now() + EONET_LIVE_REFRESH_MS);
+        await restoreSnapshot(); await restorePolicy();
+        if (busy) retryAt = Math.max(retryAt, now() + EONET_LIVE_REFRESH_MS);
+        return;
+      }
+    }
+    busy = false;
+    lastAttemptAt = now();
+    try {
+      const signal = AbortSignal.timeout(timeoutMs);
+      const response = await fetchImpl(EONET_QUERY_URL, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store', headers: {
+        Accept: 'application/json', 'User-Agent': 'earth-observer-eonet/1.0 (+https://github.com/SmurfTurfPawpaw/earth-observer)',
+      } });
+      if (!response.ok) {
+        const retryMs = retryAfter(response);
+        await response.body?.cancel();
+        throw Object.assign(new Error('Live EONET metadata unavailable'), { httpStatus: response.status, retryAfterMs: retryMs });
+      }
+      // The fixed endpoint's observed RSS header quirk still requires valid JSON.
+      const mediaType = (response.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
+      if (response.redirected || (response.url && response.url !== EONET_QUERY_URL) || !['application/json', 'application/rss+xml'].includes(mediaType)) {
+        await response.body?.cancel(); throw new Error('Invalid live EONET metadata response');
+      }
+      const payload = await readResponseJsonCapped(response, EONET_UPSTREAM_MAX_BYTES, signal);
+      signal.throwIfAborted();
+      const retrievedAt = new Date(now()).toISOString();
+      const snapshot = await createEonetSnapshot(payload, { retrievedAt, generatedAt: retrievedAt, nowMs: now() }); signal.throwIfAborted();
+      cached = { acquiredAt: now(), snapshot, mode: 'live-eonet' }; failures = 0; retryAt = 0; lastFailure = null;
     } catch (error) {
       failures = Math.min(6, failures + 1);
-      retryAt = now() + Math.max(Math.min(300000 * 2 ** (failures - 1), 3600000), error.retryAfterMs || 0);
-      lastFailure = error.httpStatus === 429 ? 'Scheduled EONET release rate limit (HTTP 429)' : error.name === 'TimeoutError' ? 'Scheduled EONET release timed out' : 'Scheduled EONET release unavailable or invalid';
+      retryAt = now() + Math.max(Math.min(EONET_LIVE_REFRESH_MS * 2 ** (failures - 1), 3600000), error.retryAfterMs || 0);
+      lastFailure = error.httpStatus === 429 ? 'Live EONET rate limit (HTTP 429)' : error.name === 'TimeoutError' ? 'Live EONET acquisition timed out' : 'Live EONET metadata unavailable or invalid';
+      await fallback();
     }
+    if (cached) {
+      const saved = { ...cached, retryAt, failures, lastAttemptAt, fallbackRetryAt };
+      await optionalStorage(() => store?.put('eonet:snapshot', saved));
+    }
+    await optionalStorage(() => store?.put('eonet:live-policy', { retryAt, failures, lastAttemptAt }));
   }
   return async (filters = {}) => {
     const applicable = !filters.country && (!filters.category || ['all', 'disasters'].includes(filters.category));
     if (applicable) {
       await restore();
-      if ((!cached || now() - cached.acquiredAt >= EONET_REFRESH_MS) && retryAt <= now()) pending ||= acquire().finally(() => { pending = null; });
+      const nextAttempt = lastAttemptAt === null ? 0 : lastAttemptAt + EONET_LIVE_REFRESH_MS;
+      if (nextAttempt <= now() && retryAt <= now()) pending ||= acquire().finally(() => { pending = null; });
+      else if (busy && !usable()) pending ||= restoreSnapshot().finally(() => { pending = null; });
       if (pending) await pending;
     }
     const snapshot = cached?.snapshot, retrieved = snapshot ? Date.parse(snapshot.retrievedAt) : null;
     const ageMs = retrieved === null ? null : Math.max(0, now() - retrieved);
     const expired = ageMs !== null && ageMs >= EONET_MAX_AGE_MS;
     const available = Boolean(applicable && snapshot && !expired);
-    const stale = available && (ageMs >= EONET_REFRESH_MS || Boolean(lastFailure));
-    const status = !applicable ? 'not-applicable' : available ? stale ? 'stale' : 'ready' : 'unavailable';
-    const coverage = `Scheduled NASA EONET reference: at most 60 selected wildfire, severe-storm and volcano events matching a seven-day query. ${NOTE}`;
+    const stale = available && (cached.mode !== 'live-eonet' || ageMs >= EONET_LIVE_REFRESH_MS || Boolean(lastFailure));
+    const status = !applicable ? 'not-applicable' : available ? stale ? 'stale' : 'ready' : busy ? 'busy' : 'unavailable';
+    const coverage = `Direct NASA EONET metadata is checked on active demand no more often than every 60 seconds, with provider backoff. Scheduled metadata is an outage fallback only. At most 60 selected wildfire, severe-storm and volcano events match a seven-day query. ${NOTE}`;
     const records = available ? snapshot.records : [];
     return { records, indexRecords: records, indexSource: { id: 'eonet', generation: applicable ? snapshot?.generation || 'unavailable' : 'not-applicable', status,
       expiresAt: retrieved === null ? null : new Date(retrieved + EONET_MAX_AGE_MS).toISOString(), coverage },
-      state: { ...EONET_SOURCE, status, stale, mode: 'scheduled-eonet', kind: 'curated-event', generatedAt: snapshot?.generatedAt || null,
+      state: { ...EONET_SOURCE, status, stale, mode: cached?.mode || 'live-eonet', kind: 'curated-event', generatedAt: snapshot?.generatedAt || null,
         retrievedAt: snapshot?.retrievedAt || null, snapshotRetrievedAt: cached ? new Date(cached.acquiredAt).toISOString() : null,
-        ageMs, refreshIntervalMs: EONET_REFRESH_MS, retryAt: retryAt || null, coverage, countriesAvailable: false,
+        ageMs, refreshIntervalMs: EONET_LIVE_REFRESH_MS, retryAt: retryAt || null, lastAttemptAt: lastAttemptAt === null ? null : new Date(lastAttemptAt).toISOString(), coverage, countriesAvailable: false,
         atLimit: available ? snapshot.coverage.atLimit : null, retainedEvents: records.length,
         reason: !applicable ? filters.country ? 'EONET supplies no authoritative country tags; country-filtered discovery excludes this source' : 'EONET natural-event references apply only to disasters' :
-          expired ? 'Scheduled EONET retrieval exceeded the 24-hour age limit' : !available ? lastFailure || 'Scheduled EONET snapshot unavailable' : stale ? lastFailure || 'Older scheduled EONET sample' : 'Bounded curated natural-event reference; linked sources are not independent confirmation' } };
+          expired ? 'EONET retrieval exceeded the 24-hour age limit' : !available ? busy ? 'Shared EONET acquisition is in progress or its storage lease is unavailable; no extra source request made' : lastFailure || 'EONET metadata unavailable' :
+          cached.mode === 'scheduled-eonet-fallback' ? `${lastFailure || 'Live EONET unavailable'}; scheduled fallback retains its original retrieval date` : stale ? lastFailure || 'Older live EONET acquisition' :
+          'Directly acquired curated natural-event reference; source curation is not an exact incident stream or independent confirmation' } };
   };
 }

@@ -6,6 +6,46 @@ import { createCachedFetch } from './cached-fetch.js';
 const url = '/api/flights?lat=4&lon=5';
 const response = (value) => new Response(JSON.stringify({ value }), { headers: { 'content-type': 'application/json' } });
 
+test('explicit live revalidation bypasses a fresh snapshot and persists the newer successful response', async () => {
+  let calls = 0, clock = 10000;
+  const store = createBrowserStore(null), endpoint = '/api/intelligence?category=all';
+  const cached = createCachedFetch({ store, now: () => clock, fetchImpl: async (_url, init) => {
+    calls++; if (calls > 1) assert.equal(init.cache, 'no-cache'); return response(calls);
+  } });
+  assert.equal((await (await cached(endpoint)).json()).value, 1);
+  clock++;
+  assert.equal((await (await cached(endpoint)).json()).value, 1);
+  assert.equal((await (await cached(endpoint, { cache: 'no-cache' })).json()).value, 2);
+  assert.equal((await (await cached(endpoint)).json()).value, 2);
+  assert.equal(calls, 2);
+  cached.destroy();
+});
+
+test('offline live checks preserve the saved copy instead of discarding it or contacting upstream', async () => {
+  let connected = true, calls = 0;
+  const cached = createCachedFetch({ store: createBrowserStore(null), online: () => connected,
+    fetchImpl: async () => { calls++; return response(3); } });
+  await cached('/api/intelligence'); connected = false;
+  const saved = await cached('/api/intelligence', { cache: 'no-cache' });
+  assert.equal(saved.headers.get('x-browser-cache'), 'OFFLINE');
+  assert.equal((await saved.json()).value, 3); assert.equal(calls, 1);
+  cached.destroy();
+});
+
+test('a failed live revalidation leaves dated storage intact and rejects rather than claiming a fresh check', async () => {
+  let calls = 0;
+  const store = createBrowserStore(null);
+  const cached = createCachedFetch({ store, now: () => 10000, fetchImpl: async () => {
+    if (++calls > 1) throw new Error('Transport unavailable'); return response(7);
+  } });
+  await cached('/api/intelligence');
+  await assert.rejects(cached('/api/intelligence', { cache: 'no-cache' }), /Transport unavailable/);
+  const saved = await store.get('response:http://localhost/api/intelligence');
+  assert.equal(saved.at, 10000);
+  assert.equal((await (await cached('/api/intelligence')).json()).value, 7);
+  assert.equal(calls, 2); cached.destroy();
+});
+
 test('one cancelled caller cannot cancel another caller sharing the same feed request', async () => {
   const started = Promise.withResolvers(), upstream = Promise.withResolvers();
   let calls = 0, transport;

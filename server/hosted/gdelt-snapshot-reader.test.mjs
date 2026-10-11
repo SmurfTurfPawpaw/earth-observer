@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGdeltSnapshotReader, validateGdeltSnapshot, GDELT_SNAPSHOT_URL, GDELT_SNAPSHOT_MAX_BYTES } from './gdelt-snapshot.js';
+import { createGdeltSnapshotReader, validateGdeltSnapshot, GDELT_SNAPSHOT_URL, GDELT_SNAPSHOT_MAX_BYTES, GDELT_RELEASE_CHECK_INTERVAL_MS } from './gdelt-snapshot.js';
 import { gdeltQueryUrl } from './gdelt-query.js';
 import { normalizeGdelt } from './intelligence-sources.js';
 import { intelligenceProxy } from './intelligence.js';
@@ -65,6 +65,141 @@ test('all visitor topics share one scheduled acquisition and country filters ins
   assert.match(belgium.state.coverage, /empty result does not establish absence/);
   assert.deepEqual((await read(filters('economy', { q: 'unmatched topic' }))).records, []);
   assert.equal(requests, 1, 'custom filters never fan out to the live GDELT provider');
+});
+
+test('release rechecks after 60 seconds coalesce all filters and acquire a newly published generation', async () => {
+  let clock = CLOCK, requests = 0;
+  const gate = Promise.withResolvers();
+  const read = createGdeltSnapshotReader({ now: () => clock, fetchImpl: async (url, options) => {
+    requests++; assert.equal(url, GDELT_SNAPSHOT_URL); assert.equal(options.headers['Cache-Control'], 'no-cache');
+    if (requests === 1) return Response.json(fixture());
+    await gate.promise; return Response.json(fixture(clock));
+  } });
+  const first = await read(filters());
+  assert.equal(first.state.refreshIntervalMs, 60000); assert.equal(first.state.sourceCadenceMs, 900000);
+  clock += GDELT_RELEASE_CHECK_INTERVAL_MS - 1;
+  await read(filters('economy')); assert.equal(requests, 1);
+  clock++;
+  const visitors = [read(filters()), read(filters('economy')), read(filters('disasters', { country: 'BE', countryName: 'Belgium' }))];
+  await new Promise((resolve) => setImmediate(resolve)); assert.equal(requests, 2);
+  gate.resolve();
+  for (const value of await Promise.all(visitors)) {
+    assert.equal(value.state.generatedAt, new Date(clock).toISOString());
+    assert.equal(value.state.retrievedAt, new Date(clock).toISOString());
+    assert.equal(value.indexSource.generation, new Date(clock).toISOString()); assert.equal(value.state.status, 'ready');
+  }
+  assert.equal(requests, 2);
+});
+
+test('conditional unchanged release checks retain source and download dates while respecting staleness and expiry', async () => {
+  let clock = CLOCK, requests = 0, saved;
+  const read = createGdeltSnapshotReader({ now: () => clock,
+    store: { async get() { return null; }, async put(_key, value) { saved = structuredClone(value); } },
+    fetchImpl: async (_url, options) => {
+      requests++;
+      if (requests === 1) return Response.json(fixture(), { headers: { etag: 'W/"fixed-generation"' } });
+      assert.equal(options.headers['If-None-Match'], 'W/"fixed-generation"');
+      return new Response(null, { status: 304 });
+    } });
+  const first = await read(filters());
+  clock += GDELT_RELEASE_CHECK_INTERVAL_MS;
+  const checked = await read(filters());
+  assert.equal(requests, 2); assert.equal(checked.state.status, 'ready'); assert.equal(checked.state.ageMs, 60000);
+  for (const field of ['generatedAt', 'retrievedAt', 'snapshotRetrievedAt']) assert.equal(checked.state[field], first.state[field]);
+  assert.equal(checked.state.snapshotCheckedAt, new Date(clock).toISOString());
+  assert.equal(saved.acquiredAt, CLOCK); assert.equal(saved.checkedAt, clock);
+  assert.equal(saved.snapshot.generatedAt, first.state.generatedAt);
+  await read(filters('economy')); assert.equal(requests, 2, 'successful checks reset only the 60-second delivery clock');
+  const cold = createGdeltSnapshotReader({ now: () => clock + 1000,
+    store: { async get() { return structuredClone(saved); } }, fetchImpl: async () => { throw new Error('Fresh check restored from storage'); } });
+  const restored = await cold(filters()); assert.equal(restored.state.status, 'ready');
+  assert.equal(restored.state.snapshotRetrievedAt, first.state.snapshotRetrievedAt);
+  assert.equal(restored.state.snapshotCheckedAt, checked.state.snapshotCheckedAt);
+  clock = CLOCK + 1800001;
+  const old = await read(filters()); assert.equal(old.state.status, 'stale'); assert.equal(old.state.ageMs, 1800001);
+  assert.equal(old.state.retrievedAt, first.state.retrievedAt); assert.equal(old.records[0].indexedAt, first.records[0].indexedAt);
+  clock = CLOCK + 86400001;
+  const expired = await read(filters()); assert.equal(expired.state.status, 'unavailable'); assert.deepEqual(expired.records, []);
+  assert.match(expired.state.reason, /24-hour age limit/);
+});
+
+test('unexpected unchanged responses cannot create a snapshot and invalid entity tags are never reflected', async () => {
+  const missing = createGdeltSnapshotReader({ now: () => CLOCK, fetchImpl: async () => new Response(null, { status: 304 }) });
+  const unavailable = await missing(filters()); assert.equal(unavailable.state.status, 'unavailable');
+  assert.deepEqual(unavailable.records, []); assert.ok(unavailable.state.retryAt > CLOCK);
+  let clock = CLOCK, requests = 0;
+  const read = createGdeltSnapshotReader({ now: () => clock, fetchImpl: async (_url, options) => {
+    requests++; assert.equal(options.headers['If-None-Match'], undefined);
+    return Response.json(fixture(), { headers: { etag: 'unquoted-entity-tag' } });
+  } });
+  await read(filters()); clock += GDELT_RELEASE_CHECK_INTERVAL_MS;
+  const checked = await read(filters()); assert.equal(requests, 2); assert.equal(checked.state.generatedAt, new Date(CLOCK).toISOString());
+  assert.equal(checked.state.ageMs, 60000, 'unchanged payload retrieval does not relabel source generation');
+});
+
+test('faster delivery checks do not shorten the legacy snapshot 30-minute retrieval validation window', () => {
+  const value = fixture();
+  for (const category of Object.values(value.categories)) {
+    category.reports = []; category.retrievedAt = new Date(CLOCK - 1800000).toISOString();
+  }
+  assert.equal(validateGdeltSnapshot(value, CLOCK).generatedAt, value.generatedAt);
+  value.categories.economy.retrievedAt = new Date(CLOCK - 1800001).toISOString();
+  assert.throws(() => validateGdeltSnapshot(value, CLOCK), /retrieval window/);
+});
+
+test('independent readers with an atomic shared lease perform one release check and adopt its newer publication', async () => {
+  let clock = CLOCK, requests = 0, until = 0;
+  let saved = { acquiredAt: CLOCK - 60000, snapshot: fixture(CLOCK - 60000) };
+  const gate = Promise.withResolvers();
+  const store = {
+    async get() { return structuredClone(saved); },
+    async put(_key, value) { saved = structuredClone(value); },
+    async claim(key, at, wait) {
+      assert.equal(key, 'gdelt:release-check'); assert.equal(wait, 60000);
+      if (until > at) return false;
+      until = at + wait; return true;
+    },
+  };
+  const fetchImpl = async () => { requests++; await gate.promise; return Response.json(fixture(clock)); };
+  const one = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl });
+  const two = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl });
+  const active = one(filters());
+  await new Promise((resolve) => setImmediate(resolve)); assert.equal(requests, 1);
+  const waiting = await two(filters('economy')); assert.equal(requests, 1);
+  assert.equal(waiting.state.generatedAt, new Date(CLOCK - 60000).toISOString());
+  assert.equal(waiting.state.retryAt, CLOCK + 1000);
+  gate.resolve(); const published = await active;
+  clock += 1000;
+  const adopted = await two(filters('economy')); assert.equal(requests, 1);
+  assert.equal(adopted.state.generatedAt, published.state.generatedAt);
+  assert.equal(adopted.state.retrievedAt, published.state.retrievedAt);
+  assert.equal(adopted.state.snapshotRetrievedAt, published.state.snapshotRetrievedAt);
+  assert.equal(adopted.state.retryAt, null);
+});
+
+test('shared lease reload cannot replace a newer source generation with a recently checked older one', async () => {
+  let clock = CLOCK, requests = 0, gets = 0;
+  const read = createGdeltSnapshotReader({ now: () => clock,
+    store: {
+      async get() { gets++; return gets === 1 ? null : { acquiredAt: CLOCK, checkedAt: clock, snapshot: fixture(CLOCK - 1000) }; },
+      async claim() { return requests === 0; },
+    }, fetchImpl: async () => { requests++; return Response.json(fixture()); } });
+  await read(filters()); clock += 60000;
+  const retained = await read(filters());
+  assert.equal(requests, 1); assert.equal(gets, 2);
+  assert.equal(retained.state.generatedAt, new Date(CLOCK).toISOString());
+  assert.equal(retained.state.snapshotCheckedAt, new Date(CLOCK).toISOString());
+  assert.ok(retained.indexRecords.every((record) => record.retrievedAt === new Date(CLOCK).toISOString()));
+});
+
+test('unavailable or stalled optional shared leases fall back to one local coalesced release check', { timeout: 1000 }, async () => {
+  for (const claim of [() => { throw new Error('Storage unavailable'); }, () => new Promise(() => {})]) {
+    let requests = 0;
+    const read = createGdeltSnapshotReader({ now: () => CLOCK, storageTimeoutMs: 10, store: { claim },
+      fetchImpl: async () => { requests++; return Response.json(fixture()); } });
+    const results = await Promise.all(Array.from({ length: 6 }, () => read(filters())));
+    assert.equal(requests, 1); assert.ok(results.every((value) => value.state.status === 'ready'));
+  }
 });
 
 test('release failure retains explicit stale records and original times, then withholds snapshots beyond 24 hours', async () => {

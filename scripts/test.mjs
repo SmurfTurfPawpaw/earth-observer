@@ -9,6 +9,7 @@ async function tests(folder) {
     return entry.isDirectory() ? tests(file) : /\.test\.mjs$/.test(entry.name) ? [file] : [];
   }))).flat();
 }
-const files = [...await tests('src'), ...await tests('server'), ...await tests('worker').catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error))].sort();
+const files = [...await tests('src'), ...await tests('server'), ...await tests('worker').catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)),
+  ...await tests('collector-worker').catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error))].sort();
 const child = spawn(process.execPath, ['--test', '--test-concurrency=4', ...files], { stdio: 'inherit' });
 child.on('exit', (code) => process.exit(code ?? 1));

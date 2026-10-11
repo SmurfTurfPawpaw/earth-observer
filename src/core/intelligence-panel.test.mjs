@@ -51,7 +51,7 @@ function elements(root) {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function settle() { await tick(); await tick(); }
 
-function fixture(t, { offline = false } = {}) {
+function fixture(t, { offline = false, intelligenceFetch } = {}) {
   const oldLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
   // A production-origin string enables the real opt-in controller. fetchImpl
   // below intercepts every request; no public aggregate counters are touched.
@@ -74,12 +74,15 @@ function fixture(t, { offline = false } = {}) {
     mode: 'scheduled-gkg', status: 'ready', retrievedAt: stamp }], nextRefreshMs: 300000,
     indexRecords: [record], indexCoverage: { schemaVersion: 1, sources: [{ id: 'gdelt', generation: stamp,
       expiresAt: new Date(Date.now() + 86400000).toISOString() }] } };
-  const calls = [];
+  const calls = []; let intelligenceRequests = 0;
   const fetchImpl = async (url, init = {}) => {
     calls.push({ url, init });
     const path = new URL(url, globalThis.location.origin);
     if (path.pathname === '/research/primary-context.json') return Response.json(primaryContext);
-    if (path.pathname === '/api/intelligence') return offline ? Response.json({ error: 'Fixture unavailable' }, { status: 503 }) : Response.json(payload);
+    if (path.pathname === '/api/intelligence') {
+      intelligenceRequests++;
+      return intelligenceFetch ? intelligenceFetch({ payload, url, init, count: intelligenceRequests }) : offline ? Response.json({ error: 'Fixture unavailable' }, { status: 503 }) : Response.json(payload);
+    }
     if (path.pathname === '/api/economics') return Response.json({ status: 'ready', frequency: 'annual',
       country: { id: path.searchParams.get('country') }, indicators: [], retrievedAt: stamp, nextRefreshMs: 86400000 });
     assert.equal(url, '/api/discovery/demand', 'All test requests must use a known mocked route');
@@ -192,4 +195,44 @@ test('mounted research context loads once on news open and filters locally outsi
   assert.match(env.ui.research.textContent, /No dated research context matches/);
   env.panel.close(); await env.panel.open(); await settle();
   assert.equal(requests().length, 1, 'Reopen uses validated memory and does not poll or refetch');
+});
+
+test('revalidation keeps unchanged cards and open source context mounted while dates and freshness remain honest', async (t) => {
+  const body = Promise.withResolvers(), began = Promise.withResolvers(); let latest;
+  const env = fixture(t, { intelligenceFetch: ({ payload, count }) => {
+    payload.reports[0].timeMeaning = 'Fixture batch date is not a publication time.';
+    latest = payload;
+    if (count === 2) return { ok: true, json() { began.resolve(); return body.promise; } };
+    return Response.json(payload);
+  } });
+  await env.panel.open(); await settle();
+  const card = env.ui.list.children[0], context = elements(card).find((element) => element.tagName === 'details');
+  context.open = true;
+  assert.match(env.container.textContent, /Checks for new metadata every minute while this panel is open and visible/);
+  assert.doesNotMatch(env.container.textContent, /continuous observation|live observation|real-time verified/i);
+  env.ui.refresh.trigger('click'); await began.promise;
+  assert.equal(env.ui.list.children[0], card);
+  assert.equal(context.open, true);
+  assert.match(env.ui.status.textContent, /Checking for updates · previous results remain available/);
+  assert.equal(env.intelligenceCalls()[1].init.cache, 'no-cache');
+  body.resolve(structuredClone(latest)); await settle();
+  assert.equal(env.ui.list.children[0], card, 'An unchanged response must preserve the existing DOM and investigation state');
+  assert.equal(context.open, true);
+  assert.match(card.textContent, /GDELT batch/); assert.doesNotMatch(card.textContent, /Published /);
+  assert.equal(env.demandCalls().length, 0);
+});
+
+test('a failed delivery retains existing cards and marks their source stale without inventing a new retrieval date', async (t) => {
+  const env = fixture(t, { intelligenceFetch: ({ payload, count }) => {
+    if (count > 1) throw new Error('Fixture reconnect pending');
+    return Response.json(payload);
+  } });
+  await env.panel.open(); await settle();
+  const card = env.ui.list.children[0], before = card.textContent;
+  env.ui.refresh.trigger('click'); await settle();
+  assert.equal(env.ui.list.children[0], card); assert.equal(card.textContent, before);
+  assert.match(env.ui.status.textContent, /Fixture reconnect pending · Previous results remain displayed/);
+  assert.match(env.container.textContent, /older cached data/);
+  assert.match(env.container.textContent, /retained metadata keeps its original dates/);
+  assert.equal(env.demandCalls().length, 0);
 });

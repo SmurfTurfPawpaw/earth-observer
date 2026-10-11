@@ -55,6 +55,49 @@ test('initialization does no work, identical visitors share requests, and fresh 
   assert.equal(requests, 3);
 });
 
+test('minute hazard updates are shared between runtime instances and retain original dates on restoration', async () => {
+  let clock = timestamp, calls = [];
+  const values = new Map(), claims = new Map();
+  const snapshotStore = { get: async (key) => values.get(key), put: async (key, value) => values.set(key, structuredClone(value)),
+    async claim(key, at, wait) { if ((claims.get(key) || 0) > at) return false; claims.set(key, at + wait); return true; } };
+  const options = { snapshotReader: null, eonetReader: null, allowLiveGdeltFallback: false, snapshotStore, now: () => clock,
+    fetchImpl: async (url) => { calls.push(url); return response(url); } };
+  const first = endpoint(createIntelligenceProxy(options)), second = endpoint(createIntelligenceProxy(options));
+  const [a, b] = await Promise.all([first(), second()]);
+  assert.equal(calls.length, 2, 'one request per fixed hazard source across both instances');
+  assert.equal(a.payload.nextRefreshMs, 60000);
+  assert.equal(a.headers['Cache-Control'], 'public, max-age=15');
+  const restored = await second();
+  assert.equal(calls.length, 2);
+  assert.equal(restored.payload.sources.find((s) => s.id === 'usgs').retrievedAt, new Date(timestamp).toISOString());
+  const restoredUsgs = restored.payload.reports.flatMap((r) => [r, ...r.relatedReports || []]).find((r) => r.sourceId === 'usgs');
+  assert.equal(restoredUsgs.retrievedAt, new Date(timestamp).toISOString());
+  clock += 59999; await Promise.all([first(), second()]); assert.equal(calls.length, 2);
+  clock++; await Promise.all([first(), second()]); assert.equal(calls.length, 4);
+  const updated = await second();
+  assert.equal(updated.payload.sources.find((s) => s.id === 'usgs').retrievedAt, new Date(clock).toISOString());
+  const updatedUsgs = updated.payload.reports.flatMap((r) => [r, ...r.relatedReports || []]).find((r) => r.sourceId === 'usgs');
+  assert.equal(updatedUsgs.updatedAt, new Date(timestamp).toISOString(), 'new acquisition never fabricates an event modification');
+  assert.equal(calls.filter((url) => url.includes('earthquake.usgs.gov')).length, 2);
+});
+
+test('hazard provider Retry-After survives another runtime and cannot renew old metadata', async () => {
+  let clock = timestamp, fail = false, calls = 0;
+  const values = new Map(), leases = new Map();
+  const snapshotStore = { get: async (key) => values.get(key), put: async (key, value) => values.set(key, structuredClone(value)),
+    async claim(key, at, wait) { if ((leases.get(key) || 0) > at) return false; leases.set(key, at + wait); return true; } };
+  const options = { snapshotReader: null, eonetReader: null, allowLiveGdeltFallback: false, snapshotStore, now: () => clock,
+    fetchImpl: async (url) => { calls++; return fail ? new Response('', { status: 429, headers: { 'Retry-After': '7200' } }) : response(url); } };
+  const first = endpoint(createIntelligenceProxy(options)); await first();
+  clock += 60000; fail = true; const failed = await first(); assert.equal(calls, 4);
+  assert.equal(failed.payload.sources.find((s) => s.id === 'usgs').retryAt, clock + 7200000);
+  const restarted = endpoint(createIntelligenceProxy(options)), retained = await restarted();
+  assert.equal(calls, 4, 'new runtime honors shared provider backoff');
+  const source = retained.payload.sources.find((s) => s.id === 'usgs');
+  assert.equal(source.status, 'stale'); assert.equal(source.retrievedAt, new Date(timestamp).toISOString());
+  assert.equal(source.retryAt, clock + 7200000);
+});
+
 test('provider failure serves explicit stale results with backoff shared across new topic keys', async () => {
   let clock = timestamp, fail = false, requests = 0;
   const read = endpoint(intelligenceProxy({ now: () => clock, fetchImpl: async (url) => { requests++; return fail ? new Response('', { status: 429 }) : response(url); } }));

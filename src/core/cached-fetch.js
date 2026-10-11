@@ -168,6 +168,10 @@ export function createCachedFetch({ fetchImpl = (...args) => fetch(...args), sto
     if (lifetime.signal.aborted) throw new DOMException('Workspace closed', 'AbortError');
     init.signal?.throwIfAborted();
     const age = usable(record) ? Math.max(0, now() - record.at) : Infinity;
+    // A visible feed's automatic check must reach the shared server cache even
+    // at the exact local freshness boundary. Offline/default opens retain the
+    // immediate snapshot path; successful revalidation still updates storage.
+    if (init.cache === 'no-cache' && online() && visible()) return network(url.href, init, policy);
     if (age <= policy.expire) {
       const mode = !online() ? 'OFFLINE' : age <= policy.fresh ? 'HIT' : 'STALE';
       try {

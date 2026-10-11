@@ -29,6 +29,8 @@
     "satellite.js": "^6.0.2"
   },
   "devDependencies": {
+    "drizzle-kit": "0.31.10",
+    "drizzle-orm": "0.45.2",
     "vite": "^6.0.0",
     "vite-plugin-cesium": "^1.2.23"
   }

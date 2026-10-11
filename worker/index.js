@@ -9,6 +9,8 @@ import { createContextHandler } from './context.js';
 import { createWindArtifactHandler } from './wind.js';
 import { createWorkerFetch } from './fetch.js';
 import { handleDemand } from './demand.js';
+import { createHistoryHandler } from './history.js';
+import { handleCollection, preparedIntelligenceResponse } from './collection-api.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -50,6 +52,10 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
       url.pathname = localPath;
       const internal = new Request(url, request);
       try {
+        const collection = await handleCollection(internal, env, ctx, { now, fetchImpl: providerFetch });
+        if (collection) return secured(collection);
+        const history = await createHistoryHandler({ env, now })(internal);
+        if (history) return secured(history);
         // Aggregate actions own their methods and never enter public provider caches.
         const demandResponse = await handleDemand(internal, env, { now });
         if (demandResponse) return secured(demandResponse);
@@ -68,10 +74,12 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
             return secured(new Response(hit.body, { status: hit.status, headers }));
           }
         }
-        const current = services(env);
-        let response;
-        for (const handle of current.handlers) { response = await handle(internal); if (response) break; }
-        response ||= await current.middleware.handle(internal);
+        let response = await preparedIntelligenceResponse(internal, env, { now });
+        if (!response) {
+          const current = services(env);
+          for (const handle of current.handlers) { response = await handle(internal); if (response) break; }
+          response ||= await current.middleware.handle(internal);
+        }
         const control = response.headers.get('cache-control') || '';
         const maxAge = Number(/(?:^|,)\s*max-age=(\d+)/i.exec(control)?.[1]);
         if (cacheable && cache && response.ok && maxAge > 0 && /public/i.test(control) && !/private|no-store/i.test(control) && !response.headers.has('set-cookie')) {
