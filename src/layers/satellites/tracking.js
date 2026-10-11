@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { satelliteClassLabel } from '../../data/satelliteClass.js';
+import { isSatelliteElementSupported, satelliteProvenance } from './source.js';
 import {
   ISS_NORAD,
   CONTEXT_REFRESH_INTERVAL_MS,
@@ -9,6 +10,7 @@ import {
 } from './policy.js';
 
 export function createTracking({ state: layerState, services, parts, source }) {
+  const displayNow = () => Number(layerState._trackedFrameNowForTest?.() ?? services.now?.() ?? Date.now());
   const { clearFocusTarget, publishFocusTargetFromCachedPosition } =
     services.focus;
   const {
@@ -93,7 +95,7 @@ export function createTracking({ state: layerState, services, parts, source }) {
         layerState._trackedNorad,
         layerState._catalog.get(layerState._trackedNorad)?.group,
       );
-      lastPos.show = true;
+      lastPos.show = isSatelliteElementSupported(layerState._catalog.get(layerState._trackedNorad), displayNow());
       lastPos.pixelSize = style.pixelSize;
       lastPos.color = style.color;
       lastPos.outlineColor = style.outlineColor;
@@ -104,9 +106,10 @@ export function createTracking({ state: layerState, services, parts, source }) {
     // Invalidate the per-frame tracked-position cache (WS-D2)
     layerState._trackedFrameNumber = -1;
     layerState._trackedFrameGeo = null;
+    layerState._trackedCalculatedAt = null;
 
     // Remove tracked entity and orbit path (unless ISS — keep its path)
-    if (layerState._trackedNorad !== ISS_NORAD) {
+    if (layerState._trackedNorad !== ISS_NORAD || !isSatelliteElementSupported(layerState._catalog.get(layerState._trackedNorad), displayNow())) {
       parts.rendering._hideOrbitPath(layerState._trackedNorad);
     }
     if (layerState._viewer && !skipViewerUntrack)
@@ -140,6 +143,14 @@ export function createTracking({ state: layerState, services, parts, source }) {
     if (layerState._trackedNorad === null) return null;
     const sat = layerState._catalog.get(layerState._trackedNorad);
     if (!sat) return null;
+    const nowMs = displayNow();
+    if (!isSatelliteElementSupported(sat, nowMs)) {
+      layerState._trackedFrameGeo = null;
+      const point = layerState._points.get(layerState._trackedNorad);
+      if (point) point.show = false;
+      if (layerState._trackedEntity) layerState._trackedEntity.show = false;
+      return null;
+    }
 
     const frameNumber =
       layerState._viewer?.scene?.frameState?.frameNumber ?? -1;
@@ -150,12 +161,11 @@ export function createTracking({ state: layerState, services, parts, source }) {
     ) {
       const pos = parts.orbits.propagatePosition(
         sat.satrec,
-        layerState._trackedFrameNowForTest
-          ? new Date(layerState._trackedFrameNowForTest())
-          : new Date(),
+        new Date(nowMs),
       );
       if (!pos) return layerState._trackedFrameGeo; // propagation hiccup — keep last good sample
       layerState._trackedFrameGeo = pos;
+      layerState._trackedCalculatedAt = nowMs;
       Cesium.Cartesian3.fromDegrees(
         pos.longitude,
         pos.latitude,
@@ -178,9 +188,10 @@ export function createTracking({ state: layerState, services, parts, source }) {
       if (clusterChanged) parts.labels._syncIssOverlay();
       const name = sat.name?.trim() || `SAT-${layerState._trackedNorad}`;
       const altitudeText = `${Math.round(pos.altitude / 1000)} km · NORAD ${layerState._trackedNorad}`;
+      const labelLines = layerState._trackedEntity?.gevLabelModel?.details || [altitudeText];
       const labelWidthPx =
-        Math.max(name.length, altitudeText.length) * 7.8 + 20;
-      const labelHeightPx = 2 * 13 + 12;
+        Math.max(name.length, ...labelLines.map((line) => line.length)) * 7.8 + 20;
+      const labelHeightPx = (1 + labelLines.length) * 13 + 12;
       const trackedPointDiameterPx = 14 + 4; // point plus its 2 px outline on both sides
       // Exact SGP4 frame cache only: dot, host readout, camera, and focus rectangle all
       // share one epoch, avoiding a second propagation phase and its old jitter.
@@ -201,7 +212,7 @@ export function createTracking({ state: layerState, services, parts, source }) {
   /** Cached ECEF display point only; never propagates a fresh SGP4 sample. */
 
   function _trackedDisplayCached() {
-    return layerState._trackedFrameGeo
+    return isSatelliteElementSupported(layerState._catalog.get(layerState._trackedNorad), displayNow()) && layerState._trackedFrameGeo
       ? layerState._trackedFrameCartesian
       : null;
   }
@@ -218,7 +229,7 @@ export function createTracking({ state: layerState, services, parts, source }) {
 
   function _contextSubjectMetadata(noradId, position = null) {
     const sat = layerState._catalog.get(noradId);
-    if (!sat) return null;
+    if (!sat || !isSatelliteElementSupported(sat, displayNow())) return null;
     const pos = position || _getTrackedFramePosition();
     if (!pos) return null;
     const name = sat.name?.trim() || `SAT-${noradId}`;
@@ -236,6 +247,10 @@ export function createTracking({ state: layerState, services, parts, source }) {
       // Flat text only: the voice payload compacts properties through a string
       // cleaner that drops nested objects.
       properties: {
+        positionKind: 'SGP4 prediction, not an observation',
+        elementEpoch: satelliteProvenance(sat, layerState._trackedCalculatedAt ?? services.now?.() ?? Date.now()).elementEpoch || 'unknown',
+        sourceRetrievedAt: sat.source?.retrievedAt || 'unknown',
+        sourceStatus: satelliteProvenance(sat, layerState._trackedCalculatedAt ?? services.now?.() ?? Date.now()).sourceStatus,
         name,
         operator: '',
         noradId: String(noradId),
@@ -360,7 +375,11 @@ export function createTracking({ state: layerState, services, parts, source }) {
         isIss: layerState._trackedNorad === ISS_NORAD,
       }),
       detail,
+      'SGP4 prediction',
     ];
+    const provenance = satelliteProvenance(sat, displayNow());
+    details.push(`Elements ${provenance.elementEpoch || 'epoch unknown'}`);
+    details.push(`Retrieved ${provenance.sourceRetrievedAt || 'unknown'} · ${provenance.sourceStatus}`);
     // Docked companions are consolidated onto the tracked card as SECONDARY info
     // instead of competing with it as separate ambient labels. Identities are
     // preserved: the catalog is untouched and every companion returns to its own
@@ -389,6 +408,7 @@ export function createTracking({ state: layerState, services, parts, source }) {
   }
 
   function _trackSatellite(noradId, { origin = 'programmatic' } = {}) {
+    if (!isSatelliteElementSupported(layerState._catalog.get(noradId), displayNow())) return;
     _clearTracking(false, { origin });
 
     const point = layerState._points.get(noradId);
@@ -409,12 +429,11 @@ export function createTracking({ state: layerState, services, parts, source }) {
     // Show orbital path
     parts.rendering._showOrbitPath(noradId, Cesium.Color.YELLOW);
 
-    // Tracked entity position propagates per evaluation through the per-frame
-    // cache (WS-D2) — dot, host readout, and camera share one SGP4 epoch per frame.
-    // Falls back to the point primitive's 1s-throttled position if SGP4 fails.
+    // Dot, readout, and camera share one per-frame SGP4 sample. An unsupported
+    // element has no display position; it cannot fall back to an old point.
     const positionProperty = new Cesium.CallbackProperty(() => {
       const pos = _getTrackedFramePosition();
-      return pos ? layerState._trackedFrameCartesian : point.position;
+      return pos ? layerState._trackedFrameCartesian : undefined;
     }, false);
 
     const name = sat.name.trim();
@@ -422,7 +441,7 @@ export function createTracking({ state: layerState, services, parts, source }) {
     // Comfortable tracking landing: ~726 km back for LEO (user-validated
     // "slightly zoomed out" framing — no stutter, label reads cleanly), scaled
     // up for MEO/GEO so the camera doesn't land on top of a high-orbit dot.
-    const initialPos = parts.orbits.propagatePosition(sat.satrec, new Date());
+    const initialPos = parts.orbits.propagatePosition(sat.satrec, new Date(displayNow()));
     const viewScale =
       initialPos && initialPos.altitude > HIGH_ORBIT_ALTITUDE_M
         ? TRACK_VIEW_FROM_HIGH_SCALE

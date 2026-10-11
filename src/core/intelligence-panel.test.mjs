@@ -208,7 +208,7 @@ test('revalidation keeps unchanged cards and open source context mounted while d
   await env.panel.open(); await settle();
   const card = env.ui.list.children[0], context = elements(card).find((element) => element.tagName === 'details');
   context.open = true;
-  assert.match(env.container.textContent, /Checks for new metadata every minute while this panel is open and visible/);
+  assert.match(env.container.textContent, /Update stream disconnected or unavailable/);
   assert.doesNotMatch(env.container.textContent, /continuous observation|live observation|real-time verified/i);
   env.ui.refresh.trigger('click'); await began.promise;
   assert.equal(env.ui.list.children[0], card);

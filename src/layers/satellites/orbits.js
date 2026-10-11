@@ -10,6 +10,7 @@ import {
 import { findNextSatellitePass } from '../../data/satellitePass.js';
 import { parseTleText } from '../../sources/tle.js';
 import { ORBIT_PATH_STEPS, ISS_NORAD } from './policy.js';
+import { isSatelliteElementSupported, satelliteProvenance } from './source.js';
 
 export function createOrbits({ state: layerState, services, parts, source }) {
   /**
@@ -169,7 +170,7 @@ export function createOrbits({ state: layerState, services, parts, source }) {
     const id = Number(noradId);
     if (!Number.isSafeInteger(id) || id <= 0) return { status: 'no-tle' };
     const sat = layerState._catalog.get(id);
-    if (!sat || !sat.satrec) return { status: 'no-tle' };
+    if (!sat || !sat.satrec || !isSatelliteElementSupported(sat, fromMs)) return { status: 'no-tle' };
     const pass = findNextSatellitePass({
       satrec: sat.satrec,
       latDeg,
@@ -178,7 +179,8 @@ export function createOrbits({ state: layerState, services, parts, source }) {
       minElevDeg,
       requireVisible,
     });
-    return pass ? { status: 'ok', pass } : { status: 'none' };
+    if (pass && (!isSatelliteElementSupported(sat, pass.riseMs) || !isSatelliteElementSupported(sat, pass.setMs))) return { status: 'no-tle' };
+    return pass ? { status: 'ok', pass, provenance: satelliteProvenance(sat, fromMs, services.now?.() ?? Date.now()) } : { status: 'none' };
   }
 
   /** Resolve only loaded catalog identities; ambiguous names never pick a first row. */
@@ -279,8 +281,10 @@ export function createOrbits({ state: layerState, services, parts, source }) {
     return shortYear >= 57 ? 1900 + shortYear : 2000 + shortYear;
   }
 
-  function orbitTrackFromRecord(name, satrec) {
-    const referenceDate = new Date();
+  function orbitTrackFromRecord(name, satrec, sourceMetadata = null) {
+    const referenceDate = new Date(services.now?.() ?? Date.now());
+    const satellite = { satrec, source: sourceMetadata };
+    if (!isSatelliteElementSupported(satellite, referenceDate.getTime())) return null;
     const current = propagatePosition(satrec, referenceDate);
     if (!current) return null;
     return {
@@ -290,7 +294,12 @@ export function createOrbits({ state: layerState, services, parts, source }) {
       periodSec: orbitalPeriodSeconds(satrec),
       orbitPath: computeOrbitPath(satrec, referenceDate),
       gmstAtBake: gstime(referenceDate),
-      positionAt: (date) => propagatePosition(satrec, date),
+      provenance: satelliteProvenance(satellite, referenceDate.getTime()),
+      calculatedAt: referenceDate.toISOString(),
+      positionAt: (date) => {
+        const at = date?.getTime?.();
+        return Number.isFinite(at) && isSatelliteElementSupported(satellite, at) ? propagatePosition(satrec, date) : null;
+      },
     };
   }
 
@@ -328,7 +337,7 @@ export function createOrbits({ state: layerState, services, parts, source }) {
     if (!bestEntry || bestScore < 12) return null;
     const satrec = twoline2satrec(bestEntry.line1, bestEntry.line2);
     if (!satrec || satrec.error !== 0) return null;
-    return orbitTrackFromRecord(bestEntry.name, satrec);
+    return orbitTrackFromRecord(bestEntry.name, satrec, options.source || null);
   }
 
   /**
@@ -367,7 +376,7 @@ export function createOrbits({ state: layerState, services, parts, source }) {
     }
     if (noradId === null) return null;
     const sat = layerState._catalog.get(noradId);
-    return orbitTrackFromRecord(sat.name, sat.satrec);
+    return orbitTrackFromRecord(sat.name, sat.satrec, sat.source);
   }
   return {
     orbitFrameModelMatrix,

@@ -5,6 +5,7 @@ import {
 } from '../../data/satelliteClass.js';
 import * as Cesium from 'cesium';
 import { ISS_NORAD, POINT_STYLES } from './policy.js';
+import { isSatelliteElementSupported, satelliteElementEpochMs, satelliteProvenance, MAX_ELEMENT_AGE_MS, MAX_ELEMENT_FUTURE_MS, SOURCE_CACHE_WINDOW_MS } from './source.js';
 
 export function createControls({ state: layerState, services, parts, source }) {
   const { isExplicitLayerStateOrigin } = services.layerState;
@@ -50,6 +51,7 @@ export function createControls({ state: layerState, services, parts, source }) {
     // ISS is ingested as `visual`, and the legend must file it exactly where its
     // card does (STATION) rather than letting STATION vanish from the legend.
     for (const [noradId, sat] of layerState._catalog) {
+      if (!isSatelliteElementSupported(sat, services.now?.() ?? Date.now())) continue;
       entries.push({ group: sat.group, isIss: noradId === ISS_NORAD });
     }
     const counts = tallySatelliteClasses(entries);
@@ -116,6 +118,7 @@ export function createControls({ state: layerState, services, parts, source }) {
       const start = seed % stride;
 
       const result = [];
+      const now = services.now?.() ?? Date.now();
       let idx = 0;
       for (const [noradId, point] of layerState._points) {
         if (
@@ -126,7 +129,7 @@ export function createControls({ state: layerState, services, parts, source }) {
         const shouldTake = (idx - start) % stride === 0;
         idx++;
         if (!shouldTake) continue;
-        if (!point.position) continue;
+        if (!point.position || !isSatelliteElementSupported(layerState._catalog.get(noradId), now)) continue;
         const isTracked = noradId === layerState._trackedNorad;
         // A docked companion sits at the tracked subject's own position, so its
         // mark and label would stack underneath the tracked card. It is listed on
@@ -150,6 +153,15 @@ export function createControls({ state: layerState, services, parts, source }) {
           layerState._detectionObjects.set(noradId, object);
         }
         object.position = point.position;
+        if (!object.provenance || now - (object._provenanceAt || 0) >= 1000 || cat.source?.available !== object._sourceAvailable) {
+          object.provenance = satelliteProvenance(cat, now);
+          object._provenanceAt = now;
+          object._sourceAvailable = cat.source?.available;
+        }
+        if (object._calculatedAt !== point._predictionAt) {
+          object.calculatedAt = Number.isFinite(point._predictionAt) ? new Date(point._predictionAt).toISOString() : null;
+          object._calculatedAt = point._predictionAt;
+        }
         object.skipLabel = isTracked;
         result.push(object);
         if (result.length >= maxCount) break;
@@ -189,7 +201,9 @@ export function createControls({ state: layerState, services, parts, source }) {
       if (noradId === null) return null;
 
       const sat = layerState._catalog.get(noradId);
-      const pos = parts.orbits.propagatePosition(sat.satrec, new Date());
+      const now = services.now?.() ?? Date.now();
+      if (!isSatelliteElementSupported(sat, now)) return null;
+      const pos = parts.orbits.propagatePosition(sat.satrec, new Date(now));
       if (!pos) return null;
 
       return {
@@ -203,6 +217,8 @@ export function createControls({ state: layerState, services, parts, source }) {
         latitude: pos.latitude,
         longitude: pos.longitude,
         altitudeM: pos.altitude,
+        provenance: satelliteProvenance(sat, now),
+        calculatedAt: new Date(now).toISOString(),
       };
     },
 
@@ -220,7 +236,7 @@ export function createControls({ state: layerState, services, parts, source }) {
 
       for (const [noradId, point] of layerState._points) {
         if (result.length >= cap) break;
-        if (!point.position) continue;
+        if (!point.position || !isSatelliteElementSupported(layerState._catalog.get(noradId), services.now?.() ?? Date.now())) continue;
         // Dense extras are points-only — keep voice/framing lists to the core catalog.
         if (
           layerState._denseIds.length > 0 &&
@@ -237,6 +253,8 @@ export function createControls({ state: layerState, services, parts, source }) {
           latitude: Cesium.Math.toDegrees(carto.latitude),
           longitude: Cesium.Math.toDegrees(carto.longitude),
           altitudeM: carto.height,
+          provenance: satelliteProvenance(sat, services.now?.() ?? Date.now()),
+          calculatedAt: Number.isFinite(point._predictionAt) ? new Date(point._predictionAt).toISOString() : null,
         });
       }
       return result;
@@ -254,7 +272,8 @@ export function createControls({ state: layerState, services, parts, source }) {
         !Number.isFinite(id) ||
         !layerState._viewer ||
         !layerState._catalog.has(id) ||
-        !layerState._points.has(id)
+        !layerState._points.has(id) ||
+        !isSatelliteElementSupported(layerState._catalog.get(id), services.now?.() ?? Date.now())
       )
         return false;
       parts.tracking._cancelPendingTrackingRestore();
@@ -374,6 +393,8 @@ export function createControls({ state: layerState, services, parts, source }) {
         latitude: pos.latitude,
         longitude: pos.longitude,
         altitudeM: pos.altitude,
+        provenance: satelliteProvenance(sat, layerState._trackedCalculatedAt ?? services.now?.() ?? Date.now()),
+        calculatedAt: Number.isFinite(layerState._trackedCalculatedAt) ? new Date(layerState._trackedCalculatedAt).toISOString() : null,
       };
     },
 
@@ -402,6 +423,9 @@ export function createControls({ state: layerState, services, parts, source }) {
       }
       if (params.showPoints !== undefined) {
         layerState._params.showPoints = params.showPoints !== false;
+        for (const [noradId, point] of layerState._points) {
+          if (!isSatelliteElementSupported(layerState._catalog.get(noradId), services.now?.() ?? Date.now())) point.show = false;
+        }
         if (layerState._pointCollection)
           layerState._pointCollection.show = satelliteVisualsVisible(
             layerState._enabled,
@@ -410,8 +434,8 @@ export function createControls({ state: layerState, services, parts, source }) {
       }
       if (params.showOrbits !== undefined) {
         layerState._params.showOrbits = params.showOrbits !== false;
-        for (const path of layerState._orbitPaths.values())
-          path.primitive.show = satelliteVisualsVisible(
+        for (const [noradId, path] of layerState._orbitPaths)
+          path.primitive.show = isSatelliteElementSupported(layerState._catalog.get(noradId), services.now?.() ?? Date.now()) && satelliteVisualsVisible(
             layerState._enabled,
             layerState._params.showOrbits,
           );
@@ -521,6 +545,7 @@ export function createControls({ state: layerState, services, parts, source }) {
           },
         ],
         legend: satelliteClassLegend(_classTally()),
+        info: 'SGP4 predictions · elements older than 7 days withheld (application display bound, not an accuracy guarantee). This CelesTrak TLE feed omits six-digit catalog numbers.',
       };
     },
 
@@ -536,17 +561,49 @@ export function createControls({ state: layerState, services, parts, source }) {
     },
 
     getStats() {
+      const now = services.now?.() ?? Date.now();
+      let count = 0, expired = 0, missingEpoch = 0, futureEpoch = 0;
+      let oldestEpoch = Infinity, newestEpoch = -Infinity;
+      for (const [noradId, satellite] of layerState._catalog) {
+        const epoch = satelliteElementEpochMs(satellite);
+        if (epoch === null) { missingEpoch++; continue; }
+        if (epoch - now > MAX_ELEMENT_FUTURE_MS) { futureEpoch++; continue; }
+        if (now - epoch >= MAX_ELEMENT_AGE_MS) { expired++; continue; }
+        if (layerState._points.has(noradId)) count++;
+        oldestEpoch = Math.min(oldestEpoch, epoch);
+        newestEpoch = Math.max(newestEpoch, epoch);
+      }
+      const coreWithheld = layerState._withheldElements || {};
+      const denseWithheld = layerState._params.catalog === 'dense' ? layerState._denseWithheldElements || {} : {};
+      const withheld = Object.fromEntries(['expired', 'missingEpoch', 'futureEpoch'].map((key) => [key, (coreWithheld[key] || 0) + (denseWithheld[key] || 0)]));
+      const sources = layerState._satelliteSources || [];
+      const sourceStale = !sources.length || sources.some((record) => {
+        const retrieved = record.retrievedAt ? Date.parse(record.retrievedAt) : NaN;
+        return !record.available || record.stale || !Number.isFinite(retrieved) || retrieved > now + 300000 || now - retrieved >= SOURCE_CACHE_WINDOW_MS;
+      });
+      const elementWithheld = expired + missingEpoch + futureEpoch + Object.values(withheld).reduce((sum, value) => sum + value, 0);
+      const retrievals = sources.filter((record) => record.available).map((record) => record.retrievedAt ? Date.parse(record.retrievedAt) : NaN);
+      const lastUpdate = retrievals.length && retrievals.every(Number.isFinite) ? Math.min(...retrievals)
+        : Number.isFinite(layerState._lastUpdate) ? layerState._lastUpdate : null;
+      const sourceAges = sources.map((record) => satelliteProvenance({ source: record }, now).sourceAgeMs).filter(Number.isFinite);
       return {
-        count: layerState._count,
-        lastUpdate: layerState._lastUpdate,
-        stale: false,
-        status:
-          layerState._lastError === 'CelesTrak unreachable'
-            ? 'unavailable'
-            : layerState._lastError
-              ? 'degraded'
-              : 'nominal',
+        count,
+        lastUpdate,
+        lastCheckedAt: layerState._lastCheckedAt ?? null,
+        stale: sourceStale || Boolean(layerState._lastError) || elementWithheld > 0,
+        status: !count || layerState._lastError === 'CelesTrak unreachable' ? 'unavailable'
+          : layerState._lastError || sourceStale || elementWithheld ? 'degraded' : 'nominal',
         error: layerState._lastError,
+        positionKind: 'SGP4 prediction',
+        sourceRetrievedAt: lastUpdate === null ? null : new Date(lastUpdate).toISOString(),
+        sourceAgeMs: sourceAges.length ? Math.max(...sourceAges) : lastUpdate === null ? null : Math.max(0, now - lastUpdate),
+        sourceGroups: sources.map((record) => ({ ...record })),
+        oldestElementEpoch: Number.isFinite(oldestEpoch) ? new Date(oldestEpoch).toISOString() : null,
+        newestElementEpoch: Number.isFinite(newestEpoch) ? new Date(newestEpoch).toISOString() : null,
+        oldestElementAgeMs: Number.isFinite(oldestEpoch) ? now - oldestEpoch : null,
+        withheldElements: { expired: expired + (withheld.expired || 0), missingEpoch: missingEpoch + (withheld.missingEpoch || 0), futureEpoch: futureEpoch + (withheld.futureEpoch || 0) },
+        maxElementAgeMs: MAX_ELEMENT_AGE_MS,
+        coverage: 'Selected CelesTrak TLE groups; six-digit catalog numbers are not represented by these feeds',
       };
     },
   };

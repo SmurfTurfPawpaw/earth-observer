@@ -3,16 +3,44 @@ import assert from 'node:assert/strict';
 import { createIntelligenceFeed, safeIntelligenceUrl, intelligenceTime, intelligenceReportDetails, INTELLIGENCE_REFRESH_MS } from './intelligence.js';
 
 const payload = { reports: [{ id: 'one', title: 'Linked report', url: 'https://example.test/' }], sources: [{ id: 'gdelt', status: 'ready' }], nextRefreshMs: 300000 };
-function environment(fetchImpl) {
+function environment(fetchImpl, options = {}) {
   const events = new Map(), windowEvents = new Map(), timers = new Map(); let clock = 100000, nextTimer = 0;
   const states = [], documentRef = { hidden: false, addEventListener: (name, callback) => events.set(name, callback), removeEventListener: (name) => events.delete(name) };
   const windowRef = { addEventListener: (name, callback) => windowEvents.set(name, callback), removeEventListener: (name) => windowEvents.delete(name) };
   const feed = createIntelligenceFeed({ fetchImpl, documentRef, windowRef, now: () => clock, onChange: (state) => states.push(state),
-    setTimeoutImpl: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; }, clearTimeoutImpl: (id) => timers.delete(id) });
+    setTimeoutImpl: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; }, clearTimeoutImpl: (id) => timers.delete(id), ...options });
   return { feed, timers, states, documentRef, events, windowEvents, advance: (ms) => { clock += ms; }, visibility: () => events.get('visibilitychange')?.(),
     reconnect: () => windowEvents.get('online')?.(), fireTimer() { const [id, timer] = timers.entries().next().value; timers.delete(id); clock += timer.delay; timer.callback(); } };
 }
 const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+
+test('stored revisions replace minute polling, coalesce during reads and retain hidden-panel invalidation', async () => {
+  let listener, unsubscribed = false, calls = 0;
+  const began = Promise.withResolvers(), body = Promise.withResolvers(), requests = [];
+  const at = (minute) => `2026-10-11T13:0${minute}:00.000Z`;
+  const env = environment(async (url, init) => {
+    requests.push({ url, init }); ++calls;
+    if (calls === 2) { began.resolve(); return { ok: true, json: () => body.promise }; }
+    return Response.json({ ...indexedPayload(), collectedAt: at(calls === 1 ? 0 : 2) });
+  }, { subscribeUpdates(callback) { listener = callback; callback({ type: 'status', status: 'connected' }); return () => { unsubscribed = true; }; } });
+  await env.feed.open(); assert.equal(env.timers.size, 0);
+  await env.feed.setFilters({ category: 'all', q: 'Ukraine' });
+  listener({ type: 'collection', collectedAt: at(1) }); await began.promise;
+  assert.equal(env.feed.getState().loading, false, 'A stream update retains the usable panel');
+  assert.equal(env.feed.getState().payload.reports[0].id, 'ukraine-trade');
+  listener({ type: 'collection', collectedAt: at(2) }); assert.equal(calls, 2);
+  body.resolve({ ...indexedPayload(), collectedAt: at(1) }); await settle();
+  assert.equal(calls, 3, 'A newer publication during transport causes one subsequent read');
+  assert.equal(env.feed.getState().payload.collectedAt, at(2));
+  assert.equal(env.feed.getState().filters.q, 'Ukraine');
+  assert.equal(requests[1].init.headers['Cache-Control'], 'no-cache');
+  assert.equal(requests[2].init.cache, 'no-cache');
+  env.feed.close(); listener({ type: 'collection', collectedAt: at(3) }); await settle(); assert.equal(calls, 3);
+  await env.feed.open(); assert.equal(calls, 4, 'A closed panel remembers publication without doing background fetches');
+  listener({ type: 'status', status: 'reconnecting' }); assert.equal(env.timers.size, 1);
+  listener({ type: 'status', status: 'connected' }); assert.equal(env.timers.size, 0);
+  env.feed.destroy(); assert.equal(unsubscribed, true);
+});
 
 test('curated metadata uses its source-date labels and cannot expose an incident-navigation action', () => {
   const detail = intelligenceReportDetails({ kind: 'curated-event', source: 'NASA EONET',

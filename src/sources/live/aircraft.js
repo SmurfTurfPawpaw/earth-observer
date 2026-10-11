@@ -6,11 +6,30 @@ import {
   finite,
 } from './contract.js';
 
+function boundedReportedNumber(value, min, max, integer = false) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max && (!integer || Number.isInteger(value))
+    ? value : null;
+}
+
+/** Raw receiver quality fields are metadata, not a calibrated motion confidence. */
+function readsbAccuracy(row) {
+  const silType = cleanText(row.sil_type);
+  return {
+    nic: boundedReportedNumber(row.nic, 0, 11, true),
+    rcM: boundedReportedNumber(row.rc, 0, 1000000),
+    nacP: boundedReportedNumber(row.nac_p, 0, 11, true),
+    nacV: boundedReportedNumber(row.nac_v, 0, 4, true),
+    sil: boundedReportedNumber(row.sil, 0, 3, true),
+    silType: ['unknown', 'perhour', 'persample'].includes(silType) ? silType : null,
+  };
+}
+
 /** Normalize the OpenSky state-vector route, including its regional fallback. */
 export function normalizeOpenSkyAircraft(row) {
   if (!Array.isArray(row)) return null;
   const id = cleanText(row[0]).toLowerCase();
   if (!id || !coordinates(row[6], row[5])) return null;
+  const positionTimeMs = epoch(row[3], 1000);
   return {
     id,
     reference: id,
@@ -18,7 +37,8 @@ export function normalizeOpenSkyAircraft(row) {
     longitude: row[5],
     callsign: cleanText(row[1]),
     originCountry: cleanText(row[2]),
-    positionTimeMs: epoch(row[3], 1000),
+    positionTimeMs,
+    positionTimeQuality: positionTimeMs == null ? 'unknown' : 'reported',
     contactTimeMs: epoch(row[4], 1000),
     baroAltitudeM: finite(row[7]),
     ellipsoidAltitudeM: finite(row[13]),
@@ -26,6 +46,8 @@ export function normalizeOpenSkyAircraft(row) {
     speedMps: finite(row[9]),
     courseDeg: finite(row[10]),
     verticalRateMps: finite(row[11]),
+    verticalRateAltitudeType: null,
+    accuracy: null,
     category: finite(row[17]),
     typeCode: null,
     registration: null,
@@ -33,8 +55,8 @@ export function normalizeOpenSkyAircraft(row) {
   };
 }
 
-/** Normalize readsb observations. The caller supplies the source snapshot epoch. */
-export function normalizeReadsbAircraft(row, snapshotTimeMs) {
+/** Only a reported snapshot epoch and explicit position age prove a fix time. */
+export function normalizeReadsbAircraft(row, snapshotTimeMs, { observedAtSource = 'unknown' } = {}) {
   const id = cleanText(row?.hex).toLowerCase();
   const latitude = finite(row?.lat),
     longitude = finite(row?.lon);
@@ -42,9 +64,14 @@ export function normalizeReadsbAircraft(row, snapshotTimeMs) {
   const baroFt = finite(row.alt_baro),
     geoFt = finite(row.alt_geom);
   const speedKts = finite(row.gs),
-    rateFtMin = finite(row.baro_rate);
+    baroRateFtMin = finite(row.baro_rate),
+    geoRateFtMin = finite(row.geom_rate);
+  const geometricRate = geoRateFtMin != null && (geoFt != null || baroRateFtMin == null);
+  const rateFtMin = geometricRate ? geoRateFtMin : baroRateFtMin;
   const seen = finite(row.seen),
-    seenPos = finite(row.seen_pos);
+    seenPos = typeof row.seen_pos === 'number' && Number.isFinite(row.seen_pos) && row.seen_pos >= 0 ? row.seen_pos : null;
+  const sourceTimeMs = observedAtSource === 'source' ? epoch(snapshotTimeMs) : null;
+  const positionTimeMs = sourceTimeMs == null || seenPos == null ? null : epoch(sourceTimeMs - seenPos * 1000);
   return {
     id,
     reference: id,
@@ -52,18 +79,20 @@ export function normalizeReadsbAircraft(row, snapshotTimeMs) {
     longitude,
     callsign: cleanText(row.flight),
     originCountry: null,
-    positionTimeMs:
-      snapshotTimeMs == null ? null : snapshotTimeMs - (seenPos ?? 0) * 1000,
+    positionTimeMs,
+    positionTimeQuality: positionTimeMs == null ? 'unknown' : 'reported',
     contactTimeMs:
-      snapshotTimeMs == null || seen == null
+      sourceTimeMs == null || seen == null || seen < 0
         ? null
-        : snapshotTimeMs - seen * 1000,
+        : epoch(sourceTimeMs - seen * 1000),
     baroAltitudeM: baroFt == null ? null : baroFt * 0.3048,
     ellipsoidAltitudeM: geoFt == null ? null : geoFt * 0.3048,
     onGround: cleanText(row.alt_baro).toLowerCase() === 'ground',
     speedMps: speedKts == null ? null : speedKts * 0.514444,
     courseDeg: finite(row.track),
     verticalRateMps: rateFtMin == null ? null : rateFtMin * 0.00508,
+    verticalRateAltitudeType: rateFtMin == null ? null : geometricRate ? 'geometric' : 'barometric',
+    accuracy: readsbAccuracy(row),
     category: row.category ?? null,
     typeCode: cleanText(row.t),
     registration: cleanText(row.r),
@@ -92,6 +121,7 @@ export function openSkySnapshot(
     source,
     coverage,
     observedAtMs,
+    observedAtSource: observedAtMs == null ? 'unknown' : 'source',
     ageMs,
     stale: stale || (ageMs != null && ageMs > 120000),
     freshness:
@@ -106,16 +136,20 @@ export function openSkySnapshot(
 export function readsbSnapshot(
   payload,
   {
-    observedAtMs,
+    observedAtMs: suppliedObservedAtMs,
+    observedAtSource: suppliedObservedAtSource = 'unknown',
     source = 'adsb.lol',
     coverage = 'military upstream snapshot',
     now = Date.now(),
     stale = false,
   } = {},
 ) {
+  const observedAtMs = epoch(suppliedObservedAtMs);
+  const observedAtSource = observedAtMs != null && ['source', 'receipt'].includes(suppliedObservedAtSource)
+    ? suppliedObservedAtSource : 'unknown';
   const admitted = admitRecords(
     payload?.ac,
-    (row) => normalizeReadsbAircraft(row, observedAtMs),
+    (row) => normalizeReadsbAircraft(row, observedAtMs, { observedAtSource }),
     'adsb.lol',
   );
   const ageMs = observedAtMs == null ? null : Math.max(0, now - observedAtMs);
@@ -124,9 +158,10 @@ export function readsbSnapshot(
     source,
     coverage,
     observedAtMs,
+    observedAtSource,
     ageMs,
     stale,
-    freshness: observedAtMs == null ? 'unknown' : stale ? 'stale' : 'current',
+    freshness: stale ? 'stale' : observedAtSource !== 'source' ? 'unknown' : 'current',
   };
 }
 

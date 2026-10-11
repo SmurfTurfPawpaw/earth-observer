@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { readFile } from 'node:fs/promises';
 import { createEarthRuntime } from './index.js';
 import { collectEarthSources } from './collector.js';
 import { collectionFactsDigest } from './collection-publication.js';
@@ -118,4 +120,140 @@ test('laptop publication and compact heartbeats retain facts, deduplicate histor
   const afterConflict = await (await runtime.fetch(new Request('https://example.com/earth/api/history'), env)).json();
   assert.equal(afterConflict.snapshots.some((row) => row.at === new Date(at).toISOString()), false);
   assert.equal(sourceRequests, 0); runtime.close();
+});
+
+test('private publication and heartbeat announce only durable migrated SQLite revisions, with immutable source facts', async (t) => {
+  const sqlite = new DatabaseSync(':memory:');
+  for (const filename of ['0000_glossy_overlord.sql', '0001_collection_revision.sql']) {
+    sqlite.exec(await readFile(new URL(`../drizzle/${filename}`, import.meta.url), 'utf8'));
+  }
+  const database = {
+    withSession(value) { assert.equal(value, 'first-primary'); return this; },
+    prepare(sql) {
+      const statement = sqlite.prepare(sql);
+      return { bind(...values) { return {
+        async first() { return statement.get(...values) || null; },
+        async all() { return { results: statement.all(...values) }; },
+        async run() { return statement.run(...values); },
+      }; } };
+    },
+  };
+  // The public update singleton validates against real UTC, rather than the
+  // injected application clock. Stay close to it while advancing acquisition.
+  let at = Date.now() - 1000;
+  const stamp = (value) => new Date(value).toISOString(), now = () => at;
+  const env = { EARTH_STORE: bucket(), EARTH_DB: database, EARTH_COLLECTOR_TOKEN: 'd'.repeat(64) };
+  let sourceRequests = 0;
+  const runtime = createEarthRuntime({ cache: null, now, fetchImpl: async () => {
+    sourceRequests++; throw new Error('Publication and stream delivery must not acquire providers');
+  } });
+  const clients = [];
+  t.after(async () => {
+    for (const client of clients) { client.abort.abort(); await client.reader.cancel(); }
+    runtime.close(); sqlite.close();
+  });
+  const post = (body) => runtime.fetch(new Request('https://example.com/earth/api/collector', {
+    method: 'POST', headers: { authorization: `Bearer ${env.EARTH_COLLECTOR_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }), env);
+  const current = async () => (await env.EARTH_STORE.get('collection/current-intelligence.json')).json();
+  const durableRevision = () => ({ ...sqlite.prepare('SELECT * FROM earth_collection_revision WHERE id = 1').get() });
+  const connect = async () => {
+    const abort = new AbortController();
+    const response = await runtime.fetch(new Request('https://example.com/earth/api/updates', { signal: abort.signal }), env);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /^text\/event-stream/);
+    assert.match(response.headers.get('cache-control'), /no-store/);
+    const client = { abort, reader: response.body.getReader() }; clients.push(client); return client;
+  };
+  async function nextCollection(client) {
+    let timer;
+    const operation = (async () => {
+      for (let index = 0; index < 12; index++) {
+        const part = await client.reader.read(); assert.equal(part.done, false);
+        const frame = new TextDecoder().decode(part.value);
+        if (frame.includes('event: collection\n')) {
+          const event = JSON.parse(/^data: (.+)$/m.exec(frame)[1]);
+          assert.equal(/^id: (.+)$/m.exec(frame)[1], event.revision);
+          assert.deepEqual(Object.keys(event), ['schemaVersion', 'revision', 'collectedAt', 'inputDigest', 'recordCount']);
+          assert.equal(frame.includes('M 5 source earthquake'), false, 'The public stream carries bounded revision metadata, not report bodies');
+          return event;
+        }
+      }
+      throw new Error('Collection stream did not deliver a bounded revision');
+    })();
+    try {
+      return await Promise.race([operation, new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Collection stream test deadline')), 3000);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+  const record = canonicalDiscoveryRecord({ id: 'usgs:durable-test', sourceId: 'usgs', source: 'USGS',
+    category: 'disasters', title: 'M 5 source earthquake', url: 'https://earthquake.usgs.gov/earthquakes/eventpage/durable-test',
+    observedAt: stamp(at - 300000), updatedAt: stamp(at - 60000), retrievedAt: stamp(at), lat: 50, lon: 4, magnitude: 5 });
+  const packet = { schemaVersion: 1, collectedAt: stamp(at), payload: {
+    reports: [record], indexRecords: [record], retrievedAt: stamp(at),
+    sources: [{ id: 'usgs', name: 'USGS', status: 'ready', retrievedAt: stamp(at) }],
+    indexCoverage: { schemaVersion: 1, sources: [{ id: 'usgs', status: 'ready', categories: ['disasters'],
+      generation: `usgs:${stamp(at)}`, expiresAt: stamp(at + 86400000) }] },
+  } };
+  const inputDigest = await collectionFactsDigest(packet.payload.indexRecords);
+  const analysis = { schemaVersion: 1, method: 'deterministic-source-metadata', createdAt: packet.collectedAt, inputDigest,
+    changes: { added: 1, revised: 0, withdrawn: 0 }, topics: [{ label: 'Earthquakes', count: 1 }],
+    analysis: [{ id: record.id, labels: ['Locally derived topic'] }] };
+  const publication = await post({ action: 'publish', packet, analysis });
+  assert.equal(publication.status, 200);
+  const accepted = await publication.json();
+  assert.equal(accepted.stored, true); assert.equal(accepted.updatesPublished, true);
+  const first = durableRevision();
+  assert.equal(first.collected_at, packet.collectedAt); assert.equal(first.input_digest, inputDigest); assert.equal(first.record_count, 1);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_collection_revision').get().count, 1);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_observations').get().count, 1);
+  const initialPrepared = await current();
+  assert.deepEqual(initialPrepared.payload.indexRecords, [record]);
+  const client = await connect(), initialEvent = await nextCollection(client);
+  assert.equal(initialEvent.revision, first.revision); assert.equal(initialEvent.inputDigest, inputDigest); assert.equal(initialEvent.recordCount, 1);
+  assert.deepEqual((await current()).payload.indexRecords, [record], 'Reading the stream leaves stored source facts unchanged');
+
+  at += 60000;
+  const heartbeat = { action: 'heartbeat', collectedAt: stamp(at), inputDigest,
+    sources: packet.payload.sources.map((source) => ({ ...source, retrievedAt: stamp(at) })) };
+  const checked = await post(heartbeat); assert.equal(checked.status, 200);
+  assert.equal((await checked.json()).updatesPublished, true);
+  const second = durableRevision(), laterEvent = await nextCollection(client);
+  assert.notEqual(second.revision, first.revision);
+  assert.equal(second.collected_at, heartbeat.collectedAt); assert.equal(second.input_digest, first.input_digest);
+  assert.equal(laterEvent.revision, second.revision); assert.equal(laterEvent.collectedAt, heartbeat.collectedAt);
+  const afterHeartbeat = await current();
+  assert.deepEqual(afterHeartbeat.payload.indexRecords, [{ ...record, retrievedAt: heartbeat.collectedAt }]);
+  assert.equal(await collectionFactsDigest(afterHeartbeat.payload.indexRecords), inputDigest);
+  assert.deepEqual(packet.payload.indexRecords, [record], 'The uploaded observation itself remains unchanged');
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_observations').get().count, 2);
+  assert.equal(sqlite.prepare('SELECT COUNT(DISTINCT snapshot_id) AS count FROM earth_observations').get().count, 1);
+  const archived = await (await runtime.fetch(new Request(`https://example.com/earth/api/history?at=${encodeURIComponent(heartbeat.collectedAt)}`), env)).json();
+  assert.equal(archived.reports[0].retrievedAt, packet.collectedAt);
+  assert.equal(archived.reports[0].observedAt, record.observedAt);
+
+  at += 1000;
+  const failedPacket = structuredClone(packet); failedPacket.collectedAt = stamp(at);
+  failedPacket.payload.indexRecords[0].title = 'Changed publication that storage rejected';
+  const failedAnalysis = { ...analysis, createdAt: failedPacket.collectedAt,
+    inputDigest: await collectionFactsDigest(failedPacket.payload.indexRecords) };
+  const originalPut = env.EARTH_STORE.put.bind(env.EARTH_STORE);
+  env.EARTH_STORE.put = async (key, ...args) => {
+    if (key === 'collection/current-intelligence.json') throw new Error('Controlled storage failure');
+    return originalPut(key, ...args);
+  };
+  try { assert.equal((await post({ action: 'publish', packet: failedPacket, analysis: failedAnalysis })).status, 503); }
+  finally { env.EARTH_STORE.put = originalPut; }
+  assert.deepEqual(durableRevision(), second, 'Failed storage does not announce a successful revision');
+  assert.deepEqual(await current(), afterHeartbeat);
+  assert.equal((await post({ ...heartbeat, collectedAt: stamp(at), inputDigest: '0'.repeat(64) })).status, 409);
+  assert.deepEqual(durableRevision(), second, 'A conflicting baseline cannot advance the durable revision');
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_observations').get().count, 2);
+  const resumed = await connect();
+  assert.equal((await nextCollection(resumed)).revision, second.revision, 'Reconnect replays the retained durable revision after failed/conflicting ingestion');
+  const served = await (await runtime.fetch(new Request('https://example.com/earth/api/intelligence'), env)).json();
+  assert.deepEqual(served.indexRecords, afterHeartbeat.payload.indexRecords);
+  assert.equal(sourceRequests, 0);
 });

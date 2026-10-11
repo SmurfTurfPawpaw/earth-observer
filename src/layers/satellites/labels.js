@@ -5,6 +5,7 @@ import {
   ISS_OVERLAY_SOURCE_ID,
   ISS_OVERLAY_SOURCE_OPTIONS,
 } from './policy.js';
+import { isSatelliteElementSupported } from './source.js';
 
 export function createLabels({ state: layerState, services, parts, source }) {
   /** Build the persistent ISS ambient label from the cached point position. */
@@ -38,6 +39,7 @@ export function createLabels({ state: layerState, services, parts, source }) {
   /** Cached ISS point only; never performs a fresh SGP4 propagation. */
 
   function _issDisplayCached() {
+    if (!isSatelliteElementSupported(layerState._catalog.get(ISS_NORAD), services.now?.() ?? Date.now())) return null;
     return layerState._points.get(ISS_NORAD)?.position || null;
   }
 
@@ -64,7 +66,7 @@ export function createLabels({ state: layerState, services, parts, source }) {
     let found = 0;
     const next = new Set();
     for (const [noradId, point] of layerState._points) {
-      if (noradId === layerState._trackedNorad || !point?.position) continue;
+      if (noradId === layerState._trackedNorad || !point?.position || !isSatelliteElementSupported(layerState._catalog.get(noradId), nowMs)) continue;
       const dx = point.position.x - trackedPosition.x;
       const dy = point.position.y - trackedPosition.y;
       const dz = point.position.z - trackedPosition.z;

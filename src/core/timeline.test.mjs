@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as Cesium from 'cesium';
-import { createHistoryController, normalizeHistory } from './timeline.js';
+import { createHistoryController, createTimeline, normalizeHistory, HISTORY_REFRESH_MS } from './timeline.js';
 import { installAstronomy, ASTRONOMY_REFRESH_MS } from './astronomy.js';
+import { createLiveClock } from './live-clock.js';
 
 const first = '2026-10-11T09:00:00.000Z', last = '2026-10-11T09:15:00.000Z';
 const snapshots = [{ at: first, id: 'one', source: 'usgs', recordCount: 1 }, { at: last, id: 'two', source: 'usgs', recordCount: 1 }];
@@ -13,6 +14,186 @@ function documentFixture() {
   return { hidden: false, listeners, addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); },
     removeEventListener(type, fn) { listeners.get(type)?.delete(fn); }, visibility() { for (const fn of listeners.get('visibilitychange') || []) fn(); } };
 }
+function scheduler() {
+  const timers = new Map(); let clock = 0, id = 0;
+  return { timers, now: () => clock, setTimeoutImpl(fn, ms) { timers.set(++id, { fn, at: clock + ms }); return id; }, clearTimeoutImpl(id) { timers.delete(id); },
+    advance(ms) { clock += ms; for (const [id, timer] of [...timers]) if (timer.at <= clock && timers.delete(id)) timer.fn(); } };
+}
+const settle = async () => { await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setImmediate(resolve)); };
+
+test('connected collection delivery invalidates coverage by revision without polling, changing selected facts, or fetching closed panels', async () => {
+  const timing = scheduler(), changes = [], states = []; let listener, manifests = 0, unsubscribed = false;
+  const appended = { at: '2026-10-11T09:30:00.000Z', id: 'three', source: 'usgs', recordCount: 1 };
+  const controller = createHistoryController({ ...timing, documentRef: documentFixture(), onChange: (state) => states.push(state), onTimeChange: (state) => changes.push(state),
+    subscribeUpdates(callback) { listener = callback; callback({ type: 'status', status: 'connected', revision: 'r1' }); return () => { unsubscribed = true; }; },
+    fetchImpl: async (url) => url === '/api/history' ? Response.json({ configured: true, snapshots: ++manifests === 1 ? snapshots : [...snapshots, appended] }) :
+      Response.json({ configured: true, snapshots: [snapshots[0]], reports: [report] }),
+  });
+  assert.equal(manifests, 0); await controller.open(); await controller.select(first);
+  const selected = controller.getState().selection, count = states.length;
+  assert.equal(timing.timers.size, 0); timing.advance(60000); await settle(); assert.equal(manifests, 1);
+  listener({ type: 'collection', schemaVersion: 1, revision: 'r1' }); listener({ type: 'collection', schemaVersion: 2, revision: 'r2' });
+  assert.equal(manifests, 1);
+  listener({ type: 'collection', schemaVersion: 1, revision: 'r2' }); await settle();
+  assert.equal(manifests, 2); assert.equal(controller.getState().manifest.lastAt, appended.at);
+  assert.equal(controller.getState().selection, selected); assert.equal(changes.length, 1);
+  assert.ok(states.slice(count).every((state) => state.loading === false));
+  controller.close(); listener({ type: 'collection', schemaVersion: 1, revision: 'r3' }); await settle(); assert.equal(manifests, 2);
+  await controller.open(); assert.equal(manifests, 3); assert.equal(timing.timers.size, 0);
+  listener({ type: 'status', status: 'reconnecting' }); assert.equal(timing.timers.size, 1);
+  listener({ type: 'status', status: 'connected', revision: 'r3' }); assert.equal(timing.timers.size, 0);
+  controller.destroy(); assert.equal(unsubscribed, true); listener({ type: 'collection', schemaVersion: 1, revision: 'r4' }); assert.equal(manifests, 3);
+});
+
+test('revision events during a manifest request coalesce into one follow-up, and hidden collection updates wait for visibility', async () => {
+  const timing = scheduler(), documentRef = documentFixture(), body = Promise.withResolvers(), began = Promise.withResolvers();
+  let listener, manifests = 0, oldSignal;
+  const appended = { at: '2026-10-11T09:30:00.000Z', id: 'three', source: 'usgs', recordCount: 1 };
+  const controller = createHistoryController({ ...timing, documentRef,
+    subscribeUpdates(callback) { listener = callback; callback({ type: 'status', status: 'connected', revision: 'r1' }); return () => {}; },
+    fetchImpl: async (_url, init) => {
+      if (++manifests === 2) { oldSignal = init.signal; return { ok: true, json() { began.resolve(); return body.promise; } }; }
+      return Response.json({ configured: true, snapshots: manifests > 2 ? [...snapshots, appended] : snapshots });
+    },
+  });
+  await controller.open(); listener({ type: 'collection', schemaVersion: 1, revision: 'r2' }); await began.promise;
+  listener({ type: 'collection', schemaVersion: 1, revision: 'r3' }); listener({ type: 'collection', schemaVersion: 1, revision: 'r4' });
+  assert.equal(manifests, 2); body.resolve({ configured: true, snapshots }); await settle();
+  assert.equal(manifests, 3); assert.equal(controller.getState().manifest.lastAt, appended.at); assert.equal(oldSignal.aborted, false);
+  documentRef.hidden = true; documentRef.visibility(); listener({ type: 'collection', schemaVersion: 1, revision: 'r5' });
+  assert.equal(manifests, 3); assert.equal(timing.timers.size, 0);
+  documentRef.hidden = false; documentRef.visibility(); await settle(); assert.equal(manifests, 4); assert.equal(timing.timers.size, 0);
+  controller.destroy();
+});
+
+test('minute manifest renewal preserves the selected capture and original source dates without showing a loading state', async () => {
+  const timing = scheduler(), states = [], changes = [], calls = []; let manifests = 0;
+  const appended = { at: '2026-10-11T09:30:00.000Z', id: 'three', source: 'usgs', recordCount: 1 };
+  const controller = createHistoryController({ ...timing, documentRef: documentFixture(), onChange: (state) => states.push(state), onTimeChange: (state) => changes.push(state),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      if (url === '/api/history') return Response.json({ configured: true, snapshots: ++manifests === 1 ? snapshots : [...snapshots, appended] });
+      return Response.json({ configured: true, snapshots: [snapshots[0]], reports: [{ ...report, retrievedAt: first }] });
+    } });
+  await controller.open(); await controller.select(first);
+  const selected = controller.getState().selection, stateCount = states.length;
+  assert.equal(timing.timers.size, 1); assert.equal(HISTORY_REFRESH_MS, 60000);
+  timing.advance(60000); await settle();
+  assert.equal(manifests, 2); assert.equal(controller.getState().manifest.lastAt, appended.at);
+  assert.equal(controller.getState().selection, selected); assert.equal(selected.reports[0].retrievedAt, first);
+  assert.equal(changes.length, 1, 'Discovering more capture times cannot move the model clock or replace selected facts');
+  assert.ok(states.slice(stateCount).every((state) => state.loading === false));
+  assert.ok(calls.every(({ init }) => init.cache === 'no-cache'));
+  controller.close(); assert.equal(timing.timers.size, 0); timing.advance(60000); await settle(); assert.equal(manifests, 2);
+  controller.destroy();
+});
+
+test('a scheduled manifest check cannot cancel an in-flight capture selection; hide and destroy cancel both independently', async () => {
+  for (const closing of ['close', 'hide', 'destroy']) {
+    const timing = scheduler(), documentRef = documentFixture(), began = Promise.withResolvers(), body = Promise.withResolvers(), changes = [];
+    let manifests = 0, selectedSignal;
+    const controller = createHistoryController({ ...timing, documentRef, onTimeChange: (state) => changes.push(state), fetchImpl: async (url, init) => {
+      if (url === '/api/history') { manifests++; return Response.json({ configured: true, snapshots }); }
+      selectedSignal = init.signal; return { ok: true, json() { began.resolve(); return body.promise; } };
+    } });
+    await controller.open(); const selection = controller.select(first); await began.promise;
+    timing.advance(60000); await settle();
+    assert.equal(manifests, 2); assert.equal(selectedSignal.aborted, false); assert.equal(controller.getState().loading, true);
+    if (closing === 'hide') { documentRef.hidden = true; documentRef.visibility(); } else controller[closing]();
+    assert.equal(selectedSignal.aborted, true); assert.equal(timing.timers.size, 0);
+    body.resolve({ configured: true, snapshots: [snapshots[0]], reports: [report] });
+    assert.equal(await selection, false); assert.equal(changes.length, 0); assert.equal(controller.getState().selection, null);
+    controller.destroy();
+  }
+});
+
+test('visible reconnect renews coverage, coalesces requests and rejects a canceled background body', async () => {
+  const timing = scheduler(), documentRef = documentFixture(), windowRef = documentFixture(), body = Promise.withResolvers(), began = Promise.withResolvers();
+  const appended = { at: '2026-10-11T09:30:00.000Z', id: 'three', source: 'usgs', recordCount: 1 };
+  let calls = 0, oldSignal;
+  const controller = createHistoryController({ ...timing, documentRef, windowRef, fetchImpl: async (_url, init) => {
+    if (++calls === 2) { oldSignal = init.signal; return { ok: true, json() { began.resolve(); return body.promise; } }; }
+    return Response.json({ configured: true, snapshots: calls > 2 ? [...snapshots, appended] : snapshots });
+  } });
+  const reconnect = () => { for (const fn of windowRef.listeners.get('online') || []) fn(); };
+  await controller.open(); timing.advance(60000); await began.promise; reconnect(); assert.equal(calls, 2);
+  documentRef.hidden = true; documentRef.visibility(); assert.equal(oldSignal.aborted, true); assert.equal(timing.timers.size, 0);
+  reconnect(); assert.equal(calls, 2);
+  documentRef.hidden = false; documentRef.visibility(); reconnect(); await settle(); assert.equal(calls, 3);
+  body.resolve({ configured: true, snapshots: [] }); await settle();
+  assert.equal(controller.getState().manifest.lastAt, appended.at); assert.equal(controller.getState().loading, false); assert.equal(timing.timers.size, 1);
+  controller.close(); reconnect(); await settle(); assert.equal(calls, 3); assert.equal(timing.timers.size, 0);
+  controller.destroy(); assert.equal(windowRef.listeners.get('online').size, 0);
+});
+
+test('failed automatic coverage refresh retains the selected archive and waits a minute before retrying', async () => {
+  const timing = scheduler(); let manifests = 0;
+  const controller = createHistoryController({ ...timing, documentRef: documentFixture(), fetchImpl: async (url) => {
+    if (url !== '/api/history') return Response.json({ configured: true, snapshots: [snapshots[0]], reports: [report] });
+    if (++manifests > 1) throw new Error('Coverage connection interrupted');
+    return Response.json({ configured: true, snapshots });
+  } });
+  await controller.open(); await controller.select(first); const selected = controller.getState().selection;
+  timing.advance(60000); await settle();
+  assert.equal(controller.getState().selection, selected); assert.equal(controller.getState().manifest.lastAt, last);
+  assert.match(controller.getState().error, /Coverage connection interrupted/); assert.equal(controller.getState().loading, false);
+  timing.advance(59000); await settle(); assert.equal(manifests, 2);
+  timing.advance(1000); await settle(); assert.equal(manifests, 3); controller.destroy();
+});
+
+class Element {
+  constructor(tag, ownerDocument) { this.tagName = tag; this.ownerDocument = ownerDocument; this.children = []; this.listeners = new Map(); this.attributes = {}; this.dataset = {}; this._text = ''; }
+  get textContent() { return this._text + this.children.map((child) => typeof child === 'string' ? child : child.textContent).join(''); }
+  set textContent(value) { this.replaceChildren(); this._text = String(value); }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children = nodes; this._text = ''; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
+  removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
+  trigger(type) { for (const fn of this.listeners.get(type) || []) fn(); }
+}
+const elements = (root) => [root, ...root.children.filter((child) => typeof child === 'object').flatMap(elements)];
+
+test('the visible UTC label subscribes independently of scene rendering and archive requests, with one shared Live timer', () => {
+  const timing = scheduler(), documentRef = documentFixture(); documentRef.createElement = (tag) => new Element(tag, documentRef);
+  const wallClock = createLiveClock({ ...timing, documentRef }); let requests = 0, frames = 0;
+  const viewer = { earthTime: { getState: () => ({ ...wallClock.getState(), lighting: true }), subscribeClock: wallClock.subscribe,
+    setTime: wallClock.setTime }, entities: { remove() {} }, scene: { requestRender() { frames++; } } };
+  const container = documentRef.createElement('details');
+  const timeline = createTimeline({ ...timing, container, viewer, documentRef, fetchImpl() { requests++; throw new Error('A clock cannot fetch'); } });
+  const label = elements(container).find((element) => element.className === 'timeline-clock');
+  assert.equal(timing.timers.size, 1); assert.equal(label.dateTime, '1970-01-01T00:00:00.000Z');
+  timing.advance(3000); assert.equal(label.dateTime, '1970-01-01T00:00:03.000Z'); assert.equal(requests, 0); assert.equal(frames, 0);
+  documentRef.hidden = true; documentRef.visibility(); assert.equal(timing.timers.size, 0); timing.advance(65000);
+  documentRef.hidden = false; documentRef.visibility(); assert.equal(label.dateTime, '1970-01-01T00:01:08.000Z');
+  wallClock.setTime('2026-10-11T09:00:00.123Z'); assert.equal(label.dateTime, '2026-10-11T09:00:00.123Z'); assert.equal(timing.timers.size, 0);
+  timing.advance(60000); assert.equal(label.dateTime, '2026-10-11T09:00:00.123Z');
+  timeline.live(); assert.equal(label.dateTime, '1970-01-01T00:02:08.000Z'); assert.equal(timing.timers.size, 1);
+  timeline.destroy(); wallClock.destroy(); assert.equal(timing.timers.size, 0); assert.equal(requests, 0); assert.equal(frames, 0);
+});
+
+test('actual UTC control keeps its cursor by capture identity and preserves card DOM as manifests append and insert earlier times', async () => {
+  const timing = scheduler(), documentRef = documentFixture(); documentRef.createElement = (tag) => new Element(tag, documentRef);
+  const container = documentRef.createElement('details'), entities = new Set(), changes = []; let mode = 'live', at = last, manifests = 0;
+  const older = { at: '2026-10-11T08:45:00.000Z', id: 'older', source: 'usgs', recordCount: 1 }, newer = { at: '2026-10-11T09:30:00.000Z', id: 'newer', source: 'usgs', recordCount: 1 };
+  const viewer = { earthTime: { getState: () => ({ mode, at, lighting: true }), setTime(value) { mode = value ? 'history' : 'live'; at = value || last; } },
+    entities: { add(value) { entities.add(value); return value; }, remove(value) { entities.delete(value); } }, scene: { requestRender() {} } };
+  const timeline = createTimeline({ ...timing, container, viewer, documentRef, onTimeChange: (state) => changes.push(state), fetchImpl: async (url) => {
+    if (url === '/api/history') return Response.json({ configured: true, snapshots: ++manifests === 1 ? snapshots : [older, ...snapshots, newer] });
+    return Response.json({ configured: true, snapshots: [snapshots[0]], reports: [{ ...report, retrievedAt: first }] });
+  } });
+  assert.equal(manifests, 0); container.open = true; container.trigger('toggle'); await settle();
+  const slider = elements(container).find((element) => element.type === 'range'), records = elements(container).find((element) => element.className === 'timeline-records');
+  slider.value = '0'; slider.trigger('change'); await settle(); const card = records.children[0];
+  assert.equal(mode, 'history'); assert.equal(at, first); assert.equal(entities.size, 1);
+  timing.advance(60000); await settle();
+  assert.equal(slider.value, '1', 'Inserting an earlier capture moves the index, while the selected UTC identity stays fixed');
+  assert.equal(slider.max, '3'); assert.equal(records.children[0], card); assert.equal(changes.length, 1); assert.equal(at, first); assert.equal(entities.size, 1);
+  slider.value = '2'; timing.advance(60000); await settle();
+  assert.equal(slider.value, '2', 'Background renewal cannot reset a thumb the visitor has moved before committing a capture');
+  assert.equal(records.children[0], card); assert.equal(at, first);
+  timeline.destroy(); assert.equal(timing.timers.size, 0); assert.equal(entities.size, 0);
+});
 
 test('recorded range comes only from actual listed captures and topic/curated metadata cannot invent incident coordinates', () => {
   const normalized = normalizeHistory({ configured: true, firstAt: '1900-01-01T00:00:00Z', lastAt: '2099-01-01T00:00:00Z', snapshots: snapshots.toReversed(),
@@ -75,18 +256,23 @@ test('astronomical UTC freezes for history, restores system time in Live, and re
     Object.defineProperty(globalThis, key, { configurable: true, value: class BrowserGraphicsType {} });
     t.after(() => { if (previous) Object.defineProperty(globalThis, key, previous); else delete globalThis[key]; });
   }
-  const documentRef = documentFixture(), timers = new Map(); let next = 0, frames = 0;
-  const viewer = { clock: new Cesium.Clock(), scene: { globe: {}, requestRender() { frames++; } }, isDestroyed: () => false };
-  const astronomy = installAstronomy(viewer, { documentRef, setTimeoutImpl(fn, delay) { timers.set(++next, { fn, delay }); return next; }, clearTimeoutImpl(id) { timers.delete(id); } });
+  const documentRef = documentFixture(), timing = scheduler(); let frames = 0;
+  const viewer = { clock: new Cesium.Clock(), scene: { requestRenderMode: true, globe: {}, requestRender() { frames++; } }, isDestroyed: () => false };
+  const astronomy = installAstronomy(viewer, { ...timing, documentRef });
   assert.equal(viewer.scene.globe.enableLighting, true); assert.equal(viewer.scene.globe.showGroundAtmosphere, false);
   assert.notEqual(viewer.scene.globe.lightingFadeOutDistance, viewer.scene.globe.lightingFadeInDistance);
   assert.ok(viewer.scene.sun instanceof Cesium.Sun); assert.ok(viewer.scene.moon instanceof Cesium.Moon); assert.equal(viewer.scene.sunBloom, false);
-  assert.equal(viewer.clock.clockStep, Cesium.ClockStep.SYSTEM_CLOCK); assert.equal([...timers.values()][0].delay, ASTRONOMY_REFRESH_MS);
-  astronomy.setTime(first); assert.equal(timers.size, 0); assert.equal(astronomy.getState().mode, 'history');
-  assert.equal(Cesium.JulianDate.toIso8601(viewer.clock.tick(), 3), first); assert.equal(viewer.clock.shouldAnimate, false);
+  assert.equal(viewer.clock.clockStep, Cesium.ClockStep.SYSTEM_CLOCK); assert.equal([...timing.timers.values()][0].at, ASTRONOMY_REFRESH_MS);
+  const beforeTick = frames; timing.advance(1000); assert.equal(frames, beforeTick + 1); assert.equal(astronomy.getState().at, '1970-01-01T00:00:01.000Z');
+  viewer.scene.requestRenderMode = false; timing.advance(1000); assert.equal(frames, beforeTick + 1, 'Continuous scenes already render native astronomy and receive no extra request');
+  viewer.scene.requestRenderMode = true;
+  const exact = '2026-10-11T09:00:00.123Z';
+  astronomy.setTime(exact); assert.equal(timing.timers.size, 0); assert.equal(astronomy.getState().mode, 'history');
+  assert.equal(Cesium.JulianDate.toIso8601(viewer.clock.tick(), 3), exact); assert.equal(astronomy.getState().at, exact); assert.equal(viewer.clock.shouldAnimate, false);
   astronomy.setTime(); assert.equal(viewer.clock.clockStep, Cesium.ClockStep.SYSTEM_CLOCK); assert.equal(viewer.clock.shouldAnimate, true);
-  documentRef.hidden = true; documentRef.visibility(); assert.equal(timers.size, 0); const hiddenFrames = frames;
+  documentRef.hidden = true; documentRef.visibility(); assert.equal(timing.timers.size, 0); const hiddenFrames = frames;
   astronomy.setLighting(false); assert.equal(frames, hiddenFrames);
-  documentRef.hidden = false; documentRef.visibility(); assert.equal(timers.size, 1); assert.ok(frames > hiddenFrames);
-  astronomy.destroy(); assert.equal(timers.size, 0); assert.equal(viewer.scene.sun, undefined); assert.equal(viewer.scene.moon, undefined);
+  timing.advance(60000); documentRef.hidden = false; documentRef.visibility(); assert.equal(timing.timers.size, 1); assert.ok(frames > hiddenFrames);
+  assert.equal(astronomy.getState().at, '1970-01-01T00:01:02.000Z');
+  astronomy.destroy(); assert.equal(timing.timers.size, 0); assert.equal(viewer.scene.sun, undefined); assert.equal(viewer.scene.moon, undefined);
 });

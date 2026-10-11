@@ -146,6 +146,16 @@ test('Worker edge-cache errors cannot turn a successful source into a feed failu
   assert.equal(response.status, 200); assert.deepEqual(await response.json(), { ok: true }); runtime.close();
 });
 
+test('a stored-update revalidation bypasses an older edge response', async () => {
+  let reads = 0, writes = 0;
+  const runtime = createEarthRuntime({ providers: [{ configureServer({ middlewares }) {
+    middlewares.use('/api/test', (_req, res) => { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'public, max-age=30' }); res.end('{"revision":"current"}'); });
+  } }], cache: { match: async () => { ++reads; return Response.json({ revision: 'old' }); }, put: async () => { ++writes; } } });
+  assert.equal((await (await runtime.fetch(request('/earth/api/test'))).json()).revision, 'old');
+  assert.equal((await (await runtime.fetch(request('/earth/api/test', { headers: { 'Cache-Control': 'no-cache' } }))).json()).revision, 'current');
+  assert.equal(reads, 1); assert.equal(writes, 0); runtime.close();
+});
+
 const mappedRequest = (lat) => request('/api/overpass', { method: 'POST', body:
   new URLSearchParams({ data: `[out:json];node["amenity"="bicycle_parking"](around:100,${lat},5);out body;` }).toString() });
 

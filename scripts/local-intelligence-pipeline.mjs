@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { collectEarthSources } from '../worker/collector.js';
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
+import { createLocalGdeltSource } from './local-gdelt-source.mjs';
 
 export const LOCAL_PUBLISH_URL = 'https://giovannicallebaut.com/earth/api/collector';
 export const MAX_LOCAL_ANALYSIS_BYTES = 64 * 1024;
@@ -119,13 +120,19 @@ function fallbackPacket(outbox, facts) {
 
 /** Laptop processing precedes the private hosted writer; no inference model or plugin is downloaded. */
 export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
-  stateDirectory = path.resolve('.cache/collector'), infer, inferTimeoutMs = 10000, publishUrl, publishCredential } = {}) {
+  stateDirectory = path.resolve('.cache/collector'), infer, inferTimeoutMs = 10000, publishUrl, publishCredential,
+  gdeltMode = 'owned-release', getSignal } = {}) {
   const directory = path.resolve(stateDirectory);
+  if (!['owned-release', 'local-gkg'].includes(gdeltMode) || getSignal !== undefined && typeof getSignal !== 'function')
+    throw new TypeError('Use a reviewed local GDELT mode and cancellation interface');
   if (publishUrl && publishUrl !== LOCAL_PUBLISH_URL) throw new TypeError('Use the fixed owned HTTPS publish endpoint');
   if (publishCredential !== undefined && !/^[a-zA-Z0-9_-]{32,256}$/.test(publishCredential)) throw new TypeError('Invalid publish credential format');
   const publishing = Boolean(publishUrl && publishCredential), collectorEnv = {};
+  const localGdelt = gdeltMode === 'local-gkg' ? createLocalGdeltSource({ fetchImpl, now, stateDirectory: path.join(directory, 'gdelt') }) : null;
+  const snapshotReader = localGdelt ? (filters) => localGdelt.read(filters, { signal: getSignal?.() }) : undefined;
   const inferDeadline = Math.max(10, Math.min(60000, Number.isFinite(inferTimeoutMs) ? inferTimeoutMs : 10000));
-  let facts = null, clock = { schemaVersion: 1, lastCycleAt: null, lastCapturedAt: null, lastPublishedAt: null, lastPublishedDigest: null }, outbox = null;
+  let facts = null, clock = { schemaVersion: 1, lastCycleAt: null, lastCapturedAt: null, lastPublishedAt: null,
+    lastPublishedDigest: null, lastPublishedGdeltGeneration: null }, outbox = null;
   let initialized, serial = Promise.resolve(), temporary = 0;
   const file = (name) => path.join(directory, name);
   async function read(name) {
@@ -215,6 +222,8 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
     if (result.ok) {
       clock.lastPublishedAt = outbox.body.action === 'publish' ? outbox.body.packet.collectedAt : outbox.body.collectedAt;
       clock.lastPublishedDigest = outbox.body.action === 'publish' ? outbox.body.analysis.inputDigest : outbox.body.inputDigest;
+      if (outbox.body.action === 'publish') clock.lastPublishedGdeltGeneration =
+        outbox.body.packet.payload.sources.find((source) => source.id === 'gdelt')?.generatedAt || null;
       await save('clock.json', clock);
       await unlink(file('outbox.json')).catch((error) => { if (error.code !== 'ENOENT') throw error; }); outbox = null;
       return summary('published', { published: true });
@@ -233,7 +242,9 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
         const pending = await flush();
         if (outbox) return pending;
       }
-      const acquisition = await collectEarthSources(collectorEnv, {}, { fetchImpl, now });
+      getSignal?.()?.throwIfAborted();
+      const acquisition = await collectEarthSources(collectorEnv, {}, { fetchImpl, now, snapshotReader });
+      getSignal?.()?.throwIfAborted();
       const packet = packetOf(acquisition.packet), records = packet.payload.indexRecords;
       const previous = facts?.packet.payload.indexRecords || [], changes = delta(previous, records), inputDigest = factsDigest(records);
       const cached = new Map((facts?.labels || []).map((row) => [row.id, row.labels]));
@@ -244,7 +255,10 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
       const method = [...cached.values()].some((labels) => labels.length) ? 'deterministic-metadata-with-optional-local-derived-labels' : 'deterministic-source-metadata';
       const analysis = analysisOf(packet, changes, cached, method), changed = inputDigest !== facts?.inputDigest;
       if (publishing) {
-        const body = clock.lastPublishedDigest === inputDigest ? { action: 'heartbeat', collectedAt: packet.collectedAt,
+        const gdeltGeneration = packet.payload.sources.find((source) => source.id === 'gdelt')?.generatedAt || null;
+        // A processed batch can change coverage without changing selected IDs. Publish that real provenance in full.
+        const unchangedGdeltCoverage = gdeltMode !== 'local-gkg' || clock.lastPublishedGdeltGeneration === gdeltGeneration;
+        const body = clock.lastPublishedDigest === inputDigest && unchangedGdeltCoverage ? { action: 'heartbeat', collectedAt: packet.collectedAt,
           sources: packet.payload.sources, inputDigest } : { action: 'publish', packet, analysis };
         outbox = { schemaVersion: 1, body, failures: 0, nextRetryAt: 0,
           ...(body.action === 'publish' ? { localLabels: [...cached].map(([id, labels]) => ({ id, labels })) } : {}) };
@@ -263,14 +277,15 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
         unavailableSources: packet.payload.sources.filter((source) => source.status === 'unavailable').length, inferenceStatus: inference.status };
     }),
     flushOutbox: () => runSerial(() => flush()),
-    status: () => runSerial(() => ({ ...summary(outbox ? 'queued' : 'idle'), configured: publishing, stateDirectory: directory,
-      inputDigest: facts?.inputDigest || null, ...clock })),
+    status: () => runSerial(async () => ({ ...summary(outbox ? 'queued' : 'idle'), configured: publishing, stateDirectory: directory,
+      inputDigest: facts?.inputDigest || null, ...clock, gdeltMode, ...(localGdelt ? { gdelt: await localGdelt.status() } : {}) })),
+    close: () => localGdelt?.close(),
   };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const credential = process.env.EARTH_COLLECTION_SECRET || process.env.EARTH_COLLECTOR_TOKEN;
-  const pipeline = createLocalPipeline({ stateDirectory: process.argv[2] || '.cache/collector',
+  const pipeline = createLocalPipeline({ stateDirectory: process.argv[2] || '.cache/collector', gdeltMode: 'local-gkg',
     ...(credential ? { publishUrl: LOCAL_PUBLISH_URL, publishCredential: credential } : {}) });
   pipeline.cycle().then((result) => console.log(JSON.stringify({ status: result.status, published: result.published,
     capturedAt: result.capturedAt, recordCount: result.recordCount, changedRecords: result.changedRecords, revisedRecords: result.revisedRecords,

@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { ISS_OVERLAY_SOURCE_ID } from './policy.js';
+import { isSatelliteElementSupported } from './source.js';
 
 export function createLifecycle({
   state: layerState,
@@ -24,11 +25,16 @@ export function createLifecycle({
       layerState._orbitPaths = new Map();
       layerState._count = 0;
       layerState._lastUpdate = null;
+      layerState._lastCheckedAt = null;
+      layerState._satelliteSources = [];
+      layerState._withheldElements = { expired: 0, missingEpoch: 0, futureEpoch: 0 };
+      layerState._denseWithheldElements = { expired: 0, missingEpoch: 0, futureEpoch: 0 };
       layerState._trackedNorad = null;
       parts.tracking._cancelPendingTrackingRestore();
       layerState._trackedEntity = null;
       layerState._trackedFrameNumber = -1;
       layerState._trackedFrameGeo = null;
+      layerState._trackedCalculatedAt = null;
       layerState._trackedFrameNowForTest = null;
       layerState._lastFocusUpdate = 0;
       layerState._activeFocusCount = 0;
@@ -62,6 +68,9 @@ export function createLifecycle({
 
     enable(viewer) {
       layerState._enabled = true;
+      for (const [noradId, point] of layerState._points) {
+        if (!isSatelliteElementSupported(layerState._catalog.get(noradId), services.now?.() ?? Date.now())) point.show = false;
+      }
       holdContinuousRender('satellites'); // per-frame animator (perf wave 2)
       if (layerState._pointCollection)
         layerState._pointCollection.show =
@@ -70,8 +79,8 @@ export function createLifecycle({
             layerState._params.showPoints,
           );
       // Orbit ring primitives + persistent ISS host label — show them
-      for (const path of layerState._orbitPaths.values())
-        path.primitive.show = parts.controls.satelliteVisualsVisible(
+      for (const [noradId, path] of layerState._orbitPaths)
+        path.primitive.show = isSatelliteElementSupported(layerState._catalog.get(noradId), services.now?.() ?? Date.now()) && parts.controls.satelliteVisualsVisible(
           layerState._enabled,
           layerState._params.showOrbits,
         );

@@ -1,0 +1,77 @@
+# Continuous playback: the next acceptance gate
+
+Priority changed by the user on 11 October 2026. The next milestone is a system that continues to evolve visually between source deliveries, reconciles when observations arrive, and preserves factual accuracy. General feature expansion and the pending release remain on hold while this contract is established. The implementation and measured limits below are local candidates; production remains version 24.
+
+Prediction supplies visual continuity while source facts remain exact. The implementation retains a discreet visible distinction, with full provenance in selected-item details. It does not need modal warnings, repetitive labels, or implementation jargon.
+
+## Independent responsibilities
+
+1. **Collection** runs independently of visitors. It honors actual source delivery cadence, timestamps, quotas, gaps and retry instructions. A continuous collector does not manufacture new observations between deliveries. Laptop collection is interrupted by sleep, shutdown and loss of connectivity.
+2. **Stored facts** retain original measurements, source identity, observation/retrieval/collection dates and subsequent corrections. A newer retrieval does not advance an old observation's timestamp. History is a record of received facts, with separately identified derived products.
+3. **Model state** is derived from admitted facts. Each model declares its method/version, source observation IDs, valid time, forecast horizon, required fields and expiry. It is stored separately when useful for replay; browser animation frames do not create database observations.
+4. **Presentation** advances against an independent UTC clock. Aircraft have a separately recorded 25-second presentation buffer: already-received observations can support interpolation before short edge prediction is necessary. This display cursor never changes a measurement's time or the visible current-UTC clock. Rendered positions advance within the model's validity, at the visible renderer's cadence. Clock ticks and frame generation do not trigger source acquisition or inference jobs.
+5. **Reconciliation** immediately accepts each newer observation into factual state, then smoothly adjusts the visual estimate toward the newly anchored trajectory. Source dates and facts become correct immediately; a short visual correction remains part of the estimated display state.
+
+## Feed-specific continuation
+
+| Feed | Supported progression | Accuracy boundary |
+| --- | --- | --- |
+| Aircraft receiver telemetry | A 25-second observation buffer supports interpolation between two received fixes, using compatible endpoint motion where supported. At the buffer edge, dead reckoning is limited to five seconds from a source fix. | Require valid per-position time and plausible units/values. Buffer delay and calculated position time remain visible in selected details. Do not extrapolate a route, future turn or landing. Prediction expiry includes existing source age; retrieval never restarts its horizon. Cold startup can require a second actual fix. |
+| Transit vehicles | Interpolation between reliable timestamped observations; bounded prediction only when route/direction/motion evidence supports it. | A street route or heading cannot be assumed from two unqualified locations. Gaps and missing timestamps remain meaningful. |
+| Satellites, Sun and Moon | Continuous calculation from the appropriate orbital/astronomical model and current UTC. | Satellite propagation is an estimate tied to its element epoch and validity; it is not a stream of measured locations or evidence of camera direction. |
+| Forecast wind and other admitted weather forecasts | Evaluate provider-issued model fields within their declared valid times; smooth visual flow and transitions between valid frames. | Distinguish forecast from observed radar/lightning and retain issue/valid times. Do not synthesize new observed radar, lightning, storm advisories or imagery. |
+| Official cyclone forecast tracks | Interpolate within the provider's forecast points and valid times, preserving advisory issue time and any supplied forecast uncertainty. | Do not extend a forecast beyond its published validity or call its path an observed storm trajectory. |
+| Earthquakes, disaster references, news, annual economics, imagery, camera stills and static infrastructure | Continuous navigation, time and responsive transitions; smoothly incorporate newly delivered records or actual frames. A separately identified trend model may be an optional analysis product. | No invented incident, headline, measurement, photograph, event confirmation or historical value. Visual continuity does not require every factual record to move. |
+
+## Trajectory and correction contract
+
+- Keep stable entity IDs and motion state across observations. Replacing all entities on every fetch loses the trajectory and selection state.
+- Compute aircraft display state at the buffered presentation cursor, independently of current UTC. Use a coherent geographic path across the antimeridian and poles; do not linearly traverse the long longitude interval or mix barometric/geometric altitude as interchangeable measurements.
+- Prefer reported motion fields. Derived velocity needs multiple valid observations and its own explicit method. Missing position age cannot silently mean a new measurement.
+- Use a source-specific finite horizon and admissible speed/altitude/turn bounds. Initial horizons must be justified by replay error and source cadence before enabling prediction by default. No made-up confidence percentage is permitted without calibration.
+- At a new observation, measure the prediction's actual error before resetting its anchor. Blend a small correction over a short bounded interval toward the new trajectory projected to the same current time. Keep the measured anchor exact in details.
+- An implausible jump, identity change, out-of-order timestamp or large discontinuity resets motion state rather than inventing a connecting journey. New events and absent entities are not extrapolated into existence.
+- When the horizon ends, the entity retains its last admitted state with an unobtrusive stale/estimated distinction. The application clock, other valid motion models and interaction keep running.
+- Prediction must not rewrite measured histories, search results, alerts, evidence, provider freshness or annual values. Derived replay can be supported separately, with the model and valid time retained.
+- Use one continuous-render hold per active motion owner. Release it on layer disable, historical pause, hidden document, expired model or destruction. Static layers do not acquire a 60 fps hold merely because the clock is running.
+
+## Discreet presentation
+
+Use a small, consistent estimated-state symbol or styling with an accessible legend. Selected-item details expose last measured coordinates/time, estimated coordinates/time, model and age. A compact layer summary can explain the distinction once. Saved/exported values preserve the same classification; public APIs never erase it. A connected stream is distinct from a fresh source observation.
+
+## Current evidence and required proof
+
+### Comparison with the original implementation
+
+The original local checkout is pinned to [`591f299d11f38a612629a274463196d57ae3862e`](https://github.com/bilawalsidhu/gods-eye-view/tree/591f299d11f38a612629a274463196d57ae3862e). Its aircraft renderer already separates acquisition from display: a thirty-second delay brackets retained fixes, then interpolates their positions. Its selected aircraft shares one cached pose per frame across camera, labels and trail, with a 900 ms correction. Fleet calculations are throttled to 80 ms, skip sub-metre position writes and avoid recomputing camera-dependent rotation every frame. Those are useful buffering, ownership and rendering-budget patterns.
+
+Immediate startup in that renderer comes from projecting the oldest fix backwards up to sixty seconds; forward coasting can extend sixty to three hundred seconds, based partly on newer contact messages. Synthetic kinematic fixes also enter its display history. These are modeling choices, not new measured locations. They cannot establish unchanged accuracy or be imported into our stored observation history as measurements. The original random road dots are a separate simulation and do not justify removing real aircraft display interpolation.
+
+The original portable `src/data/contactPlayback.js`, used for transit, is also worth reusing: its target delay follows measured delivery lag, its display cursor advances monotonically, and buffering/held states use wake timers rather than idle frame work. Our lean rewrite removed these motion paths and replaced aircraft with fixed observations. Restoring continuity should retain the useful original architecture rather than rebuilding unrelated product features.
+
+The remaining startup improvement is to supply a bounded window of recent genuine fixes from the independent collector and hosted cache. A new browser could then immediately bracket its playback cursor instead of waiting for a second live fix. Current aircraft telemetry is not in durable history, so that warm-start path remains an explicit requirement, not a shipped claim. Adaptive delay also needs a monotonic presentation cursor so changing network lag cannot make time run backwards.
+
+The version-24 aircraft renderer uses fixed observed positions and rebuilds entities on each update. The local candidate retains entity identity, separate display models and original fixes, and corrects a small residual over 1.2 seconds. The readsb adapter now requires an explicit valid `seen_pos` and actual source epoch for a qualified position time; missing fields retain coordinates without authorizing motion. It preserves geometric and barometric rate types separately.
+
+The local factory now records whether a snapshot date came from the source or receipt and preserves actual upstream epochs without clamping to cache time. Transit timestamp fallbacks still do not prove a precise vehicle fix time, so no new transit forecast is admitted. Satellite provenance now retains both `STALE` and `STALE-ERROR`, offline/cache age, original retrieval time and element epoch across display and tracking. Missing epochs, epochs more than 24 hours in the future and elements seven days old are withheld, including existing open-session orbit/label paths. Seven days is an application display cutoff, not a measured accuracy guarantee. Aircraft/transit telemetry is not yet included in durable intelligence history.
+
+The owned live aircraft route returned 503 and the documented provider point endpoint returned 403 during the read-only check. No access controls were bypassed. Offline calibration instead sampled the first 4 MiB of the official [10 October 2026 readsb-staging-0 archive](https://github.com/adsblol/globe_history_2026/releases/tag/v2026.10.10-planes-readsb-staging-0), retaining 101 complete traces with 139,788 original observations under [ODbL 1.0](https://www.adsb.lol/docs/open-data/historical/). All sampled ICAO identifiers end in `e3`; one day and one shard do not establish global accuracy or provider availability.
+
+Straight-line extrapolation was measured against the next actual fix within one second of each requested horizon, at that fix's exact original time. Accepted-pair horizontal 95th-percentile errors were approximately 96 m at five seconds, 285 m at ten, 560 m at fifteen, 1,694 m at thirty and 3,035 m at forty-five. The forty-five-second maximum was 9,545 m. Full denominators, exclusions, unfiltered matched intervals, vertical compatibility and source/turn/gap strata remain in the local replay report. This rejects forty-five-second prediction as the default and motivates buffered interpolation plus a five-second edge horizon.
+
+A thirty-second acquisition replay withheld original intermediate fixes from the model, using a twenty-five-second presentation delay. Among 68,339 qualifying withheld comparisons, bounded endpoint-motion interpolation plus the five-second edge had horizontal errors of 9.829 m at the median, 81.168 m at the 95th percentile, 393.387 m at the 99th percentile and 977.157 m maximum. The geodesic baseline's 95th percentile was 314.385 m. These conditional measurements are not a universal accuracy guarantee: the [compact calibration report](aircraft-motion-calibration.json) separately counts expired anchors, gaps, startup, source boundaries and unavailable recorded truth. Only about 9% of the one-second clock grid had a recorded truth within one second. Long gaps stop display motion; their held positions are not scored as valid predictions or hidden from the unfiltered report.
+
+Focused renderer checks and the actual local browser replay show a clock that advances independently, stable selected identity through the next original observation, changing display coordinates without per-frame source requests, retained original dates, and expired motion releasing its continuous-render hold. Early second-fix startup now holds a coherent first buffered pose instead of jumping backwards at activation. Public flight factories enable the measured bounded policy locally, retaining an explicit observed-only override. All 1,250 package tests and the application build pass. These checks do not verify a working production aircraft provider, durable telemetry collection, immediate warm startup or universal rendering performance. Publication remains held pending the warm-start and release checks.
+
+Satellites already use orbital prediction. The pending continuity package separates visible UTC from rendered frames, adds durable D1 collection revisions and an SSE browser connection, and acquires GKG directly on the laptop. Local checks cover those components; the package is **not a production release** and does not satisfy this trajectory gate by itself. Production remains the previously verified version 24.
+
+Acceptance requires:
+
+1. Actual visible clock and motion progression between source deliveries, with no network request or inference per animation frame.
+2. Timestamp/units validation, finite horizon and geographic discontinuity handling demonstrated against representative recorded telemetry, including missing, delayed and out-of-order observations.
+3. A recorded error/correction comparison against subsequently observed points; smooth correction preserves stable selection, source facts and valid current-time anchors.
+4. Sleep/reconnect/outage/history behavior that catches up UTC correctly, expires unsupported motion, preserves original timestamps and releases owned rendering/network work.
+5. End-to-end publication and browser delivery verification, with source ingestion remaining independent of visitor layer toggles. This cannot stand in for collecting all 20 map layers.
+6. Discreet but legible estimated/observed distinction in the actual browser, accessible details, API output and exported/replayed data. No claim of equal or perfect accuracy is made merely because motion appears smooth.
+
+The larger project goal remains intact. This gate changes the order of work; it does not mark existing requirements complete or narrow the original scope.

@@ -1,6 +1,7 @@
 import { twoline2satrec } from 'satellite.js';
 import * as Cesium from 'cesium';
 import { CATALOG_GROUPS, ISS_NORAD, POINT_STYLES } from './policy.js';
+import { isSatelliteElementSupported, satelliteProvenance, satelliteSourceMetadata } from './source.js';
 
 export function createIngestion({
   state: layerState,
@@ -31,10 +32,10 @@ export function createIngestion({
               const res = await source.readGroup(groupDef.path, {
                 signal: updateSignal,
               });
-              if (!res.ok) return { ...groupDef, entries: [], ok: false };
+              if (!res.ok) return { ...groupDef, source: satelliteSourceMetadata(res, groupDef.path), entries: [], ok: false };
               const entries = parts.orbits.parseTLE(res.text);
               updateSignal.throwIfAborted();
-              return { ...groupDef, entries, ok: entries.length > 0 };
+              return { ...groupDef, source: satelliteSourceMetadata(res, groupDef.path), entries, ok: entries.length > 0 };
             } catch (error) {
               if (updateSignal.aborted || error?.name === 'AbortError')
                 throw error;
@@ -43,6 +44,8 @@ export function createIngestion({
           }),
         );
         updateSignal.throwIfAborted();
+        const checkedAt = services.now?.() ?? Date.now();
+        layerState._lastCheckedAt = checkedAt;
 
         const failed = results.filter((r) => !r.ok).map((r) => r.path);
         if (failed.length > 0) {
@@ -59,6 +62,9 @@ export function createIngestion({
         // the chip still read "just now". Keep the existing (stale) catalog on
         // screen and surface the outage instead — do NOT stamp _lastUpdate.
         if (results.every((r) => !r.ok)) {
+          layerState._satelliteSources = (layerState._satelliteSources || results.map((r) => ({ ...r.source, group: r.path })))
+            .map((record) => ({ ...record, available: false }));
+          for (const satellite of layerState._catalog.values()) satellite.source = { ...satellite.source, available: false };
           layerState._lastError = 'CelesTrak unreachable';
           console.warn(
             '[Data:Satellites] All CelesTrak groups failed — keeping existing catalog, surfacing outage',
@@ -93,12 +99,14 @@ export function createIngestion({
         layerState._denseLoadToken++; // cancel any in-flight dense load against the old catalog
         parts.labels._syncIssOverlay();
 
-        const now = new Date();
+        const now = new Date(checkedAt);
+        layerState._withheldElements = { expired: 0, missingEpoch: 0, futureEpoch: 0 };
+        layerState._satelliteSources = results.map((r) => ({ ...r.source, group: r.path, available: r.ok }));
 
         // Process all TLE entries in CATALOG_GROUPS order
         const allEntries = [];
         for (const r of results) {
-          for (const e of r.entries) allEntries.push({ ...e, group: r.tag });
+          for (const e of r.entries) allEntries.push({ ...e, group: r.tag, source: r.source });
         }
 
         // Deduplicate by NORAD ID — first (most specific) group tag wins
@@ -107,17 +115,20 @@ export function createIngestion({
         for (const entry of allEntries) {
           const satrec = twoline2satrec(entry.line1, entry.line2);
           if (!satrec || satrec.error !== 0) continue;
+          const satellite = { name: entry.name, satrec, group: entry.group, source: entry.source };
+          if (!isSatelliteElementSupported(satellite, checkedAt)) {
+            const status = satelliteProvenance(satellite, checkedAt).elementStatus;
+            const key = status === 'expired' ? 'expired' : status === 'future-epoch' ? 'futureEpoch' : 'missingEpoch';
+            layerState._withheldElements[key]++;
+            continue;
+          }
 
           const noradId = Number(satrec.satnum);
           if (seen.has(noradId)) continue;
           seen.add(noradId);
 
           // Store in catalog
-          layerState._catalog.set(noradId, {
-            name: entry.name,
-            satrec,
-            group: entry.group,
-          });
+          layerState._catalog.set(noradId, satellite);
 
           // Propagate initial position
           const pos = parts.orbits.propagatePosition(satrec, now);
@@ -142,6 +153,7 @@ export function createIngestion({
           });
 
           layerState._points.set(noradId, point);
+          point._predictionAt = checkedAt;
         }
 
         // Show ISS orbital path by default
@@ -155,11 +167,15 @@ export function createIngestion({
 
         layerState._count = layerState._points.size;
         layerState._catalogRevision++;
-        layerState._lastUpdate = Date.now();
-        layerState._lastPropagation = Date.now();
+        const retrievals = results.filter((r) => r.ok).map((r) => Date.parse(r.source?.retrievedAt));
+        layerState._lastUpdate = retrievals.length && retrievals.every(Number.isFinite) ? Math.min(...retrievals) : null;
+        layerState._lastPropagation = checkedAt;
+        const withheld = Object.values(layerState._withheldElements).reduce((sum, count) => sum + count, 0);
+        if (!layerState._count) layerState._lastError = 'No supported orbital elements';
+        else if (withheld && !layerState._lastError) layerState._lastError = `${withheld} orbital element entries withheld by display age policy`;
         layerState._lastTrackingRefreshOutcome = {
           epoch: trackingRefreshEpoch,
-          status: failed.length ? 'partial' : 'accepted',
+          status: !layerState._count ? 'source-unavailable' : failed.length || withheld ? 'partial' : 'accepted',
           failedGroups: [...failed],
         };
         console.log(

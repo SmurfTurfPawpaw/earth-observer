@@ -328,12 +328,47 @@ export function createShell(viewer, manager) {
     renderActivity();
     commandPalette?.refresh();
   };
+  let stopSelectionDetails = () => {};
   const select = (entity) => {
+    stopSelectionDetails();
     if (!entity) { closePanel('selection', { restoreSelection: false }); return; }
-    document.getElementById('selection-title').textContent = entity.name || String(entity.id || 'Selected feature');
-    const fields = selectionFields(entity, viewer.clock.currentTime), list = el('dl');
-    for (const [label, value] of fields) list.append(el('dt', '', label), el('dd', '', value));
-    const details = document.getElementById('selection-details'); details.replaceChildren(fields.length ? list : el('p', '', 'No additional details are available for this feature.'));
+    const detailFields = el('div', 'selection-fields');
+    const details = document.getElementById('selection-details'); details.replaceChildren(detailFields);
+    const repaint = () => {
+      document.getElementById('selection-title').textContent = entity.name || String(entity.id || 'Selected feature');
+      const fields = selectionFields(entity, viewer.clock.currentTime), list = el('dl');
+      for (const [label, value] of fields) list.append(el('dt', '', label), el('dd', '', value));
+      detailFields.replaceChildren(fields.length ? list : el('p', '', 'No additional details are available for this feature.'));
+    };
+    repaint();
+    let detailTimer, lastDetailPaint = Date.now(), stopProperties = () => {};
+    const queueDetails = () => {
+      if (destroyed || document.hidden || activePanel !== 'selection' || detailTimer !== undefined) return;
+      detailTimer = setTimeout(() => {
+        detailTimer = undefined;
+        if (!destroyed && !document.hidden && activePanel === 'selection' && viewer.selectedEntity === entity) {
+          repaint(); lastDetailPaint = Date.now();
+          // Age and model details also advance while the map itself is idle.
+          if (entity.properties?.isConstant === false) queueDetails();
+        }
+      }, Math.max(0, 1000 - (Date.now() - lastDetailPaint)));
+    };
+    const bindProperties = () => {
+      stopProperties();
+      stopProperties = entity.properties?.definitionChanged?.addEventListener(queueDetails) || (() => {});
+    };
+    bindProperties();
+    const stopEntity = entity.definitionChanged?.addEventListener((_entity, property) => {
+      if (property === 'properties') { bindProperties(); queueDetails(); }
+      else if (property === 'name' || property === 'position') queueDetails();
+    });
+    const showDetails = ({ panel, open }) => { if (panel === 'selection' && open) queueDetails(); };
+    panelListeners.add(showDetails);
+    document.addEventListener('visibilitychange', queueDetails);
+    stopSelectionDetails = () => {
+      clearTimeout(detailTimer); stopProperties(); stopEntity?.();
+      panelListeners.delete(showDetails); document.removeEventListener('visibilitychange', queueDetails);
+    };
     const frameUrl = entity.properties?.frameUrl?.getValue?.(viewer.clock.currentTime);
     if (typeof frameUrl === 'string' && /^\/api\/cctv\/frame\/[A-Za-z0-9_.%~-]+$/.test(frameUrl)) {
       const preview = el('div', 'camera-preview'), frame = el('div', 'camera-frame'), image = el('img');
@@ -352,6 +387,7 @@ export function createShell(viewer, manager) {
     openPanel('selection'); viewer.scene.requestRender();
   };
   cleanup.push(viewer.selectedEntityChanged.addEventListener(select));
+  cleanup.push(() => stopSelectionDetails());
   if (manager.subscribe) cleanup.push(manager.subscribe(update));
   update();
   const currentPlaceView = () => {

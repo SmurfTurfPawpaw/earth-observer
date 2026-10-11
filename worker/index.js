@@ -11,6 +11,7 @@ import { createWorkerFetch } from './fetch.js';
 import { handleDemand } from './demand.js';
 import { createHistoryHandler } from './history.js';
 import { handleCollection, preparedIntelligenceResponse } from './collection-api.js';
+import { handleUpdates } from './collection-updates.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -52,6 +53,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
       url.pathname = localPath;
       const internal = new Request(url, request);
       try {
+        const updates = handleUpdates(internal, env);
+        if (updates) return secured(updates);
         const collection = await handleCollection(internal, env, ctx, { now, fetchImpl: providerFetch });
         if (collection) return secured(collection);
         const history = await createHistoryHandler({ env, now })(internal);
@@ -62,7 +65,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         // Authenticated extension handlers own their methods and body admission.
         for (const handle of handlers) { const response = await handle(internal, env, ctx); if (response) return secured(response); }
         if (internal.method !== 'GET' && !(internal.method === 'POST' && localPath === '/api/overpass')) return secured(jsonError('Method Not Allowed', 405));
-        const cacheable = internal.method === 'GET' && !internal.headers.has('authorization') && !internal.headers.has('cookie');
+        const revalidate = /(?:^|,)\s*(?:no-cache|no-store|max-age\s*=\s*0)(?:\s*,|\s*$)/i.test(internal.headers.get('cache-control') || '');
+        const cacheable = internal.method === 'GET' && !internal.headers.has('authorization') && !internal.headers.has('cookie') && !revalidate;
         const cacheKey = new Request(url.href);
         if (cacheable && cache) {
           let hit;

@@ -1,6 +1,7 @@
 import * as Cesium from 'cesium';
 import { satelliteClassLabel } from '../../data/satelliteClass.js';
 import { ISS_NORAD } from './policy.js';
+import { isSatelliteElementSupported, satelliteProvenance } from './source.js';
 
 /**
  * Map one CelesTrak catalog satellite to a JSON-safe analyst record
@@ -43,8 +44,9 @@ export function mapAnalystRecord(raw) {
 }
 
 /** Create on-demand analyst snapshots owned by one layer instance. */
-export function createRecords({ state, parts }) {
+export function createRecords({ state, parts, services = {} }) {
   function analystGeo(noradId, sat, now) {
+    if (!isSatelliteElementSupported(sat, now.getTime())) return null;
     const pos = sat?.satrec
       ? parts.orbits.propagatePosition(sat.satrec, now)
       : null;
@@ -58,6 +60,7 @@ export function createRecords({ state, parts }) {
         lon: pos.longitude,
         altitudeM: pos.altitude,
         speedMps: Number.isFinite(pos.speedMps) ? pos.speedMps : null,
+        calculatedAt: now.toISOString(),
       };
     }
     const point = state._points.get(noradId);
@@ -69,6 +72,7 @@ export function createRecords({ state, parts }) {
       lon: Cesium.Math.toDegrees(carto.longitude),
       altitudeM: carto.height,
       speedMps: null,
+      calculatedAt: Number.isFinite(point._predictionAt) ? new Date(point._predictionAt).toISOString() : null,
     };
   }
 
@@ -77,14 +81,14 @@ export function createRecords({ state, parts }) {
     const limit = Number.isFinite(maxCount)
       ? Math.max(1, Math.floor(maxCount))
       : 2000;
-    const now = new Date();
+    const now = new Date(services.now?.() ?? Date.now());
     const result = [];
     const emit = (noradId, sat) => {
       if (result.length >= limit) return false;
       const pos = analystGeo(noradId, sat, now);
       if (!pos) return true;
       result.push(
-        mapAnalystRecord({
+        { ...mapAnalystRecord({
           noradId,
           name: sat?.name,
           group: sat?.group,
@@ -92,7 +96,7 @@ export function createRecords({ state, parts }) {
           lon: pos.lon,
           altitudeM: pos.altitudeM,
           speedMps: pos.speedMps,
-        }),
+        }), provenance: satelliteProvenance(sat, now.getTime()), calculatedAt: pos.calculatedAt },
       );
       return result.length < limit;
     };

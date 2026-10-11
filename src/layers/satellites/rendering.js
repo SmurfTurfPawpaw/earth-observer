@@ -1,6 +1,7 @@
 import * as Cesium from 'cesium';
 import { gstime } from 'satellite.js';
 import { ISS_NORAD, POSITION_UPDATE_MS, RING_ROTATION_MS } from './policy.js';
+import { isSatelliteElementSupported } from './source.js';
 
 export function createRendering({
   state: layerState,
@@ -40,9 +41,9 @@ export function createRendering({
     if (layerState._orbitPaths.has(noradId)) return; // already showing
 
     const sat = layerState._catalog.get(noradId);
-    if (!sat || !layerState._viewer) return;
+    if (!sat || !layerState._viewer || !isSatelliteElementSupported(sat, services.now?.() ?? Date.now())) return;
 
-    const bakeDate = new Date();
+    const bakeDate = new Date(services.now?.() ?? Date.now());
     const basePositions = parts.orbits.computeOrbitPath(sat.satrec, bakeDate);
     if (basePositions.length < 2) return;
 
@@ -113,8 +114,12 @@ export function createRendering({
   function _updateOrbitPathRotations(nowDate) {
     if (layerState._orbitPaths.size === 0) return;
 
-    for (const path of layerState._orbitPaths.values()) {
+    for (const [noradId, path] of layerState._orbitPaths) {
       if (!path.primitive) continue;
+      if (!isSatelliteElementSupported(layerState._catalog.get(noradId), nowDate.getTime())) {
+        path.primitive.show = false;
+        continue;
+      }
       parts.orbits.orbitFrameModelMatrix(
         path.gmstAtBake,
         nowDate,
@@ -143,11 +148,21 @@ export function createRendering({
    */
 
   function _propagateAll() {
-    const now = new Date();
+    const now = new Date(services.now?.() ?? Date.now());
     let updated = 0;
 
     for (const [noradId, sat] of layerState._catalog) {
       if (sat.group === 'dense') continue;
+      const point = layerState._points.get(noradId);
+      if (!isSatelliteElementSupported(sat, now.getTime())) {
+        if (point) {
+          point.show = false;
+          if (!point._elementExpired) { point._elementExpired = true; layerState._catalogRevision++; }
+        }
+        const path = layerState._orbitPaths.get(noradId);
+        if (path?.primitive) path.primitive.show = false;
+        continue;
+      }
       const pos = parts.orbits.propagatePosition(sat.satrec, now);
       if (!pos) continue;
 
@@ -156,9 +171,9 @@ export function createRendering({
         pos.latitude,
         pos.altitude,
       );
-      const point = layerState._points.get(noradId);
       if (point) {
         point.position = cartesian;
+        point._predictionAt = now.getTime();
         updated++;
       }
     }
@@ -177,6 +192,9 @@ export function createRendering({
   function _preRenderTick() {
     if (!layerState._enabled) return;
     const now = focusNowMs(Date.now());
+    if (layerState._trackedNorad !== null && !isSatelliteElementSupported(layerState._catalog.get(layerState._trackedNorad), Number(layerState._trackedFrameNowForTest?.() ?? services.now?.() ?? Date.now()))) {
+      parts.tracking._clearTracking(false, { origin: 'element-expired' });
+    }
 
     const interval = layerState._trackedNorad ? 200 : POSITION_UPDATE_MS;
     // Space Missions keeps this layer enabled for TLE lookup while deliberately
@@ -200,6 +218,7 @@ export function createRendering({
       const point = layerState._points.get(layerState._trackedNorad);
       if (pos && point) {
         point.position = layerState._trackedFrameCartesian; // primitive setter clones
+        point._predictionAt = layerState._trackedCalculatedAt;
       }
     }
 

@@ -3,7 +3,8 @@ import { readPreparedIntelligence, PreparedBaselineConflict } from './history.js
 import { intelligenceQuery } from '../server/hosted/intelligence.js';
 import { createDiscoveryIndex } from '../src/core/discovery-index.js';
 import { groupReports } from '../src/core/intelligence-grouping.js';
-import { publishLocalCollection, heartbeatCollection, readLocalAnalysis } from './collection-publication.js';
+import { publishLocalCollection, heartbeatCollection, readLocalAnalysis, collectionFactsDigest } from './collection-publication.js';
+import { publishCollectionRevision } from './collection-updates.js';
 
 const json = (payload, status = 200, headers = {}) => Response.json(payload, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers,
@@ -59,7 +60,18 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
     const result = body.action === 'publish' ? await publishLocalCollection(env, body.packet, body.analysis, { now }) :
       body.action === 'heartbeat' ? await heartbeatCollection(env, body, { now }) : await collectEarthSources(env, ctx, { now, fetchImpl });
     if (result.conflict) return json({ error: 'Prepared baseline changed; publish the retained full packet' }, 409);
-    return json(result, result.stored ? 200 : 503, result.stored ? {} : { 'retry-after': '60' });
+    const accepted = Boolean(result.stored && !result.failures?.length);
+    let revision;
+    if (accepted && env.EARTH_DB?.prepare) {
+      // Announce the actual retained current pointer, including when an older
+      // writer was superseded. Durable facts/history precede notification.
+      const current = await readPreparedIntelligence(env, { now });
+      if (!current) throw new Error('Prepared collection is unavailable');
+      revision = await publishCollectionRevision(env, { at: current.collectedAt,
+        digest: await collectionFactsDigest(current.payload.indexRecords), recordCount: current.payload.indexRecords.length });
+    }
+    return json({ ...result, stored: accepted, updatesConfigured: Boolean(env.EARTH_DB?.prepare), updatesPublished: Boolean(revision?.stored) },
+      accepted ? 200 : 503, accepted ? {} : { 'retry-after': '60' });
   } catch (error) {
     if (error instanceof PreparedBaselineConflict) return json({ error: 'Prepared baseline changed; publish the retained full packet' }, 409);
     if (error instanceof TypeError) return json({ error: 'Invalid bounded collection metadata or analysis' }, 400);

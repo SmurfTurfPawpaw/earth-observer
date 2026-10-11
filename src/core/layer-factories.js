@@ -26,7 +26,7 @@ const GROUPS = {
   'local-datacenters': 'infrastructure', 'local-dams': 'infrastructure',
 };
 const SERVICE_REQUIREMENTS = {
-  weather: ['weatherClock'], wind: ['weatherClock'], cyclones: ['overlayHost'], earthquakes: ['overlayHost'],
+  aircraft: ['render'], weather: ['weatherClock'], wind: ['weatherClock'], cyclones: ['overlayHost'], earthquakes: ['overlayHost'],
   perimeters: ['overlayHost'], imagery: ['render'], satellites: ['overlayHost', 'render'],
   bikeshare: ['overlayHost', 'render'], installations: ['surface', 'overlayHost', 'render'],
   alpr: ['surface', 'overlayHost', 'render'],
@@ -44,7 +44,8 @@ export function preloadLayer(id) {
   return codeCache.get(group);
 }
 
-function aircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities }) {
+/** Shared live aircraft adapter; receipt clocks never qualify a position fix. */
+export function createAircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities }) {
   const endpoint = military ? '/api/military' : '/api/flights';
   const read = async (query = {}, { signal } = {}) => {
     const params = new URLSearchParams();
@@ -62,15 +63,21 @@ function aircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities 
     async getSnapshot(query, options) {
       const { response, payload } = await read(query, options);
       const now = Date.now();
-      const upstreamTime = Number(payload?.now);
-      const upstreamMs = Number.isFinite(upstreamTime) && upstreamTime > 0 ? upstreamTime * (upstreamTime < 100000000000 ? 1000 : 1) : null;
-      const receivedAt = now - Math.max(0, Number(response.headers.get('x-feed-age-ms')) || 0);
-      const observedAtMs = upstreamMs !== null && upstreamMs <= now + 10000 ? Math.min(upstreamMs, receivedAt) : receivedAt;
+      const upstreamTime = payload?.now;
+      const upstreamMs = typeof upstreamTime === 'number' && Number.isFinite(upstreamTime) && upstreamTime > 0
+        ? upstreamTime * (upstreamTime < 100000000000 ? 1000 : 1) : null;
+      const cacheAge = Number(response.headers.get('x-feed-age-ms'));
+      const cacheAgeMs = Number.isFinite(cacheAge) && cacheAge >= 0 ? cacheAge : 0;
+      const receivedAt = now - cacheAgeMs;
+      const hasSourceTime = upstreamMs !== null && upstreamMs <= now + 10000 && upstreamMs <= 8640000000000000;
+      const observedAtMs = hasSourceTime ? upstreamMs : receivedAt > 0 ? receivedAt : null;
+      const observedAtSource = hasSourceTime ? 'source' : observedAtMs == null ? 'unknown' : 'receipt';
       return { ...readsbSnapshot(payload, {
         source: 'adsb.lol', now,
         coverage: military ? 'military receiver snapshot' : 'bounded view near the requested coordinates',
         observedAtMs,
-        stale: response.headers.get('x-feed-cache') === 'STALE' || now - observedAtMs > 120000,
+        observedAtSource,
+        stale: response.headers.get('x-feed-cache') === 'STALE' || cacheAgeMs > 120000 || (observedAtMs != null && now - observedAtMs > 120000),
       }), status: response.status };
     },
     async getIdentities(query, options) { return readsbIdentities((await read(query, options)).payload); },
@@ -79,13 +86,19 @@ function aircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities 
   };
 }
 
-export async function createLayer(id, { services = {}, fetchImpl, getLocalArea }) {
+export async function createLayer(id, { services = {}, fetchImpl, getLocalArea, documentRef = globalThis.document, aircraftMotion = {} }) {
   const { surface, weatherClock, overlayHost } = services;
   const modules = await preloadLayer(id);
   if (id === 'flights' || id === 'military') {
     const military = id === 'military';
     const [engine, normalizers] = modules;
-    return engine.createObservedAircraftLayer({ id, source: aircraftSource(fetchImpl, military, normalizers) });
+    return engine.createObservedAircraftLayer({
+      id, source: createAircraftSource(fetchImpl, military, normalizers), render: services.render, documentRef,
+      predictionEnabled: aircraftMotion.predictionEnabled ?? true,
+      horizonMs: aircraftMotion.horizonMs,
+      correctionMs: aircraftMotion.correctionMs,
+      presentationDelayMs: aircraftMotion.presentationDelayMs,
+    });
   }
   if (id.startsWith('weather-') && id !== 'weather-cyclones') {
     const [engine, source] = modules;

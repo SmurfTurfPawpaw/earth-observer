@@ -26,13 +26,13 @@ const services = new WeakMap(), pending = new WeakMap();
 const pluginIds = new Set(COLLECTOR_PLUGINS.map((plugin) => plugin.id));
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 
-function service(env, now, fetchImpl) {
+function service(env, now, fetchImpl, snapshotReader) {
   const owner = env.EARTH_STORE || env;
   const saved = services.get(owner);
-  if (saved?.now === now && saved.fetchImpl === fetchImpl) return saved.middleware;
+  if (saved?.now === now && saved.fetchImpl === fetchImpl && saved.snapshotReader === snapshotReader) return saved.middleware;
   const middleware = createWorkerMiddleware([intelligenceProxy({ fetchImpl: createWorkerFetch(fetchImpl), now,
-    env: { ...env, GDELT_LIVE_FALLBACK: '0' }, snapshotStore: createProviderStore(env) })]);
-  saved?.middleware.close(); services.set(owner, { middleware, now, fetchImpl }); return middleware;
+    env: { ...env, GDELT_LIVE_FALLBACK: '0' }, snapshotStore: createProviderStore(env), ...(snapshotReader ? { snapshotReader } : {}) })]);
+  saved?.middleware.close(); services.set(owner, { middleware, now, fetchImpl, snapshotReader }); return middleware;
 }
 
 function collectionPacket(packet, now) {
@@ -77,11 +77,11 @@ export async function persistEarthCollection(env, input, { now = Date.now, match
 }
 
 /** Fixed adapters run independently of all visitor map/layer toggles. Trigger provisioning belongs to the host. */
-export function collectEarthSources(env = {}, _ctx = {}, { now = Date.now, fetchImpl = fetch } = {}) {
+export function collectEarthSources(env = {}, _ctx = {}, { now = Date.now, fetchImpl = fetch, snapshotReader } = {}) {
   const owner = env.EARTH_STORE || env;
   if (pending.has(owner)) return pending.get(owner);
   const work = (async () => {
-    const middleware = service(env, now, fetchImpl);
+    const middleware = service(env, now, fetchImpl, snapshotReader);
     const response = await middleware.handle(new Request('https://earth-observer.internal/api/intelligence?category=all'));
     if (!response.ok) throw new Error('Fixed-source collection did not produce an accepted response');
     const payload = await response.json();

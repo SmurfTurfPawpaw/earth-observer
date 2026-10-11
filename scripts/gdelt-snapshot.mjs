@@ -131,10 +131,33 @@ export async function readGkgArchive(archive, descriptor, { retrievedAt, signal,
   } finally { signal?.removeEventListener('abort', cancel); stream.destroy(); source.destroy(); }
 }
 
+/** Prune expired batches from a validated prior sample without advancing its actual generation or retrieval dates. */
+export function retainedGkgSnapshot(value, nowMs = Date.now()) {
+  if (value?.schemaVersion !== 2 || !Number.isFinite(Date.parse(value.generatedAt)) ||
+      nowMs - Date.parse(value.generatedAt) > 86400000) return null;
+  const original = validateGdeltSnapshot(value, Math.min(nowMs, Date.parse(value.generatedAt)));
+  const processedBatches = original.coverage.processedBatches.filter((batch) =>
+    nowMs - Date.parse(gkgBatchTime(batch.id)) <= 86400000 && nowMs - Date.parse(batch.retrievedAt) <= 86400000);
+  if (!processedBatches.length) return null;
+  return validateGdeltSnapshot(createGkgSnapshot({ generatedAt: original.generatedAt, processedBatches,
+    reports: Object.values(original.categories).flatMap((category) => category.reports) }), nowMs);
+}
+
 /** One public latest GKG batch; a failure cannot replace the published last-good sample. */
-export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, timeoutMs = 45000, previousSnapshot, demandPriority = false } = {}) {
-  const signal = AbortSignal.timeout(timeoutMs);
+export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, timeoutMs = 45000, previousSnapshot,
+  demandPriority = false, signal: callerSignal, archiveParser = readGkgArchive } = {}) {
+  const deadline = AbortSignal.timeout(Math.max(1, Math.min(45000, timeoutMs)));
+  const signal = callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
+  let checkedAt = null;
+  const httpError = async (response, source) => {
+    const retry = response.headers.get('retry-after');
+    const delay = /^\d+$/.test(retry || '') ? Number(retry) * 1000 : Date.parse(retry || '') - now();
+    await response.body?.cancel();
+    return Object.assign(new Error(`GKG ${source} HTTP ${response.status}`), { httpStatus: response.status,
+      retryAfterMs: Number.isFinite(delay) ? Math.max(0, Math.min(86400000, delay)) : 0 });
+  };
   try {
+    signal.throwIfAborted();
     let previous;
     if (previousSnapshot === undefined) {
       try {
@@ -144,28 +167,33 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
         else await response.body?.cancel();
       } catch {} // No prior asset is valid on a first deployment.
     }
-    if (previousSnapshot?.schemaVersion === 2) { try { previous = validateGdeltSnapshot(previousSnapshot, now()); } catch {} }
+    if (previousSnapshot?.schemaVersion === 2) { try { previous = retainedGkgSnapshot(previousSnapshot, now()); } catch {} }
     const manifestResponse = await fetchImpl(GKG_UPDATE_MANIFEST, { signal, redirect: 'error', headers: { ...HEADERS, Accept: 'text/plain' } });
-    if (!manifestResponse.ok) { await manifestResponse.body?.cancel(); throw new Error(`GKG manifest HTTP ${manifestResponse.status}`); }
+    if (!manifestResponse.ok) throw await httpError(manifestResponse, 'manifest');
     const descriptor = parseGkgUpdateManifest(await readResponseTextCapped(manifestResponse, 16384, signal), now());
-    if (previous?.coverage.processedBatches.some((batch) => batch.id === descriptor.batch)) return { status: 'skipped', reason: 'Latest GKG batch already processed; previous snapshot preserved' };
+    checkedAt = new Date(now()).toISOString();
+    if (previous?.coverage.processedBatches.some((batch) => batch.id === descriptor.batch)) return { status: 'skipped', code: 'unchanged',
+      batch: descriptor.batch, checkedAt, reason: 'Latest GKG batch already processed; previous snapshot preserved' };
     const [archiveResponse, priority] = await Promise.all([
       fetchImpl(descriptor.url, { signal, redirect: 'error', headers: { ...HEADERS, Accept: 'application/zip' } }),
       readDemandPriority({ enabled: demandPriority, fetchImpl, now, signal }),
     ]);
-    if (!archiveResponse.ok) { await archiveResponse.body?.cancel(); throw new Error(`GKG archive HTTP ${archiveResponse.status}`); }
+    if (!archiveResponse.ok) throw await httpError(archiveResponse, 'archive');
     const archive = await readResponseBytesCapped(archiveResponse, MAX_GKG_ZIP_BYTES, signal), retrievedAt = new Date(now()).toISOString();
-    const parsed = await readGkgArchive(archive, descriptor, { retrievedAt, signal, priority });
+    const parsed = await archiveParser(archive, descriptor, { retrievedAt, signal, priority });
     signal.throwIfAborted();
     const processedBatches = [...(previous?.coverage.processedBatches || []), { id: descriptor.batch, retrievedAt, rows: parsed.rows, matchedRecords: parsed.matchedRecords }];
     const reports = [...(previous ? Object.values(previous.categories).flatMap((category) => category.reports) : []), ...parsed.reports];
     const proposed = applyDemandPriority(createGkgSnapshot({ reports, processedBatches, generatedAt: new Date(now()).toISOString() }), reports, priority);
     const snapshot = validateGdeltSnapshot(proposed, now()), bytes = new TextEncoder().encode(`${JSON.stringify(snapshot)}\n`);
     if (bytes.byteLength > MAX_GDELT_SNAPSHOT_BYTES) throw new Error('GKG snapshot exceeds 1 MiB');
-    return { status: 'generated', snapshot, bytes, batch: descriptor.batch, archiveBytes: archive.byteLength, rows: parsed.rows, matchedRecords: parsed.matchedRecords,
+    return { status: 'generated', code: 'generated', checkedAt, snapshot, bytes, batch: descriptor.batch, archiveBytes: descriptor.size, rows: parsed.rows, matchedRecords: parsed.matchedRecords,
       sampling: { mode: priority.mode, reason: priority.reason, publishedInterests: priority.interests.length, maximumDemandShare: 0.25 } };
   } catch (error) {
-    return { status: 'skipped', reason: `${error.name === 'TimeoutError' ? 'GKG timed out' : error.message}; previous snapshot preserved` };
+    const timedOut = deadline.aborted || error.name === 'TimeoutError';
+    return { status: 'skipped', code: signal.aborted ? timedOut ? 'timeout' : 'aborted' : error.httpStatus ? 'http-error' : 'invalid-response',
+      checkedAt, ...(error.httpStatus ? { httpStatus: error.httpStatus, retryAfterMs: error.retryAfterMs } : {}),
+      reason: `${timedOut ? 'GKG timed out' : error.message}; previous snapshot preserved` };
   }
 }
 

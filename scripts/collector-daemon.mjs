@@ -3,10 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { createCollector } from '../collector-worker/index.js';
 
 export const COLLECTOR_PUBLISH_URL = 'https://giovannicallebaut.com/earth/api/collector';
-const INTERVAL_MS = 60000, DEADLINE_MS = 30000;
+const INTERVAL_MS = 60000, DEADLINE_MS = 90000;
 const DEFAULT_STATE_DIRECTORY = fileURLToPath(new URL('../.cache/collector/', import.meta.url));
 const OUTCOMES = new Set(['accepted', 'waiting', 'published', 'changed', 'unchanged', 'outbox-pending', 'backoff',
-  'pending', 'ready', 'partial', 'unavailable', 'http-error', 'timeout', 'invalid-response', 'request-failed',
+  'pending', 'ready', 'ready-local', 'queued', 'idle', 'partial', 'unavailable', 'http-error', 'timeout', 'invalid-response', 'request-failed',
   'storage-unavailable', 'invalid-configuration']);
 const safeTime = (value) => {
   const at = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN;
@@ -51,7 +51,8 @@ export function createCollectorDaemon({ credential, stateDirectory = DEFAULT_STA
       const factory = pipelineFactory || (await import('./local-intelligence-pipeline.mjs')).createLocalPipeline;
       if (typeof factory !== 'function') throw new Error('Local collector pipeline unavailable');
       pipeline = await factory({ stateDirectory: path.resolve(stateDirectory), fetchImpl: trackedFetch, now,
-        publishUrl: COLLECTOR_PUBLISH_URL, publishCredential: credential });
+        publishUrl: COLLECTOR_PUBLISH_URL, publishCredential: credential, gdeltMode: 'local-gkg',
+        getSignal: () => AbortSignal.any([shutdown.signal, cycleController?.signal].filter(Boolean)) });
       if (!pipeline || typeof pipeline.cycle !== 'function') throw new Error('Local collector pipeline unavailable');
     }
   }
@@ -64,6 +65,7 @@ export function createCollectorDaemon({ credential, stateDirectory = DEFAULT_STA
     stopped = true; clearTimeout(timer); timer = null; wake?.(); wake = null;
     const reason = new DOMException('Collector stopping', 'AbortError');
     shutdown.abort(reason); cycleController?.abort(reason);
+    pipeline?.close?.();
   }
   async function cycle() {
     if (stopped) return null;

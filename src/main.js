@@ -13,6 +13,7 @@ import { streetMapCoverageNotice } from './core/basemap-coverage.js';
 import { recoverInitialCameraView } from './core/globe-framing.js';
 import { installContextRecovery } from './core/context-recovery.js';
 import { createTimeline } from './core/timeline.js';
+import { createLiveUpdates } from './core/live-updates.js';
 
 let viewer;
 let manager;
@@ -20,7 +21,7 @@ let shell;
 let destroyed = false;
 let describeBasemap = () => {};
 let contextRecovery;
-let area = null, intelligence, notebook, timeline, panelLoading = {}, locationRevision = 0, warmTimer;
+let area = null, intelligence, notebook, timeline, updates, panelLoading = {}, locationRevision = 0, warmTimer;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -106,6 +107,7 @@ async function handlePanel({ panel, open }) {
       const { createIntelligencePanel } = await import('./core/intelligence.js');
       if (destroyed) return;
       intelligence = createIntelligencePanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, store,
+        subscribeUpdates: updates.subscribe,
         onStatus: () => { document.getElementById('news-status').hidden = true; },
         onNavigate: ({ lat, lon }) => { void activateLocal({ lat, lon, radiusKm: 25 }, { animate: true }); },
       });
@@ -135,6 +137,8 @@ export async function start() {
     disposers.push(() => contextRecovery.destroy());
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
     shell = createShell(viewer, manager);
+    updates = createLiveUpdates();
+    disposers.push(() => updates.destroy());
     const basemapButton = document.getElementById('toggle-basemap');
     describeBasemap = () => {
       const state = viewer.earthBasemap?.getState();
@@ -172,7 +176,7 @@ export async function start() {
     disposers.push(manager.subscribe(rememberWorkspace));
     disposers.push(shell.subscribePanels(handlePanel));
     disposers.push(installScenePreview(viewer, { store, cameraView, getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
-    timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch,
+    timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch, subscribeUpdates: updates.subscribe,
       async onTimeChange(state) {
         if (state.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
         await manager.setTimelineMode(state.mode);
@@ -181,6 +185,7 @@ export async function start() {
       onNavigate(report) { setCameraView(viewer, { ...cameraView(viewer), lat: report.lat, lon: report.lon, alt: 200000, pitch: -90 }, true); },
     });
     disposers.push(() => timeline.destroy());
+    updates.start();
     const locateButton = document.getElementById('locate'); locateButton.disabled = false; locateButton.addEventListener('click', locate); disposers.push(() => locateButton.removeEventListener('click', locate));
     const radius = document.getElementById('local-radius');
     const radiusChange = () => { if (area) { setArea({ ...area, radiusKm: Number(radius.value) }); setCameraView(viewer, localCameraView(area), true); rememberWorkspace(); } };

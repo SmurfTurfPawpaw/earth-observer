@@ -34,17 +34,18 @@ export function intelligenceReportDetails(report) {
 /** An opened, visible panel owns its requests; no constructor or closed-panel fetch. */
 export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args), documentRef = globalThis.document,
   windowRef = documentRef?.defaultView || globalThis.window,
-  onChange = () => {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
+  subscribeUpdates, onChange = () => {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
   let opened = false, destroyed = false, request, pending, timer, generation = 0, activeUrl;
   let payload = null, sourcePayload = null, error = null, acquisitionError = null, loading = false, refreshedAt = null, indexed = false;
+  let deliveryStatus = 'unsupported', updateVersion = 0, acceptedVersion = 0;
   const index = createDiscoveryIndex({ now });
   let filters = { category: 'all', country: '', q: '' };
-  const getState = () => ({ opened, loading, payload, error, refreshedAt, filters: { ...filters } });
+  const getState = () => ({ opened, loading, payload, error, refreshedAt, deliveryStatus, filters: { ...filters } });
   const emit = () => { if (!destroyed) onChange(getState()); };
   function stopTimer() { if (timer !== undefined) clearTimeoutImpl(timer); timer = undefined; }
   function arm() {
     stopTimer();
-    if (!opened || documentRef?.hidden || destroyed) return;
+    if (!opened || documentRef?.hidden || destroyed || deliveryStatus === 'connected') return;
     const interval = INTELLIGENCE_REFRESH_MS;
     const delay = error || refreshedAt === null || payload?.browserCache ? interval : Math.max(1000, interval - (now() - refreshedAt));
     timer = setTimeoutImpl(() => { timer = undefined; void refresh(true); }, delay);
@@ -81,21 +82,23 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
     if (!indexed) index.clear();
     sourcePayload = next; derive();
   }
-  function refresh(force = false) {
+  function refresh(force = false, background = false) {
     if (destroyed || !opened || documentRef?.hidden) return Promise.resolve(false);
     if (pending) return pending;
-    const revalidate = force || Boolean(acquisitionError || sourcePayload?.browserCache);
+    const revalidate = force || updateVersion > acceptedVersion || Boolean(acquisitionError || sourcePayload?.browserCache);
     if (!revalidate && sourcePayload && refreshedAt !== null && now() - refreshedAt < INTELLIGENCE_REFRESH_MS) { derive(); emit(); arm(); return Promise.resolve(true); }
     const controller = new AbortController(), owner = ++generation;
+    const requestedVersion = updateVersion;
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(25000)]);
-    request = controller; loading = true; error = null; stopTimer(); derive(); emit();
+    request = controller; loading = !background || !sourcePayload; error = null; stopTimer(); derive(); emit();
     const work = (async () => {
       try {
         const query = new URLSearchParams({ category: filters.category });
         if (filters.country) query.set('country', filters.country);
         // Free-text stays in this browser. Shared acquisition is bounded by category/country.
         activeUrl = new URL(`/api/intelligence?${query}`, globalThis.location?.origin || 'http://localhost').href;
-        const response = await fetchImpl(`/api/intelligence?${query}`, { signal, headers: { Accept: 'application/json' }, ...(revalidate ? { cache: 'no-cache' } : {}) });
+        const response = await fetchImpl(`/api/intelligence?${query}`, { signal,
+          headers: { Accept: 'application/json', ...(revalidate ? { 'Cache-Control': 'no-cache' } : {}) }, ...(revalidate ? { cache: 'no-cache' } : {}) });
         if (!response.ok) {
           const detail = response.status === 400 ? await response.json().catch(() => null) : null;
           throw new Error(detail?.error || `Intelligence feed HTTP ${response.status}`);
@@ -107,6 +110,7 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
         const cachedAt = Number(response.headers?.get?.('x-browser-cached-at')) || null;
         const stored = ['STALE', 'OFFLINE'].includes(mode);
         acquisitionError = null;
+        acceptedVersion = requestedVersion;
         accept(stored ? { ...next, browserCache: mode, sources: next.sources.map((source) => ({ ...source, stale: true,
           reason: [source.reason, mode === 'OFFLINE' ? 'Saved browser copy; reconnect for updates' : 'Saved browser copy; updating in the background'].filter(Boolean).join(' · ') })) } : next);
         refreshedAt = cachedAt || now(); error = null; return true;
@@ -114,7 +118,12 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
         if (controller.signal.aborted || generation !== owner) return false;
         acquisitionError = error = failure.message || 'Intelligence sources are temporarily unavailable'; derive(); return false;
       } finally {
-        if (generation === owner && !destroyed) { request = null; pending = null; loading = false; emit(); arm(); }
+        if (generation === owner && !destroyed) {
+          request = null; pending = null; loading = false; emit(); arm();
+          // A publication arriving during a read cannot disappear behind that
+          // older in-flight result. Coalesce it into one following read.
+          if (updateVersion > requestedVersion && opened && !documentRef?.hidden) void refresh(true, true);
+        }
       }
     })();
     pending = work; return work;
@@ -131,6 +140,15 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
     const owner = generation;
     if (pending) void pending.then(() => { if (opened && !destroyed && generation === owner) void refresh(true); });
     else void refresh(true);
+  });
+  const unsubscribeUpdates = subscribeUpdates?.((event) => {
+    if (destroyed) return;
+    if (event.type === 'status') {
+      deliveryStatus = event.status; arm(); emit(); return;
+    }
+    if (event.type !== 'collection' || sourcePayload?.collectedAt >= event.collectedAt) return;
+    ++updateVersion;
+    if (opened && !documentRef?.hidden) void refresh(true, true);
   });
   return {
     getState, refresh,
@@ -152,12 +170,12 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
       }
       cancel(); index.clear(); indexed = false; sourcePayload = null; payload = null; acquisitionError = null; refreshedAt = null; emit(); return refresh();
     },
-    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); index.clear(); sourcePayload = null; unsubscribe?.(); documentRef?.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); },
+    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); index.clear(); sourcePayload = null; unsubscribe?.(); unsubscribeUpdates?.(); documentRef?.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); },
   };
 }
 
 /** Source-linked metadata cards, never full article text, images, or verification claims. */
-export function createIntelligencePanel({ container, fetchImpl, store, viewer, onNavigate, onStatus = () => {}, documentRef = container?.ownerDocument || globalThis.document } = {}) {
+export function createIntelligencePanel({ container, fetchImpl, store, viewer, onNavigate, subscribeUpdates, onStatus = () => {}, documentRef = container?.ownerDocument || globalThis.document } = {}) {
   if (!container || !documentRef) throw new TypeError('An intelligence panel container is required');
   const node = (tag, className, text) => { const element = documentRef.createElement(tag); if (className) element.className = className; if (text !== undefined) element.textContent = text; return element; };
   const link = (title, href) => {
@@ -179,7 +197,7 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
   const note = node('p', 'intelligence-meta', 'Search stays in this browser and covers collected metadata. GDELT links are machine-extracted topic mentions; country mentions do not establish incident locations.');
   const status = node('p', 'intelligence-status'); status.setAttribute('role', 'status');
   const coverage = node('details', 'intelligence-coverage'); coverage.append(node('summary', '', 'Sources, coverage and freshness'));
-  coverage.append(node('p', 'intelligence-meta', 'Checks for new metadata every minute while this panel is open and visible. Source update times and availability vary.'));
+  const delivery = node('p', 'intelligence-meta'); coverage.append(delivery);
   const sources = node('div', 'intelligence-sources'); coverage.append(sources);
   const demandContainer = node('details', 'intelligence-demand-options'); demandContainer.append(node('summary', '', 'Help improve coverage · optional'));
   const actions = node('div', 'intelligence-actions');
@@ -238,7 +256,7 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
     if (renderedPayload === state.payload) return;
     renderedPayload = state.payload;
     const discovery = state.payload.sources.find((source) => source.id === 'gdelt');
-    note.textContent = discovery?.mode && discovery.mode !== 'scheduled-gkg' ?
+    note.textContent = discovery?.mode && !['scheduled-gkg', 'local-gkg'].includes(discovery.mode) ?
       'Search stays in this browser. These source cards contain bounded headline and link metadata; country mentions do not establish incident locations.' :
       'Search stays in this browser. GDELT links are machine-extracted topic mentions, without copied headlines or article text; country mentions do not establish incident locations.';
     const sourceRows = state.payload.sources.map((source) => {
@@ -261,7 +279,12 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
       list.replaceChildren(node('p', 'intelligence-meta', state.payload.sources.some((source) => source.status === 'unavailable') ? 'No matching reports are available. Some providers are unavailable; their official websites remain linked above.' : 'No reports match the current filters in this bounded sample.'));
     } else list.replaceChildren(...state.payload.reports.slice(0, 80).map((report) => reportContent(report)));
   }
-  const feed = createIntelligenceFeed({ fetchImpl, documentRef, onChange: render });
+  const feed = createIntelligenceFeed({ fetchImpl, documentRef, subscribeUpdates, onChange(state) {
+    delivery.textContent = state.deliveryStatus === 'connected'
+      ? 'Connected to stored collection updates. New publications arrive through the update stream; source observation dates stay separate.'
+      : 'Update stream disconnected or unavailable. Visible metadata uses periodic recovery checks; retained records keep their original dates.';
+    render(state);
+  } });
   const apply = () => {
     research.setFilters({ category: category.value, country: country.value, q: query.value });
     if (category.value === 'economy') void economics.open(country.value || 'WLD'); else economics.close();

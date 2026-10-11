@@ -37,9 +37,11 @@ export function createSpaceHandler({ fetchImpl = fetch, store, env = {}, now = D
         const fresh = await pending.get(group);
         if (fresh) { entry = fresh; state = 'MISS'; }
       }
+      if (stopped && entry?.body) state = 'STALE-ERROR';
       return new Response(entry?.body || 'Satellite data unavailable; provider requests paused', { status: entry?.body ? 200 : 503,
         headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': entry?.body ? 'public, max-age=3600' : 'no-store',
-          'x-tle-cache': state, 'x-feed-age-ms': String(entry ? Math.max(0, now() - entry.at) : 0), ...(!entry?.body ? { 'retry-after': '7200' } : {}) } });
+          'x-tle-cache': state, ...(entry?.body ? { 'x-feed-age-ms': String(Math.max(0, now() - entry.at)),
+            'x-feed-retrieved-at': new Date(entry.at).toISOString() } : { 'retry-after': '7200' }) } });
     } catch { return new Response('Satellite persistent cache unavailable', { status: 503, headers: { 'cache-control': 'no-store', 'retry-after': '7200' } }); }
   }
   async function recentLaunches() {

@@ -78,9 +78,12 @@ export function celestrakProxy({ fetchImpl = fetch, now = Date.now, cacheDir = p
         if (fresh) { entry = fresh; state = 'MISS'; }
       }
     }
+    if (stopped && entry.body) state = 'STALE-ERROR';
     res.writeHead(entry.body ? 200 : 503, {
       'Content-Type': 'text/plain; charset=utf-8', 'X-TLE-Cache': state,
       'Cache-Control': entry.body ? 'public, max-age=3600' : 'no-store',
+      ...(entry.body ? { 'X-Feed-Age-Ms': String(Math.max(0, now() - entry.at)),
+        'X-Feed-Retrieved-At': new Date(entry.at).toISOString() } : {}),
       ...(!entry.body ? { 'Retry-After': String(retryInterval / 1000) } : {}),
     });
     res.end(entry.body || 'Satellite data unavailable; provider requests paused');

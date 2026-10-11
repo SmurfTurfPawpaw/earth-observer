@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { twoline2satrec } from 'satellite.js';
+import { isSatelliteElementSupported, satelliteProvenance, satelliteSourceMetadata } from './source.js';
 import {
   DENSE_REFRESH_FRAMES,
   DENSE_GROUP_PATH,
@@ -31,7 +32,7 @@ export function createCatalog({ state: layerState, services, parts, source }) {
       1,
       Math.ceil(layerState._denseIds.length / DENSE_REFRESH_FRAMES),
     );
-    const now = new Date();
+    const now = new Date(services.now?.() ?? Date.now());
     for (let i = 0; i < perFrame; i++) {
       if (layerState._denseCursor >= layerState._denseIds.length)
         layerState._denseCursor = 0;
@@ -40,6 +41,11 @@ export function createCatalog({ state: layerState, services, parts, source }) {
       const sat = layerState._catalog.get(noradId);
       const point = layerState._points.get(noradId);
       if (!sat || !point) continue;
+      if (!isSatelliteElementSupported(sat, now.getTime())) {
+        point.show = false;
+        if (!point._elementExpired) { point._elementExpired = true; layerState._catalogRevision++; }
+        continue;
+      }
       const pos = parts.orbits.propagatePosition(sat.satrec, now);
       if (pos) {
         point.position = Cesium.Cartesian3.fromDegrees(
@@ -47,6 +53,7 @@ export function createCatalog({ state: layerState, services, parts, source }) {
           pos.latitude,
           pos.altitude,
         );
+        point._predictionAt = now.getTime();
       }
     }
   }
@@ -69,6 +76,7 @@ export function createCatalog({ state: layerState, services, parts, source }) {
     const token = ++layerState._denseLoadToken;
     layerState._denseStatus = 'loading';
     layerState._denseError = null;
+    layerState._denseWithheldElements = { expired: 0, missingEpoch: 0, futureEpoch: 0 };
     parts.controls._notifyRowControls();
     try {
       loadSignal.throwIfAborted();
@@ -96,8 +104,11 @@ export function createCatalog({ state: layerState, services, parts, source }) {
 
       const entries = parts.orbits.parseTLE(text);
       const style = POINT_STYLES.dense;
-      const now = new Date();
+      const now = new Date(services.now?.() ?? Date.now());
+      const sourceMetadata = satelliteSourceMetadata(res, DENSE_GROUP_PATH);
+      layerState._satelliteSources = [...(layerState._satelliteSources || []).filter((record) => record.group !== DENSE_GROUP_PATH), { ...sourceMetadata, available: true }];
       let added = 0;
+      let withheld = 0;
 
       for (let start = 0; start < entries.length; start += DENSE_CREATE_CHUNK) {
         loadSignal.throwIfAborted();
@@ -115,14 +126,18 @@ export function createCatalog({ state: layerState, services, parts, source }) {
           if (!satrec || satrec.error !== 0) continue;
           const noradId = Number(satrec.satnum);
           if (layerState._catalog.has(noradId)) continue; // core catalog keeps priority
+          const satellite = { name: entry.name, satrec, group: 'dense', source: sourceMetadata };
+          if (!isSatelliteElementSupported(satellite, now.getTime())) {
+            const status = satelliteProvenance(satellite, now.getTime()).elementStatus;
+            const key = status === 'expired' ? 'expired' : status === 'future-epoch' ? 'futureEpoch' : 'missingEpoch';
+            layerState._denseWithheldElements[key]++;
+            withheld++;
+            continue;
+          }
           const pos = parts.orbits.propagatePosition(satrec, now);
           if (!pos) continue;
 
-          layerState._catalog.set(noradId, {
-            name: entry.name,
-            satrec,
-            group: 'dense',
-          });
+          layerState._catalog.set(noradId, satellite);
           const point = layerState._pointCollection.add({
             position: Cesium.Cartesian3.fromDegrees(
               pos.longitude,
@@ -137,6 +152,7 @@ export function createCatalog({ state: layerState, services, parts, source }) {
             id: noradId,
           });
           layerState._points.set(noradId, point);
+          point._predictionAt = now.getTime();
           layerState._denseIds.push(noradId);
           added++;
         }
@@ -153,10 +169,11 @@ export function createCatalog({ state: layerState, services, parts, source }) {
         console.warn(
           `[Data:Satellites] Dense group '${DENSE_GROUP_PATH}' returned no usable satellites`,
         );
-        _denseLoadFailed(token, 'feed returned no satellites');
+        const reason = withheld ? 'orbital elements outside display age policy' : 'feed returned no satellites';
+        _denseLoadFailed(token, reason);
         return {
           status: 'source-unavailable',
-          reason: 'feed returned no satellites',
+          reason,
         };
       }
 
@@ -226,6 +243,7 @@ export function createCatalog({ state: layerState, services, parts, source }) {
     }
     layerState._denseIds = [];
     layerState._denseCursor = 0;
+    layerState._satelliteSources = (layerState._satelliteSources || []).filter((record) => record.group !== DENSE_GROUP_PATH);
     layerState._count = layerState._points.size;
     layerState._catalogRevision++;
   }
