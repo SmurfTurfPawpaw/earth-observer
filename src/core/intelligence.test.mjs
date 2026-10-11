@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createIntelligenceFeed, safeIntelligenceUrl, intelligenceTime } from './intelligence.js';
+import { createIntelligenceFeed, safeIntelligenceUrl, intelligenceTime, intelligenceReportDetails } from './intelligence.js';
 
 const payload = { reports: [{ id: 'one', title: 'Linked report', url: 'https://example.test/' }], sources: [{ id: 'gdelt', status: 'ready' }], nextRefreshMs: 300000 };
 function environment(fetchImpl) {
@@ -72,6 +72,16 @@ test('links accept only publisher HTTP(S) URLs and timestamps never invent unava
   assert.equal(intelligenceTime(null), null);
   assert.equal(intelligenceTime('not a date'), null);
   assert.equal(intelligenceTime('2026-10-11T09:30:00Z'), '2026-10-11 09:30:00 UTC');
+});
+
+test('topic mentions label countries and batch dates explicitly and cannot acquire map navigation from accidental coordinates', () => {
+  const detail = intelligenceReportDetails({ kind: 'topic-mention', source: 'publisher.example', mentionedCountries: ['BE', 'DE'],
+    publisherCountry: null, publishedAt: null, observedAt: null, indexedAt: '2026-10-11T10:00:00.000Z', lat: 50, lon: 4 });
+  assert.match(detail.countries, /Countries mentioned: Belgium, Germany/);
+  assert.match(detail.countries, /do not establish an incident location/); assert.doesNotMatch(detail.source, /publisher country/);
+  assert.equal(detail.canNavigate, false); assert.equal(detail.dates.find(([label]) => label === 'GDELT batch')[1], '2026-10-11T10:00:00.000Z');
+  assert.equal(detail.dates.find(([label]) => label === 'Published')[1], null);
+  assert.equal(intelligenceReportDetails({ source: 'USGS', lat: 50, lon: 4 }).canNavigate, true);
 });
 
 test('saved browser reports retain their age and revalidation replaces them only while the panel is open', async () => {

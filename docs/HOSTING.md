@@ -57,7 +57,7 @@ and provider terms flags in bindings, never in the browser build. See
 | Satellite elements | Six-hour cache; persistent two-hour attempt reservation; any non-200 persists a provider stop |
 | Launch schedules | 15-minute cache; one-minute minimum retry gap |
 | Official hazard context | USGS five-minute cache; GDACS ten minutes; provider gaps and exponential backoff |
-| Scheduled GDELT metadata | Three fixed queries every 30 minutes; one shared 1 MiB release snapshot; local title filters; unavailable beyond 24-hour generation age |
+| Scheduled GDELT metadata | One bounded GKG bulk batch every 30 minutes; one shared 1 MiB topic/link sample; local reviewed-topic/domain/country-mention filters; 24-hour batch and generation expiry |
 | World Bank facts | Annual observations; daily acquisition cache; retrieval age shown; stale fallback limited to seven days |
 | Wind forecasts | Scheduled six-hour publication; Worker checks releases every 15 minutes; five-minute failure gap; unavailable beyond 72-hour retrieval age |
 | FIRMS | Dated bundled sample without a key; optional live source uses 30-minute cache and five-minute failure gap |
@@ -79,10 +79,11 @@ objects for at least three days; provider-stop and evidence objects must survive
 that cleanup. Details and publication checks are in
 [WIND_SNAPSHOTS.md](WIND_SNAPSHOTS.md).
 
-The discovery job publishes `intelligence-data/gdelt.snapshot.json` only after all
-three fixed queries validate. Its last-good snapshot persists through `EARTH_STORE`
-under `providers/`. Country/topic filtering applies to that bounded title sample,
-not an exhaustive news search. `GDELT_LIVE_FALLBACK` is absent by default; set it to
+The discovery job publishes `intelligence-data/gdelt.snapshot.json` after one
+official GKG bulk batch passes its integrity, size and metadata checks. Its last-good
+sample persists through `EARTH_STORE` under `providers/`. Country/topic filtering
+applies to reviewed labels, publisher domains and country mentions in that bounded
+24-hour sample. `GDELT_LIVE_FALLBACK` is absent by default; set it to
 `1` only for a controlled live fallback when the snapshot is unavailable. See
 [GDELT_SNAPSHOTS.md](GDELT_SNAPSHOTS.md).
 

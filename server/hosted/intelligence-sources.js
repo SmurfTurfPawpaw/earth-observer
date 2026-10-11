@@ -77,6 +77,8 @@ function near(a, b) {
   return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(h))) <= 80;
 }
 function relatedReason(a, b) {
+  // A shared machine-generated topic label is not evidence of the same story.
+  if (a.kind === 'topic-mention' || b.kind === 'topic-mention') return null;
   if (a.category !== b.category || a.source === b.source) return null;
   const difference = Math.abs(reportTime(a) - reportTime(b));
   if (!Number.isFinite(difference)) return null;
@@ -101,10 +103,11 @@ export function groupReports(input, limit = 80) {
   if (groups.length <= maximum) return groups;
   // Preserve each provider before filling by recency, so a dense earthquake
   // sequence cannot hide every flood or cyclone in this bounded sample.
-  const sources = [...new Set(groups.map((group) => group.sourceId).filter(Boolean))];
+  const bucket = (group) => group.kind === 'topic-mention' ? `${group.sourceId}:${group.category}` : group.sourceId;
+  const sources = [...new Set(groups.map(bucket).filter(Boolean))];
   const reserve = Math.min(10, Math.floor(maximum / Math.max(1, sources.length)));
   const selected = new Set();
-  for (const source of sources) for (const group of groups.filter((group) => group.sourceId === source).slice(0, reserve)) selected.add(group);
+  for (const source of sources) for (const group of groups.filter((group) => bucket(group) === source).slice(0, reserve)) selected.add(group);
   for (const group of groups) { if (selected.size >= maximum) break; selected.add(group); }
   return groups.filter((group) => selected.has(group));
 }

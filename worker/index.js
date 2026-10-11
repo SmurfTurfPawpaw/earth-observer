@@ -7,6 +7,7 @@ import { createSpaceHandler } from './space.js';
 import { createFirmsHandler } from './firms.js';
 import { createContextHandler } from './context.js';
 import { createWindArtifactHandler } from './wind.js';
+import { createWorkerFetch } from './fetch.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -20,12 +21,13 @@ const jsonError = (error, status) => new Response(JSON.stringify({ error }), { s
 export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) => fetch(...args), providers, handlers = [],
   cache = globalThis.caches?.default, now = Date.now } = {}) {
   if (!/^\/[a-z0-9/_-]*\/$/i.test(prefix)) throw new TypeError('A directory prefix is required');
+  const providerFetch = createWorkerFetch(fetchImpl);
   let state;
   const admit = makeRateLimiter({ windowMs: 60000, max: 240, globalMax: 4000 });
   const services = (env) => state ||= {
-    middleware: createWorkerMiddleware(providers || workerProviders({ fetchImpl, env, now })),
-    handlers: [createSpaceHandler({ fetchImpl, env, now, store: createProviderStore(env) }), createFirmsHandler({ fetchImpl, env, now }),
-      createContextHandler({ fetchImpl, env, now }), createWindArtifactHandler({ fetchImpl, env, now })],
+    middleware: createWorkerMiddleware(providers || workerProviders({ fetchImpl: providerFetch, env, now })),
+    handlers: [createSpaceHandler({ fetchImpl: providerFetch, env, now, store: createProviderStore(env) }), createFirmsHandler({ fetchImpl: providerFetch, env, now }),
+      createContextHandler({ fetchImpl: providerFetch, env, now }), createWindArtifactHandler({ fetchImpl: providerFetch, env, now })],
   };
   return {
     async fetch(request, env = {}, ctx = {}, assetsFetch) {

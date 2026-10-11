@@ -8,7 +8,8 @@ const metadata = { tiles: ['https://tiles.openfreemap.org/planet/example/{z}/{x}
 const actualRoadTile = new Uint8Array(readFileSync(new URL('../data/fixtures/ofm-austin-14-3743-6745.pbf', import.meta.url)));
 function canvasFactory() {
   const operations = [];
-  const context = new Proxy({ measureText: (text) => ({ width: text.length * 6 }) }, { get(target, key) {
+  const target = { measureText: (text) => ({ width: text.length * 6 }), fillText(text, x, y) { operations.push(['fillText', text, x, y, { font: target.font }]); } };
+  const context = new Proxy(target, { get(target, key) {
     if (key in target) return target[key]; return (...args) => operations.push([key, ...args]);
   } });
   return { width: 0, height: 0, operations, getContext: () => context };
@@ -60,6 +61,53 @@ test('real vector geometry and synthetic place/road labels paint an opaque small
   assert.ok(canvas.operations.some(([operation, rule]) => operation === 'fill' && rule === 'evenodd'));
   assert.throws(() => decodeBasemapTile(new Uint8Array(4 * 1024 * 1024 + 1)));
   assert.throws(() => decodeBasemapTile(new Uint8Array([255, 255, 255])));
+});
+
+function placeFeature(name, x, y, kind = 'city', rank = 0) {
+  return { type: 1, properties: { name, class: kind, rank }, geometry: [[{ x: x * 16, y: y * 16 }]] };
+}
+function drawFeatures(features, level, extraLayers = {}, factory = canvasFactory) {
+  return paintBasemapTile({ layers: { place: { extent: 4096, features }, ...extraLayers } }, { ...nativeBasemapTile(0, 0, level), level }, { canvasFactory: factory });
+}
+const drawnNames = (canvas) => canvas.operations.filter(([op]) => op === 'fillText').map(([, text]) => text);
+
+test('country labels are low-zoom/rank gated and do not mix with regional city names', () => {
+  const features = [placeFeature('Primary', 40, 40, 'country', 0), placeFeature('Secondary', 180, 40, 'country', 1),
+    placeFeature('Low-ranked', 120, 140, 'country', 3), placeFeature('Unknown', 120, 210, 'country', undefined),
+    placeFeature('City', 80, 120, 'city', 1), placeFeature('Town', 80, 190, 'town', 1)];
+  // Missing rank must not silently become a prominent country.
+  delete features[3].properties.rank;
+  assert.deepEqual(drawnNames(drawFeatures(features, 0)), []);
+  assert.deepEqual(drawnNames(drawFeatures(features, 2)), ['Primary', 'Secondary']);
+  assert.deepEqual(drawnNames(drawFeatures(features, 5)), ['City']);
+  assert.deepEqual(drawnNames(drawFeatures(features, 8)), ['City', 'Town']);
+  const city = drawFeatures(features, 5).operations.find(([op]) => op === 'fillText'); assert.match(city[4].font, /10px/);
+});
+
+test('only full measured labels fit inside tile edges, with duplicate names suppressed', () => {
+  const features = [placeFeature('Safe', 128, 128), placeFeature('Safe', 40, 40), placeFeature('West edge', 8, 100),
+    placeFeature('East edge', 250, 160), placeFeature('North edge', 128, 4), placeFeature('South edge', 128, 250),
+    placeFeature('W'.repeat(64), 128, 210), placeFeature('Buffered', -8, 80)];
+  assert.deepEqual(drawnNames(drawFeatures(features, 14)), ['Safe']);
+  // The actual glyph ink may extend farther than its advance width.
+  const wideInk = () => { const canvas = canvasFactory(), context = canvas.getContext('2d'); context.measureText = () => ({ width: 10, actualBoundingBoxLeft: 80, actualBoundingBoxRight: 5, actualBoundingBoxAscent: 5, actualBoundingBoxDescent: 5 }); return canvas; };
+  assert.deepEqual(drawnNames(drawFeatures([placeFeature('Ink', 70, 120)], 14, {}, wideInk)), []);
+});
+
+test('road text must fit its full segment and rotated tile bounds rather than leaving clipped letters', () => {
+  const point = (x, y) => ({ x: x * 16, y: y * 16 });
+  const line = (name, a, b) => ({ type: 2, properties: { name, class: 'primary' }, geometry: [[point(...a), point(...b)]] });
+  const layer = { extent: 4096, features: [line('Safe Road', [40, 128], [220, 128]), line('Name longer than its segment', [70, 190], [150, 190]),
+    line('Vertical', [128, -80], [128, 120]), line('Diagonal', [-10, -45], [130, 95])] };
+  assert.deepEqual(drawnNames(drawFeatures([], 13, { transportation_name: layer })), []);
+  assert.deepEqual(drawnNames(drawFeatures([], 14, { transportation_name: layer })), ['Safe Road']);
+});
+
+test('zoom-specific label quotas bound density even when all labels independently fit', () => {
+  for (const [level, kind, expected] of [[2, 'country', 4], [4, 'country', 6], [5, 'city', 10], [10, 'city', 16], [12, 'city', 24], [14, 'city', 32]]) {
+    const features = Array.from({ length: 40 }, (_, i) => placeFeature(`L${i}`, 30 + i % 5 * 48, 18 + Math.floor(i / 5) * 30, kind, 0));
+    assert.equal(drawnNames(drawFeatures(features, level)).length, expected, `density at zoom ${level}`);
+  }
 });
 
 test('native source fetch is shared by overzoom children and retained raster/native caches stay bounded', async () => {

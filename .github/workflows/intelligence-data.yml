@@ -31,7 +31,7 @@ jobs:
           node-version: '24'
       - name: Check snapshot contract
         run: node --test server/hosted/gdelt-snapshot.test.mjs
-      - name: Generate three fixed discovery samples
+      - name: Generate one bounded latest GKG topic sample
         id: generate
         run: node scripts/gdelt-snapshot.mjs "$INTELLIGENCE_OUTPUT"
       - name: Preserve prior metadata when upstream is unavailable
@@ -45,6 +45,6 @@ jobs:
           if ! gh release view intelligence-data --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release create intelligence-data --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false \
               --title 'Latest discovery metadata' \
-              --notes 'A bounded GDELT discovery sample: source links and headline metadata only, across three fixed topic queries. Retrieval times and GDELT indexing times are preserved; indexing time is not original publication time. Publisher claims have not been independently verified by Earth Observer.'
+              --notes 'A bounded rolling sample from the latest publicly downloadable GDELT GKG batch each scheduled run. Source links, reviewed topic codes and country mentions only; topic labels are generated, not original headlines. Exact processed batches, missing intervals and retrieval times are recorded. No article text, images or asserted event coordinates are copied. Country mentions and machine topics do not verify publisher claims.'
           fi
           gh release upload intelligence-data "$INTELLIGENCE_OUTPUT/gdelt.snapshot.json" --repo "$GH_REPO" --clobber

@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { generateGdeltSnapshot, writeGdeltSnapshot, GDELT_SNAPSHOT_ASSET, MAX_GDELT_SNAPSHOT_BYTES } from '../../scripts/gdelt-snapshot.mjs';
+import { createHash } from 'node:crypto';
+import { deflateRawSync } from 'node:zlib';
+import { generateGdeltSnapshot, generateGkgSnapshot, parseGkgUpdateManifest, inspectGkgZip, readGkgArchive, writeGdeltSnapshot, GDELT_SNAPSHOT_ASSET, MAX_GDELT_SNAPSHOT_BYTES, GKG_UPDATE_MANIFEST, MAX_GKG_ZIP_BYTES } from '../../scripts/gdelt-snapshot.mjs';
 import { gdeltQueryUrl } from './gdelt-query.js';
+import { validateGdeltSnapshot, GDELT_SNAPSHOT_URL } from './gdelt-snapshot.js';
 
 const START = Date.parse('2026-10-11T10:00:00Z');
 const metadata = (index = 0) => ({ articles: [{ title: `Example report ${index}`, url: `https://example.org/report/${index}?utm_source=tracker`,
@@ -65,4 +68,107 @@ test('complete empty discovery sample is valid and serializes exactly one bounde
   const directory = await mkdtemp(path.join(tmpdir(), 'earth-gdelt-test-'));
   try { const output = await writeGdeltSnapshot(directory, result); assert.equal(path.basename(output), GDELT_SNAPSHOT_ASSET); assert.deepEqual(JSON.parse(await readFile(output, 'utf8')), result.snapshot); }
   finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+const BATCH = '20261011094500';
+function gkgRow(index = 0, { batch = BATCH, url = `https://example.org/gkg/${index}`, themes = 'ARMEDCONFLICT;ECON_INFLATION;NATURAL_DISASTER;', collection = '1' } = {}) {
+  const fields = Array(27).fill(''); fields[0] = `${batch}-T${index + 1}`; fields[1] = batch; fields[2] = collection;
+  fields[3] = 'example.org'; fields[4] = url; fields[7] = themes; fields[9] = '1#Belgium#BE##50.85#4.35#BE;';
+  return fields.join('\t');
+}
+function zipFixture(text, batch = BATCH, { flags = 0, method = 8, name = `${batch}.gkg.csv`, sizeAdjustment = 0 } = {}) {
+  const data = Buffer.from(text), compressed = method === 0 ? data : deflateRawSync(data), file = Buffer.from(name);
+  let crc = 0xffffffff; for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? 0xedb88320 ^ crc >>> 1 : crc >>> 1; } crc = (crc ^ 0xffffffff) >>> 0;
+  const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20, 4); local.writeUInt16LE(flags, 6); local.writeUInt16LE(method, 8); local.writeUInt32LE(crc, 14); local.writeUInt32LE(compressed.length, 18); local.writeUInt32LE(data.length + sizeAdjustment, 22); local.writeUInt16LE(file.length, 26);
+  const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(flags, 8); central.writeUInt16LE(method, 10); central.writeUInt32LE(crc, 16); central.writeUInt32LE(compressed.length, 20); central.writeUInt32LE(data.length + sizeAdjustment, 24); central.writeUInt16LE(file.length, 28);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10); end.writeUInt32LE(central.length + file.length, 12); end.writeUInt32LE(local.length + file.length + compressed.length, 16);
+  return Buffer.concat([local, file, compressed, central, file, end]);
+}
+function descriptor(archive, batch = BATCH) { return { batch, size: archive.length, md5: createHash('md5').update(archive).digest('hex'), url: `https://data.gdeltproject.org/gdeltv2/${batch}.gkg.csv.zip` }; }
+const manifest = (archive, batch = BATCH) => `${archive.length} ${descriptor(archive, batch).md5} http://data.gdeltproject.org/gdeltv2/${batch}.gkg.csv.zip\n`;
+
+test('GKG generator downloads one fixed manifest/archive and retains only neutral topic metadata', async () => {
+  const archive = zipFixture([gkgRow(), gkgRow(1, { collection: '2' }), gkgRow(2, { themes: 'UNREVIEWED_THEME;' })].join('\n') + '\n');
+  const calls = [];
+  const result = await generateGkgSnapshot({ previousSnapshot: null, now: () => START, fetchImpl: async (url, options) => {
+    calls.push(url); assert.equal(options.redirect, 'error'); return url === GKG_UPDATE_MANIFEST ? new Response(manifest(archive)) : new Response(archive);
+  } });
+  assert.equal(result.status, 'generated', result.reason); assert.deepEqual(calls, [GKG_UPDATE_MANIFEST, descriptor(archive).url]);
+  assert.equal(result.snapshot.schemaVersion, 2); assert.equal(result.snapshot.kind, 'gkg-topic-sample');
+  assert.equal(result.rows, 3); assert.equal(result.matchedRecords, 3); assert.equal(result.bytes.length <= MAX_GDELT_SNAPSHOT_BYTES, true);
+  assert.deepEqual(result.snapshot.coverage.processedBatches, [{ id: BATCH, retrievedAt: new Date(START).toISOString(), rows: 3, matchedRecords: 3 }]);
+  for (const entry of Object.values(result.snapshot.categories)) {
+    assert.equal(entry.reports.length, 1); const report = entry.reports[0];
+    assert.equal(report.kind, 'topic-mention'); assert.match(report.title, /^Topic mention · /); assert.equal(report.publishedAt, null); assert.equal(report.observedAt, null);
+    assert.deepEqual(report.mentionedCountries, ['BE']); assert.equal(report.indexedAt, '2026-10-11T09:45:00.000Z');
+    for (const key of ['body', 'image', 'lat', 'lon']) assert.equal(key in report, false);
+  }
+  assert.deepEqual(validateGdeltSnapshot(result.snapshot, START), result.snapshot);
+});
+
+test('GKG manifest rejects foreign/ambiguous, oversized, expired and future archives before fetching', () => {
+  const archive = zipFixture(gkgRow()); const text = manifest(archive);
+  assert.equal(parseGkgUpdateManifest(text, START).url.startsWith('https://'), true);
+  for (const invalid of [text.replace('data.gdeltproject.org', 'example.org'), text + text,
+    text.replace(String(archive.length), String(MAX_GKG_ZIP_BYTES + 1)), text.replace(BATCH, '20261009100000'),
+    text.replace(BATCH, '20261012100000'), text.replace(BATCH, '20261011094700'), 'x'.repeat(16385)]) assert.throws(() => parseGkgUpdateManifest(invalid, START));
+});
+
+test('GKG ZIP rejects encryption, paths, extra entries/trailing bytes and verifies MD5/CRC/inflation limits', async () => {
+  const archive = zipFixture(gkgRow()); const stamp = new Date(START).toISOString();
+  assert.equal(inspectGkgZip(archive, BATCH).method, 8);
+  assert.throws(() => inspectGkgZip(zipFixture(gkgRow(), BATCH, { flags: 1 }), BATCH));
+  assert.throws(() => inspectGkgZip(zipFixture(gkgRow(), BATCH, { name: `../${BATCH}.gkg.csv` }), BATCH));
+  assert.throws(() => inspectGkgZip(Buffer.concat([archive, Buffer.from('trailing')]), BATCH));
+  const extraEntry = Buffer.from(archive); extraEntry.writeUInt16LE(2, archive.length - 22 + 8); extraEntry.writeUInt16LE(2, archive.length - 22 + 10); assert.throws(() => inspectGkgZip(extraEntry, BATCH));
+  await assert.rejects(readGkgArchive(archive, { ...descriptor(archive), md5: '0'.repeat(32) }, { retrievedAt: stamp }), /MD5/);
+  const stored = zipFixture(gkgRow(), BATCH, { method: 0 }); stored[30 + `${BATCH}.gkg.csv`.length + 5] ^= 1;
+  await assert.rejects(readGkgArchive(stored, descriptor(stored), { retrievedAt: stamp }), /CRC|batch identity/);
+  const inflated = zipFixture(gkgRow(), BATCH, { sizeAdjustment: -1 });
+  await assert.rejects(readGkgArchive(inflated, descriptor(inflated), { retrievedAt: stamp }), /inflation/);
+  const huge = zipFixture('x'.repeat(524289)); await assert.rejects(readGkgArchive(huge, descriptor(huge), { retrievedAt: stamp }), /row exceeds|length/);
+  const unicode = zipFixture(gkgRow() + 'é'.repeat(262145));
+  await assert.rejects(readGkgArchive(unicode, descriptor(unicode), { retrievedAt: stamp }), /byte length|byte limit/);
+  const malformed = zipFixture('not\t27\tfields\n'); await assert.rejects(readGkgArchive(malformed, descriptor(malformed), { retrievedAt: stamp }), /Unexpected GKG/);
+});
+
+test('GKG merges a validated prior batch with exact gaps and skips a repeated latest archive', async () => {
+  const previousBatch = '20261011091500'; const priorArchive = zipFixture(gkgRow(0, { batch: previousBatch }), previousBatch);
+  const previous = await generateGkgSnapshot({ previousSnapshot: null, now: () => START - 1200000, fetchImpl: async (url) => url === GKG_UPDATE_MANIFEST ? new Response(manifest(priorArchive, previousBatch)) : new Response(priorArchive) });
+  assert.equal(previous.status, 'generated', previous.reason);
+  const archive = zipFixture(gkgRow(1)), urls = [];
+  const result = await generateGkgSnapshot({ now: () => START, fetchImpl: async (url) => {
+    urls.push(url); return url === GDELT_SNAPSHOT_URL ? json(previous.snapshot) : url === GKG_UPDATE_MANIFEST ? new Response(manifest(archive)) : new Response(archive);
+  } });
+  assert.equal(result.status, 'generated', result.reason); assert.deepEqual(urls, [GDELT_SNAPSHOT_URL, GKG_UPDATE_MANIFEST, descriptor(archive).url]);
+  assert.deepEqual(result.snapshot.coverage.sampleGaps, ['20261011093000']); assert.equal(result.snapshot.categories.economy.reports.length, 2);
+  let calls = 0;
+  const repeated = await generateGkgSnapshot({ previousSnapshot: result.snapshot, now: () => START, fetchImpl: async () => { calls++; return new Response(manifest(archive)); } });
+  assert.equal(repeated.status, 'skipped'); assert.match(repeated.reason, /already processed/); assert.equal(calls, 1);
+});
+
+test('a failed or malformed GKG batch preserves prior bytes and never retries DocAPI', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'earth-gkg-test-'));
+  try {
+    const output = path.join(directory, GDELT_SNAPSHOT_ASSET); await writeFile(output, 'last good'); let calls = 0;
+    const failed = await generateGkgSnapshot({ previousSnapshot: null, now: () => START, fetchImpl: async (url) => {
+      calls++; assert.equal(url, GKG_UPDATE_MANIFEST); return new Response('Unavailable', { status: 429 });
+    } });
+    assert.equal(failed.status, 'skipped'); assert.match(failed.reason, /429/); assert.equal(calls, 1);
+    assert.equal(await writeGdeltSnapshot(directory, failed), false); assert.equal(await readFile(output, 'utf8'), 'last good');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('GKG candidate memory is bounded while all rows and matched records remain explicitly counted', async () => {
+  const lines = Array.from({ length: 4000 }, (_, i) => gkgRow(i)).join('\n') + '\n', archive = zipFixture(lines);
+  const parsed = await readGkgArchive(archive, descriptor(archive), { retrievedAt: new Date(START).toISOString() });
+  assert.equal(parsed.rows, 4000); assert.equal(parsed.matchedRecords, 12000); assert.equal(parsed.reports.length, 10000);
+});
+
+test('GKG row and declared inflation caps fail the entire sample rather than silently truncating it', async () => {
+  const archive = zipFixture((gkgRow(0, { collection: '2' }) + '\n').repeat(50001));
+  await assert.rejects(readGkgArchive(archive, descriptor(archive), { retrievedAt: new Date(START).toISOString() }), /row count/);
+  const oversized = zipFixture(gkgRow()); const central = oversized.readUInt32LE(oversized.length - 22 + 16);
+  oversized.writeUInt32LE(128 * 1024 * 1024 + 1, central + 24);
+  assert.throws(() => inspectGkgZip(oversized, BATCH), /contract/);
 });

@@ -12,6 +12,17 @@ export function intelligenceTime(value) {
   const date = new Date(value);
   return value && Number.isFinite(date.getTime()) ? date.toISOString().replace('T', ' ').replace('.000Z', ' UTC') : null;
 }
+const COUNTRY_NAMES = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'none' });
+export function intelligenceReportDetails(report) {
+  const topic = report.kind === 'topic-mention';
+  const countries = topic && Array.isArray(report.mentionedCountries) ? report.mentionedCountries.map((code) => {
+    try { return COUNTRY_NAMES.of(code) || code; } catch { return code; }
+  }).join(', ') : '';
+  return { topic, source: `${report.source || 'Source unspecified'}${report.aggregator ? ` · found by ${report.aggregator}` : ''}${report.publisherCountry ? ` · publisher country: ${report.publisherCountry}` : ''}`,
+    countries: countries ? `Countries mentioned: ${countries}. These mentions do not establish an incident location or publisher country.` : '',
+    dates: [['Published', report.publishedAt], ['Event', report.observedAt], ['Updated', report.updatedAt], [topic ? 'GDELT batch' : 'Indexed', report.indexedAt], ['Retrieved', report.retrievedAt]],
+    canNavigate: !topic && Number.isFinite(report.lat) && Number.isFinite(report.lon) && Math.abs(report.lat) <= 90 && Math.abs(report.lon) <= 180 };
+}
 
 /** An opened, visible panel owns its requests; no constructor or closed-panel fetch. */
 export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args), documentRef = globalThis.document,
@@ -103,10 +114,10 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
   const category = node('select'); category.setAttribute('aria-label', 'Intelligence topic');
   for (const [value, label] of CATEGORIES) { const option = node('option', '', label); option.value = value; category.append(option); }
   const country = node('input'); country.type = 'text'; country.placeholder = 'Country code, e.g. BE'; country.maxLength = 2; country.setAttribute('aria-label', 'Country mentions, two-letter code');
-  const query = node('input'); query.type = 'search'; query.placeholder = 'Topic or phrase'; query.maxLength = 64; query.setAttribute('aria-label', 'Search intelligence topic');
+  const query = node('input'); query.type = 'search'; query.placeholder = 'Reviewed topic or publisher'; query.maxLength = 64; query.setAttribute('aria-label', 'Search reviewed topics and publisher domains in the sample');
   const search = node('button', '', 'Apply filters'); search.type = 'submit';
   form.append(category, country, query, search);
-  const note = node('p', 'intelligence-meta', 'Country filtering matches news mentions or GDACS reported countries. It does not locate an article on the globe.');
+  const note = node('p', 'intelligence-meta', 'GDELT cards show machine-extracted topic mentions and source links, with no copied headlines or article text. Search matches reviewed topics and publisher domains. Country filters match countries mentioned, while GDACS uses reported countries; neither establishes the location of a news claim.');
   const status = node('p', 'intelligence-status'); status.setAttribute('role', 'status');
   const sources = node('div', 'intelligence-sources');
   const actions = node('div', 'intelligence-actions');
@@ -119,17 +130,18 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
   const economics = createEconomicsPanel({ container: economicFacts, fetchImpl, documentRef });
   let renderedPayload;
   function reportContent(report, related = false) {
+    const detail = intelligenceReportDetails(report);
     const block = node(related ? 'li' : 'article', related ? '' : 'intelligence-card');
     const heading = node(related ? 'p' : 'h3'); heading.append(link(String(report.title || 'Source report'), report.url)); block.append(heading);
     const meta = node('p', 'intelligence-meta');
-    meta.textContent = `${report.source || 'Source unspecified'}${report.aggregator ? ` · found by ${report.aggregator}` : ''}${report.publisherCountry ? ` · publisher country: ${report.publisherCountry}` : ''}`;
+    meta.textContent = detail.source;
     block.append(meta);
-    const dates = [['Published', report.publishedAt], ['Event', report.observedAt], ['Updated', report.updatedAt], ['Indexed', report.indexedAt], ['Retrieved', report.retrievedAt]];
-    block.append(node('p', 'intelligence-meta', dates.map(([label, value]) => { const stamp = intelligenceTime(value); return stamp ? `${label} ${stamp}` : null; }).filter(Boolean).join(' · ') || 'Publication and event times are unavailable'));
+    if (detail.countries) block.append(node('p', 'intelligence-meta', detail.countries));
+    block.append(node('p', 'intelligence-meta', detail.dates.map(([label, value]) => { const stamp = intelligenceTime(value); return stamp ? `${label} ${stamp}` : null; }).filter(Boolean).join(' · ') || 'Publication and event times are unavailable'));
     if (report.timeMeaning) block.append(node('p', 'intelligence-meta', String(report.timeMeaning)));
     if (report.verification) block.append(node('p', 'intelligence-meta', String(report.verification)));
     if (report.relatedReason) block.append(node('p', 'intelligence-meta', String(report.relatedReason)));
-    if (!related && Number.isFinite(report.lat) && Number.isFinite(report.lon) && Math.abs(report.lat) <= 90 && Math.abs(report.lon) <= 180 && typeof onNavigate === 'function') {
+    if (!related && detail.canNavigate && typeof onNavigate === 'function') {
       const button = node('button', '', 'View reported location'); button.type = 'button';
       button.addEventListener('click', () => onNavigate({ lat: report.lat, lon: report.lon, title: report.title, report })); block.append(button);
     }
@@ -148,6 +160,10 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
     if (!state.payload) { renderedPayload = null; list.replaceChildren(); sources.replaceChildren(); return; }
     if (renderedPayload === state.payload) return;
     renderedPayload = state.payload;
+    const discovery = state.payload.sources.find((source) => source.id === 'gdelt');
+    note.textContent = discovery?.mode && discovery.mode !== 'scheduled-gkg' ?
+      'This discovery source supplies bounded headline and link metadata. Country filters search news mentions or GDACS reported countries. A mention does not establish a news claim’s location.' :
+      'GDELT cards show machine-extracted topic mentions and source links, with no copied headlines or article text. Search matches reviewed topics and publisher domains. Country filters match countries mentioned, while GDACS uses reported countries; neither establishes the location of a news claim.';
     const sourceRows = state.payload.sources.map((source) => {
       const row = node('p', 'intelligence-meta');
       row.append(link(String(source.name || source.id), source.url), ` · ${source.status || 'unknown'}${source.stale ? ' · older cached data' : ''}`);

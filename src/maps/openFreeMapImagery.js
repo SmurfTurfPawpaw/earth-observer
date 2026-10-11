@@ -56,6 +56,27 @@ export function nativeBasemapTile(x, y, level, maximum = 14) {
   return { z, x: Math.floor(x / scale), y: Math.floor(y / scale), scale, offsetX: x % scale, offsetY: y % scale };
 }
 
+function placeStyle(properties, level) {
+  const kind = properties.class, rank = properties.rank == null ? Infinity : Number(properties.rank);
+  if (kind === 'country') {
+    if (level < 1 || level > 4 || !Number.isFinite(rank) || rank < 0 || rank > level) return;
+    return { size: level <= 2 ? 9 : 10, priority: rank, bold: true };
+  }
+  if (kind === 'city' || kind === 'town') {
+    if (level < (kind === 'city' ? 5 : 8)) return;
+    const maximumRank = level < 6 ? 1 : level < 7 ? 2 : level < 9 ? 4 : level < 11 ? 8 : Infinity;
+    if (rank > maximumRank) return;
+    return { size: kind === 'city' ? 10 : 9, priority: Number.isFinite(rank) ? rank + 5 : 25, bold: kind === 'city' };
+  }
+  if (kind === 'state' || kind === 'province') {
+    if (level < 5 || level > 9 || level < 7 && (!Number.isFinite(rank) || rank > 3)) return;
+    return { size: 9, priority: 30, bold: false };
+  }
+  if (['village', 'hamlet'].includes(kind) && level >= 12 || ['suburb', 'quarter', 'neighbourhood'].includes(kind) && level >= 13)
+    return { size: 9, priority: 40, bold: false };
+}
+const labelLimit = (level) => level < 1 ? 0 : level < 3 ? 4 : level < 5 ? 6 : level < 9 ? 10 : level < 12 ? 16 : level < 14 ? 24 : 32;
+
 /** A deliberately small original map style; labels use installed browser fonts. */
 export function paintBasemapTile(decoded, tile, { canvasFactory = () => document.createElement('canvas') } = {}) {
   const canvas = canvasFactory(); canvas.width = SIZE; canvas.height = SIZE;
@@ -107,31 +128,40 @@ export function paintBasemapTile(decoded, tile, { canvasFactory = () => document
   const labels = [];
   const places = layer('place');
   if (places) for (const feature of places.features) if (feature.type === 1 && feature.properties.name) {
-    const p = feature.properties, major = p.class === 'country', city = ['city', 'town'].includes(p.class);
-    if (!major && !city && tile.level < 11 || city && tile.level < 4 && Number(p.rank || 99) > 3 || p.class === 'country' && tile.level > 9 || ['state', 'province'].includes(p.class) && tile.level > 12) continue;
+    const style = placeStyle(feature.properties, tile.level); if (!style) continue;
     const point = feature.geometry[0]?.[0]; if (!point) continue;
     const position = transform(point, places.extent);
-    labels.push({ ...position, text: p.name, size: major ? 14 : city ? 12 : 10, priority: major ? 0 : Number(p.rank || 20), bold: major || city });
+    labels.push({ ...position, text: feature.properties.name, ...style });
   }
   const names = layer('transportation_name');
-  if (names && tile.level >= 13) for (const feature of names.features) if (feature.type === 2 && feature.properties.name) {
+  if (names && tile.level >= 14) for (const feature of names.features) if (feature.type === 2 && feature.properties.name) {
     let anchor, longest = 0;
     for (const part of feature.geometry) for (let index = 1; index < part.length; index++) {
       const a = transform(part[index - 1], names.extent), b = transform(part[index], names.extent);
       const distance = Math.hypot(b.x - a.x, b.y - a.y), x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
       if (distance > longest && x > 0 && x < SIZE && y > 0 && y < SIZE) { longest = distance; let angle = Math.atan2(b.y - a.y, b.x - a.x); if (angle > Math.PI / 2) angle -= Math.PI; if (angle < -Math.PI / 2) angle += Math.PI; anchor = { x, y, angle }; }
     }
-    if (anchor && longest >= Math.min(120, feature.properties.name.length * 5)) labels.push({ ...anchor, text: feature.properties.name, size: 10, priority: 100 });
+    if (anchor) labels.push({ ...anchor, text: feature.properties.name, size: 8, priority: 100, segmentLength: longest });
   }
-  const occupied = []; context.textAlign = 'center'; context.textBaseline = 'middle';
-  for (const label of labels.sort((a, b) => a.priority - b.priority)) {
-    if (occupied.length >= 100 || label.x < -70 || label.x > SIZE + 70 || label.y < -20 || label.y > SIZE + 20) continue;
+  const occupied = [], drawn = new Set(), limit = labelLimit(tile.level); context.textAlign = 'center'; context.textBaseline = 'middle';
+  for (const label of labels.sort((a, b) => a.priority - b.priority || a.text.localeCompare(b.text))) {
+    if (occupied.length >= limit) break;
+    if (drawn.has(label.text) || label.x < 0 || label.x > SIZE || label.y < 0 || label.y > SIZE) continue;
     context.font = `${label.bold ? '600 ' : ''}${label.size}px system-ui, sans-serif`;
-    const width = Math.min(360, context.measureText(label.text).width) + 8, height = label.size + 7;
-    const box = { left: label.x - width / 2, right: label.x + width / 2, top: label.y - height / 2, bottom: label.y + height / 2 };
+    const metrics = context.measureText(label.text);
+    const inkWidth = Number.isFinite(metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight) ? 2 * Math.max(Math.abs(metrics.actualBoundingBoxLeft), Math.abs(metrics.actualBoundingBoxRight)) : 0;
+    const inkHeight = Number.isFinite(metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) ? 2 * Math.max(Math.abs(metrics.actualBoundingBoxAscent), Math.abs(metrics.actualBoundingBoxDescent)) : 0;
+    const width = Math.max(metrics.width, inkWidth) + 10, height = Math.max(label.size * 1.3, inkHeight) + 8;
+    if (!Number.isFinite(width) || width <= 0 || label.segmentLength && label.segmentLength < width) continue;
+    const cosine = Math.abs(Math.cos(label.angle || 0)), sine = Math.abs(Math.sin(label.angle || 0));
+    const halfWidth = (width * cosine + height * sine) / 2, halfHeight = (width * sine + height * cosine) / 2;
+    const box = { left: label.x - halfWidth, right: label.x + halfWidth, top: label.y - halfHeight, bottom: label.y + halfHeight };
+    // Keep the full text and halo inside its tile, including rotated road names.
+    // Omitting a seam-adjacent label is preferable to drawing isolated letters.
+    if (box.left < 3 || box.right > SIZE - 3 || box.top < 3 || box.bottom > SIZE - 3) continue;
     if (occupied.some((other) => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)) continue;
-    occupied.push(box); context.save(); context.translate(label.x, label.y); if (label.angle) context.rotate(label.angle);
-    context.lineJoin = 'round'; context.lineWidth = 3; context.strokeStyle = '#1a2e3b'; context.fillStyle = '#edf4f3'; context.strokeText(label.text, 0, 0); context.fillText(label.text, 0, 0); context.restore();
+    occupied.push(box); drawn.add(label.text); context.save(); context.translate(label.x, label.y); if (label.angle) context.rotate(label.angle);
+    context.lineJoin = 'round'; context.lineWidth = 2; context.strokeStyle = '#1a2e3b'; context.fillStyle = '#edf4f3'; context.strokeText(label.text, 0, 0); context.fillText(label.text, 0, 0); context.restore();
   }
   return canvas;
 }

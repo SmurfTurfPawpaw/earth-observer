@@ -7,6 +7,7 @@ import { createMiddlewareStack } from './middleware.js';
 import { createHostedServer } from '../index.js';
 import { aircraftProxy } from './aircraft.js';
 import { celestrakProxy } from '../providers/space/celestrak.js';
+import { hostedProviders } from './providers.js';
 
 async function withServer(providers, fn, distDir) {
   const server = createHostedServer({ providers, distDir });
@@ -23,6 +24,15 @@ test('middleware preserves mount queries, restores URLs for next and respects pa
   assert.deepEqual(seen, ['/?x=1', '/api/feed?x=1']); seen.length = 0;
   await stack.handle({ url: '/api/feed-other' }, {}, () => assert.fail());
   assert.deepEqual(seen, ['/api/feed-other']);
+});
+
+test('the default production provider set mounts economics and validates its filters before acquisition', async () => {
+  await withServer(hostedProviders(), async (url) => {
+    const response = await fetch(url + '/api/economics?country=BE&unexpected=1');
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /Unknown or repeated/);
+    assert.equal((await fetch(url + '/api/economics/unlisted')).status, 404);
+  });
 });
 
 test('production serves only the build with headers, correct gzip and API method restrictions', async () => {

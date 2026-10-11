@@ -1,6 +1,7 @@
 import { readResponseJsonCapped } from '../providers/common/http.js';
 import { normalizeGdelt, safeReportUrl } from './intelligence-sources.js';
 import { gdeltQueryUrl } from './gdelt-query.js';
+import { validateGkgSnapshot, GKG_THEMES, gkgCoverage, gkgBatchTime } from './gdelt-gkg.js';
 
 export const GDELT_SNAPSHOT_URL = 'https://github.com/SmurfTurfPawpaw/earth-observer/releases/download/intelligence-data/gdelt.snapshot.json';
 export const GDELT_SNAPSHOT_CATEGORIES = Object.freeze(['geopolitics', 'economy', 'disasters']);
@@ -19,6 +20,7 @@ const boundedText = (value, max, nullable = false) => nullable && value === null
 
 /** Accept only the fixed queries and normalized metadata; no article bodies, images or invented locations. */
 export function validateGdeltSnapshot(payload, nowMs = Date.now()) {
+  if (payload?.schemaVersion === 2) return validateGkgSnapshot(payload, nowMs);
   if (!object(payload) || payload.schemaVersion !== 1 || !object(payload.source) ||
       Object.entries(SOURCE).some(([key, value]) => payload.source[key] !== value) ||
       !object(payload.coverage) || payload.coverage.timespan !== '24h' || payload.coverage.maxRecordsPerCategory !== 80 ||
@@ -92,24 +94,30 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
     if (pending) await pending;
     const generated = cached ? Date.parse(cached.snapshot.generatedAt) : null;
     const ageMs = generated === null ? null : Math.max(0, now() - generated);
-    const expired = ageMs !== null && ageMs > MAX_AGE_MS;
+    const gkg = cached?.snapshot.schemaVersion === 2;
+    const batchCoverage = gkg ? gkgCoverage(cached.snapshot.coverage.processedBatches.filter((entry) => now() - Date.parse(gkgBatchTime(entry.id)) <= MAX_AGE_MS)) : null;
+    const expired = ageMs !== null && ageMs > MAX_AGE_MS || gkg && !batchCoverage.processedBatches.length;
     const available = Boolean(cached && !expired);
-    const stale = available && (ageMs > REFRESH_MS || Boolean(lastFailure));
+    const sourceAgeMs = gkg && batchCoverage.processedBatches.length ? Math.max(0, now() - Date.parse(batchCoverage.windowEnd)) : ageMs;
+    const stale = available && (ageMs > REFRESH_MS || sourceAgeMs > REFRESH_MS || Boolean(lastFailure));
     const local = Boolean(filters.country || filters.q);
-    const coverage = 'Scheduled GDELT discovery sample: at most 80 title/link records per topic from a 24-hour query. Country and topic filters match only titles in this sample; an empty result does not establish absence or complete coverage. Publisher country is not an event location.';
+    const coverage = gkg ? `Scheduled GDELT topic-mention sample: at most 80 links per topic from ${batchCoverage.processedBatches.length} processed 15-minute batches in a rolling 24-hour window; ${batchCoverage.sampleGaps.length} intervals missing between the sampled endpoints. Country filters match countries mentioned in the source article, not publisher country or incident location. Topic searches match reviewed theme labels and publisher domains, not article text or headlines. This is a bounded sample; no match does not establish absence.` :
+      'Scheduled GDELT discovery sample: at most 80 title/link records per topic from a 24-hour query. Country and topic filters match only titles in this sample; an empty result does not establish absence or complete coverage. Publisher country is not an event location.';
     const categories = filters.category === 'all' ? GDELT_SNAPSHOT_CATEGORIES : [filters.category];
     const topic = String(filters.q || '').normalize('NFKC').toLowerCase().split(/\s+/).filter(Boolean);
     const country = String(filters.countryName || '').normalize('NFKC').toLowerCase();
     const records = available ? categories.flatMap((key) => cached.snapshot.categories[key]?.reports || []).filter((report) => {
-      const text = report.title.normalize('NFKC').toLowerCase();
-      return (!country || text.includes(country)) && topic.every((word) => text.includes(word));
+      if (gkg && now() - Date.parse(report.indexedAt) > MAX_AGE_MS) return false;
+      const text = `${report.title}${gkg ? ` ${report.source} ${report.themes.map((theme) => GKG_THEMES[theme][1]).join(' ')}` : ''}`.normalize('NFKC').toLowerCase();
+      return (gkg ? !filters.country || report.mentionedCountries.includes(filters.country) : !country || text.includes(country)) && topic.every((word) => text.includes(word));
     }) : [];
     return { records, state: { ...SOURCE, status: available ? stale ? 'stale' : 'ready' : 'unavailable', stale,
-      mode: 'scheduled-snapshot', generatedAt: cached?.snapshot.generatedAt || null,
-      retrievedAt: cached ? new Date(Math.min(...categories.map((key) => Date.parse(cached.snapshot.categories[key].retrievedAt)))).toISOString() : null,
+      mode: gkg ? 'scheduled-gkg' : 'scheduled-snapshot', kind: gkg ? 'topic-mention' : 'article-link', generatedAt: cached?.snapshot.generatedAt || null,
+      retrievedAt: cached ? gkg ? cached.snapshot.coverage.processedBatches.at(-1).retrievedAt : new Date(Math.min(...categories.map((key) => Date.parse(cached.snapshot.categories[key].retrievedAt)))).toISOString() : null,
       snapshotRetrievedAt: cached ? new Date(cached.acquiredAt).toISOString() : null,
-      ageMs, refreshIntervalMs: REFRESH_MS, retryAt: retryAt || null, coverage, filtersAppliedLocally: local,
+      ageMs, sourceAgeMs, refreshIntervalMs: REFRESH_MS, retryAt: retryAt || null, coverage, filtersAppliedLocally: local,
+      ...(batchCoverage ? { processedBatches: batchCoverage.processedBatches, sampleGaps: batchCoverage.sampleGaps, windowStart: batchCoverage.windowStart, windowEnd: batchCoverage.windowEnd, countryMeaning: 'country-mentioned' } : {}),
       reason: expired ? 'Scheduled GDELT snapshot exceeded the 24-hour age limit' : !available ? lastFailure || 'Scheduled GDELT snapshot unavailable' :
-        [stale ? lastFailure || 'Older scheduled discovery sample' : 'Scheduled discovery sample', local ? 'Local filters apply only to this bounded title sample' : 'At most 80 records per topic'].join('; ') } };
+        [stale ? lastFailure || 'Older scheduled discovery sample' : gkg ? 'Scheduled machine-extracted topic sample' : 'Scheduled discovery sample', local ? gkg ? 'Local filters apply only to reviewed topics, domains and country mentions' : 'Local filters apply only to this bounded title sample' : 'At most 80 records per topic'].join('; ') } };
   };
 }
