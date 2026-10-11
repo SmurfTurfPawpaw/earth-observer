@@ -5,7 +5,7 @@ import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { createProviderStore } from './storage.js';
 import { createWorkerFetch } from './fetch.js';
 import { createWorkerMiddleware } from './middleware.js';
-import { appendHistorySnapshot, readPreparedIntelligence, writePreparedIntelligence } from './history.js';
+import { appendHistorySnapshot, readPreparedIntelligence, writePreparedIntelligence, PreparedBaselineConflict } from './history.js';
 
 export const COLLECTOR_PLUGINS = Object.freeze([
   Object.freeze({ id: 'usgs', name: 'USGS earthquakes', endpoint: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson',
@@ -50,10 +50,17 @@ function collectionPacket(packet, now) {
 }
 
 /** Persist a packet only after the caller has authenticated its writer. No endpoint is exposed here. */
-export async function persistEarthCollection(env, input, { now = Date.now } = {}) {
+export async function persistEarthCollection(env, input, { now = Date.now, matchesBaseline } = {}) {
   const packet = collectionPacket(input, now);
   if (!env.EARTH_STORE?.get || !env.EARTH_STORE?.put) return { configured: false, stored: false, collectedAt: packet.collectedAt };
   const capturedNow = () => Date.parse(packet.collectedAt), snapshots = [], failures = [];
+  let prepared;
+  try { prepared = await writePreparedIntelligence(env, packet.payload, { now: capturedNow, matchesBaseline }); }
+  catch (error) {
+    if (error instanceof PreparedBaselineConflict) throw error;
+    return { configured: true, stored: false, collectedAt: packet.collectedAt, snapshots,
+      failures: ['Prepared current intelligence publication was unavailable; the previous publication was retained'], status: 'partial' };
+  }
   const work = packet.payload.sources.filter((source) => ['ready', 'stale'].includes(source.status)).map(async (source) => {
     const records = packet.payload.indexRecords.filter((record) => record.sourceId === source.id);
     const coordinates = source.id === 'usgs' ? records.filter((record) => Number.isFinite(record.lat) && Number.isFinite(record.lon))
@@ -65,9 +72,6 @@ export async function persistEarthCollection(env, input, { now = Date.now } = {}
     if (result.status === 'fulfilled') snapshots.push(result.value);
     else failures.push('A source history or durable observation index write was unavailable; existing history was retained');
   }
-  let prepared;
-  try { prepared = await writePreparedIntelligence(env, packet.payload, { now: capturedNow }); }
-  catch { failures.push('Prepared current intelligence publication was unavailable; the previous publication was retained'); }
   return { configured: true, stored: Boolean(prepared?.stored), collectedAt: packet.collectedAt, snapshots, failures,
     indexConfigured: Boolean(env.EARTH_DB?.prepare), prepared: prepared || null, status: failures.length ? 'partial' : 'stored' };
 }

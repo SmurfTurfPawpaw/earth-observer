@@ -92,3 +92,28 @@ node --test collector-worker/index.test.mjs
 
 This test injects synthetic responses and storage. It makes no production,
 Cloudflare or provider requests and does not establish a deployed schedule.
+
+## Temporary laptop pipeline
+
+[`scripts/collector-daemon.mjs`](../scripts/collector-daemon.mjs) is the separate
+temporary local bridge while Cloudflare account configuration is pending. Its
+default invokes the local pipeline: fixed-source acquisition, changed/revised
+metadata analysis, then authenticated `{ action: "publish", packet, analysis }`
+publication to the hosted endpoint. The credential is passed through process
+environment in memory as `EARTH_COLLECTION_SECRET` (or `EARTH_COLLECTOR_TOKEN`)
+and must be hexadecimal with at least 32 characters. No secret file is created
+or logged. Launch it only after the authenticated publish endpoint is deployed.
+
+The daemon serializes minute cycles and propagates a 30-second deadline to
+their HTTP requests. SIGINT/SIGTERM clears its wait and aborts active requests.
+The local pipeline owns per-source cadence, provider Retry-After, bounded
+state/outbox and change-based inference. A completed or accepted cycle does
+not mean every source is fresh. No full target response or source records enter
+the daemon's compact logs. The laptop must remain awake, connected and running
+this process; it is not a verified 24/7 cloud deployment.
+
+`--once` performs one cycle. The explicit `--trigger-only` compatibility option
+calls the existing hosted collection action and skips laptop analysis; it is
+not the default path and does not satisfy inference-before-publication. No
+arbitrary target URL argument is accepted. This local process and the prepared
+Cloudflare scheduled Worker are separate deployment modes.

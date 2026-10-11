@@ -17,6 +17,10 @@ All four initial adapters require no provider credentials. They use the existing
 
 ## Storage and history indexing
 
+The owner can run `scripts/collector-daemon.mjs` to acquire and process records on a laptop before storage. See [LOCAL_PIPELINE.md](LOCAL_PIPELINE.md). The private writer admits three bounded actions: server-side `collect`, local `{action: 'publish', packet, analysis}`, and unchanged `{action: 'heartbeat', collectedAt, sources, inputDigest}`. All require the server credential; visitor requests cannot invoke acquisition or publication. The local writer verifies the portable facts digest before storing source evidence and separate derived metadata. `GET /api/analysis` exposes the last dated derived artifact and whether its digest still matches current facts. Labels are not merged into source records.
+
+Successful unchanged heartbeats reuse immutable facts blobs and append actual check times to history. They update retrieval dates only for complete successfully retrieved USGS/GDACS/EONET feeds, preserving individual GDELT batch dates. A missing or changed baseline returns 409 and requests one retained full packet. Publication failure leaves the local outbox for retry, rather than reporting an upload as successful. The laptop process must stay awake and connected; this is not a provisioned always-on cloud collector.
+
 `EARTH_STORE` is the persistent R2 binding. `EARTH_DB` is the optional durable D1 history index. Its migration is supplied by the host:
 
 ```sql

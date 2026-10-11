@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createCollector } from './index.js';
+import { createCollectorDaemon, COLLECTOR_PUBLISH_URL } from '../scripts/collector-daemon.mjs';
 
 test('only the scheduled collector action sends the fixed authenticated POST; state/backoff/status are bounded and secret-free', { timeout: 2000 }, async () => {
   let clock = Date.parse('2026-10-11T16:00:00Z'), calls = 0, writes = 0;
@@ -45,4 +46,14 @@ test('only the scheduled collector action sends the fixed authenticated POST; st
     const result = await invalid.run({ ...env, COLLECTOR_STATE: undefined }); assert.equal(result.outcome, 'invalid-response');
     assert.equal(JSON.stringify(result).includes('private target body'), false);
   }
+  let localCycles = 0; const logs = [], localSecret = 'e'.repeat(64);
+  const daemon = createCollectorDaemon({ credential: localSecret, once: true, now: () => clock, logger: (value) => logs.push(value),
+    pipelineFactory(options) {
+      assert.equal(options.publishUrl, COLLECTOR_PUBLISH_URL); assert.equal(options.publishCredential, localSecret);
+      return { async cycle() { localCycles++; return { status: 'partial', published: false, recordCount: 12, secret: localSecret, rawResponse: 'Private pipeline content' }; } };
+    } });
+  await daemon.start(); assert.equal(localCycles, 1); assert.equal(daemon.status().running, false); assert.equal(daemon.status().cycleRunning, false);
+  assert.equal(logs.at(-1).outcome, 'partial'); assert.equal(logs.at(-1).published, false); assert.equal(logs.at(-1).recordCount, 12);
+  assert.equal(JSON.stringify(logs).includes(localSecret), false); assert.equal(JSON.stringify(logs).includes('Private pipeline content'), false);
+  daemon.stop(); assert.equal(daemon.status().stopped, true);
 });

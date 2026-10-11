@@ -60,7 +60,7 @@ async function conditionalUpdate(bucket, key, update) {
   return serialized(bucket, key, async () => {
     for (let attempt = 0; attempt < 8; attempt++) {
       const previous = await objectJson(bucket, key);
-      const value = update(previous?.value ?? null);
+      const value = await update(previous?.value ?? null);
       if (previous && value === previous.value) return value;
       if (encoded(value).byteLength > HISTORY_MAX_SNAPSHOT_BYTES) throw new Error('History manifest exceeded its bound');
       const saved = await io(() => bucket.put(key, JSON.stringify(value), {
@@ -255,11 +255,15 @@ function preparedPayload(payload) {
   return value;
 }
 
-export async function writePreparedIntelligence(env, payload, { now = Date.now } = {}) {
+export class PreparedBaselineConflict extends Error {}
+
+export async function writePreparedIntelligence(env, payload, { now = Date.now, matchesBaseline } = {}) {
   if (!configured(env)) return { configured: false, stored: false };
   const value = { schemaVersion: 1, collectedAt: new Date(now()).toISOString(), payload: preparedPayload(payload) };
-  const stored = await conditionalUpdate(env.EARTH_STORE, PREPARED_INTELLIGENCE_KEY, (previous) =>
-    previous?.schemaVersion === 1 && iso(previous.collectedAt) > value.collectedAt ? previous : value);
+  const stored = await conditionalUpdate(env.EARTH_STORE, PREPARED_INTELLIGENCE_KEY, async (previous) => {
+    if (matchesBaseline && !await matchesBaseline(previous?.payload)) throw new PreparedBaselineConflict('Prepared baseline changed');
+    return previous?.schemaVersion === 1 && iso(previous.collectedAt) > value.collectedAt ? previous : value;
+  });
   return { configured: true, stored: true, collectedAt: stored.collectedAt };
 }
 

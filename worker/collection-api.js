@@ -1,8 +1,9 @@
 import { collectEarthSources, getCollectorStatus } from './collector.js';
-import { readPreparedIntelligence } from './history.js';
+import { readPreparedIntelligence, PreparedBaselineConflict } from './history.js';
 import { intelligenceQuery } from '../server/hosted/intelligence.js';
 import { createDiscoveryIndex } from '../src/core/discovery-index.js';
 import { groupReports } from '../src/core/intelligence-grouping.js';
+import { publishLocalCollection, heartbeatCollection, readLocalAnalysis } from './collection-publication.js';
 
 const json = (payload, status = 200, headers = {}) => Response.json(payload, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers,
@@ -19,23 +20,31 @@ async function authorized(request, env) {
 async function actionBody(request) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) return false;
   const declared = request.headers.get('content-length');
-  if (declared && (!/^\d+$/.test(declared) || Number(declared) > 64)) return false;
+  if (declared && (!/^\d+$/.test(declared) || Number(declared) > 1500000)) return false;
   const reader = request.body?.getReader(); if (!reader) return false;
   let bytes = 0, chunks = '';
   const decoder = new TextDecoder();
   try {
     while (true) { const { value, done } = await reader.read(); if (done) break;
-      bytes += value.byteLength; if (bytes > 64) { await reader.cancel(); return false; }
+      bytes += value.byteLength; if (bytes > 1500000) { await reader.cancel(); return false; }
       chunks += decoder.decode(value, { stream: true });
     }
     const value = JSON.parse(chunks + decoder.decode());
-    return value && !Array.isArray(value) && value.action === 'collect' && Object.keys(value).length === 1;
+    const fields = { collect: ['action'], publish: ['action', 'packet', 'analysis'], heartbeat: ['action', 'collectedAt', 'sources', 'inputDigest'] };
+    return value && !Array.isArray(value) && Object.hasOwn(fields, value.action) && Object.keys(value).length === fields[value.action].length &&
+      Object.keys(value).every((key) => fields[value.action].includes(key)) ? value : false;
   } catch { await reader.cancel().catch(() => {}); return false; }
 }
 
 /** Only a private machine credential can trigger ingestion. No visitor or URL inputs. */
 export async function handleCollection(request, env, ctx, { now = Date.now, fetchImpl = fetch } = {}) {
   const path = new URL(request.url).pathname;
+  if (path === '/api/analysis') {
+    if (request.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405);
+    if (!env.EARTH_STORE?.get) return json({ available: false }, 503);
+    const analysis = await readLocalAnalysis(env, { now });
+    return json(analysis || { available: false, note: 'Local processing has not published derived metadata yet.' });
+  }
   if (path === '/api/collector/status') {
     if (request.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405);
     return json(await getCollectorStatus(env, { now }));
@@ -44,11 +53,18 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
   if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
   if (request.headers.has('origin') || !await authorized(request, env)) return json({ error: 'Collector authorization required' }, 401);
   if (!env.EARTH_STORE?.get || !env.EARTH_STORE?.put) return json({ error: 'Durable storage is not configured' }, 503);
-  if (!await actionBody(request)) return json({ error: 'Use the fixed collection action' }, 400);
+  const body = await actionBody(request);
+  if (!body) return json({ error: 'Use a bounded collection, publication or heartbeat action' }, 400);
   try {
-    const result = await collectEarthSources(env, ctx, { now, fetchImpl });
-    return json(result, 200);
-  } catch { return json({ error: 'Collection could not complete; retained source dates remain unchanged' }, 503, { 'retry-after': '60' }); }
+    const result = body.action === 'publish' ? await publishLocalCollection(env, body.packet, body.analysis, { now }) :
+      body.action === 'heartbeat' ? await heartbeatCollection(env, body, { now }) : await collectEarthSources(env, ctx, { now, fetchImpl });
+    if (result.conflict) return json({ error: 'Prepared baseline changed; publish the retained full packet' }, 409);
+    return json(result, result.stored ? 200 : 503, result.stored ? {} : { 'retry-after': '60' });
+  } catch (error) {
+    if (error instanceof PreparedBaselineConflict) return json({ error: 'Prepared baseline changed; publish the retained full packet' }, 409);
+    if (error instanceof TypeError) return json({ error: 'Invalid bounded collection metadata or analysis' }, 400);
+    return json({ error: 'Collection could not complete; retained source dates remain unchanged' }, 503, { 'retry-after': '60' });
+  }
 }
 
 /** Production readers consume prepared snapshots and never perform source acquisition. */

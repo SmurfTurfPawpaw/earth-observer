@@ -10,6 +10,7 @@ async function tests(folder) {
   }))).flat();
 }
 const files = [...await tests('src'), ...await tests('server'), ...await tests('worker').catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)),
-  ...await tests('collector-worker').catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error))].sort();
+  ...await tests('collector-worker').catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)),
+  ...await tests('scripts')].sort();
 const child = spawn(process.execPath, ['--test', '--test-concurrency=4', ...files], { stdio: 'inherit' });
 child.on('exit', (code) => process.exit(code ?? 1));
