@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { HOME_VIEW, PLACES, resolvePlace } from './navigation-state.js';
+import { viewerGlobeAltitude } from './globe-framing.js';
 export { HOME_VIEW, PLACES, resolvePlace, parseViewHash, serializeViewHash } from './navigation-state.js';
 
 export function cameraView(viewer) {
@@ -15,7 +16,7 @@ export function setCameraView(viewer, view, animate = false) {
   viewer.trackedEntity = undefined;
   viewer.camera.cancelFlight();
   const options = {
-    destination: Cesium.Cartesian3.fromDegrees(view.lon, view.lat, view.alt),
+    destination: Cesium.Cartesian3.fromDegrees(view.lon, view.lat, Math.min(view.alt, viewerGlobeAltitude(viewer, .65))),
     orientation: { heading: Cesium.Math.toRadians(view.heading || 0), pitch: Cesium.Math.toRadians(view.pitch ?? -90), roll: Cesium.Math.toRadians(view.roll || 0) },
     endTransform: Cesium.Matrix4.IDENTITY,
     duration: globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 0 : 1.3,
@@ -33,12 +34,15 @@ export function installNavigation(viewer, { onPlace = () => {}, onViewChange = (
     button.addEventListener('click', handler);
     cleanup.push(() => button.removeEventListener('click', handler));
   };
-  bind('home', () => setCameraView(viewer, HOME_VIEW, true));
+  const showGlobe = () => setCameraView(viewer, { ...HOME_VIEW, alt: viewerGlobeAltitude(viewer) }, true);
+  bind('home', showGlobe);
   bind('north', () => setCameraView(viewer, { ...cameraView(viewer), heading: 0, roll: 0 }, true));
   for (const [id, direction] of [['zoom-in', 1], ['zoom-out', -1]]) bind(id, () => {
     viewer.trackedEntity = undefined;
     const view = cameraView(viewer);
-    const distance = Math.max(100, view.alt * .35);
+    const maximum = viewerGlobeAltitude(viewer, .65);
+    const distance = direction === 1 ? Math.min(Math.max(100, view.alt * .35), Math.max(0, view.alt - 250)) :
+      Math.min(Math.max(100, view.alt * .35), Math.max(0, maximum - view.alt));
     if (direction === 1) viewer.camera.zoomIn(distance);
     else viewer.camera.zoomOut(distance);
     viewer.scene.requestRender();
@@ -71,6 +75,14 @@ export function installNavigation(viewer, { onPlace = () => {}, onViewChange = (
     onViewChange(view);
   };
   cleanup.push(viewer.camera.moveEnd.addEventListener(updateReadout));
+  const resize = () => {
+    const maximum = viewerGlobeAltitude(viewer, .65);
+    viewer.scene.screenSpaceCameraController.maximumZoomDistance = maximum;
+    const view = cameraView(viewer);
+    if (view.alt > maximum) setCameraView(viewer, { ...view, alt: maximum });
+  };
+  window.addEventListener('resize', resize);
+  cleanup.push(() => window.removeEventListener('resize', resize));
   updateReadout();
   return () => cleanup.splice(0).reverse().forEach((dispose) => dispose());
 }

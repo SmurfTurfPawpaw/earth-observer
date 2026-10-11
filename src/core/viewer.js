@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { applyModelAtmosphereWorkaround } from '../app/atmosphereCompat.js';
+import { viewerGlobeAltitude } from './globe-framing.js';
 
 const NASA_TILES = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg';
 
@@ -40,8 +41,9 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     viewer.scene.globe.preloadSiblings = true;
     viewer.scene.globe.loadingDescendantLimit = 8;
     viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#213a49');
+    viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#13212c');
     viewer.scene.screenSpaceCameraController.minimumZoomDistance = 250;
-    viewer.scene.screenSpaceCameraController.maximumZoomDistance = 50000000;
+    viewer.scene.screenSpaceCameraController.maximumZoomDistance = viewerGlobeAltitude(viewer, .65);
     // Cesium's surface mode keeps mapped markers legible while occluding the far side.
     viewer.scene.globe.depthTestAgainstTerrain = false;
     viewer.clock.shouldAnimate = true;
