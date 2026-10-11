@@ -22,7 +22,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      INTELLIGENCE_OUTPUT: ${{ runner.temp }}/intelligence-snapshots
+      INTELLIGENCE_OUTPUT: .cache/intelligence-snapshots
       NODE_OPTIONS: --max-old-space-size=256
     steps:
       - uses: actions/checkout@v4

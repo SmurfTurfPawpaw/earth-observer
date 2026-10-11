@@ -22,7 +22,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      WIND_OUTPUT: ${{ runner.temp }}/wind-snapshots
+      WIND_OUTPUT: .cache/wind-snapshots
       NODE_OPTIONS: --max-old-space-size=512
     steps:
       - uses: actions/checkout@v4
