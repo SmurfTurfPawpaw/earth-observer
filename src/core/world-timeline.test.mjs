@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTimeline } from './timeline.js';
+import { timelineDateUtc } from './world-timeline.js';
 import { createSceneClock } from './scene-clock.js';
 import { worldHash } from './world-model.js';
 import { WORLD_SCENE_SCOPE } from './world-scene-controller.js';
@@ -123,5 +124,27 @@ test('a manually entered calendar gap does not borrow completeness from unrelate
   const date = elements(f.container).find((element) => element.id === 'timeline-date'); date.value = gapAt.slice(0, 19); date.trigger('change'); await settle();
   assert.equal(f.sceneClock.getState().at, gapAt); assert.equal(f.entities.size, 0);
   assert.equal(elements(f.container).find((element) => element.className === 'timeline-status').textContent, 'This period has not been imported; no current data substitutes for it.');
+  timeline.destroy(); f.sceneClock.destroy();
+});
+
+test('browser minute-only dates with zero seconds leave Live and seek exact UTC; seconds stay intact and impossible dates cannot move the scene', async () => {
+  const f = fixture(), calls = [];
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url) => {
+    const query = new URL(url, 'https://example.test').searchParams; calls.push(query);
+    return response(query.get('at'));
+  } });
+  const date = elements(f.container).find((element) => element.id === 'timeline-date');
+  assert.equal(f.sceneClock.getState().mode, 'live'); date.value = '2025-10-08T00:00'; date.trigger('change'); await settle();
+  assert.equal(f.sceneClock.getState().mode, 'history'); assert.equal(f.sceneClock.getState().at, '2025-10-08T00:00:00.000Z');
+  assert.ok(calls.some((query) => query.get('at') === '2025-10-08T00:00:00.000Z'));
+  date.value = '2025-10-08T14:26:17'; date.trigger('change'); await settle();
+  assert.equal(f.sceneClock.getState().at, '2025-10-08T14:26:17.000Z');
+  const accepted = f.sceneClock.getState().at, count = calls.length;
+  for (const invalid of ['', '2025-02-29T00:00', '2025-04-31T00:00:00', '2025-10-08T24:00', '2025-10-08T14:60', '2025-10-08T14:26Z', '2025-10-08T14:26+02:00']) {
+    date.value = invalid; date.trigger('change'); await settle(); assert.equal(f.sceneClock.getState().at, accepted); assert.equal(calls.length, count);
+  }
+  assert.equal(timelineDateUtc('2024-02-29T00:00'), '2024-02-29T00:00:00.000Z');
+  assert.equal(timelineDateUtc('2025-10-08T14:26:17.125'), '2025-10-08T14:26:17.125Z');
+  assert.equal(timelineDateUtc('2025-10-08T14:26:60'), null);
   timeline.destroy(); f.sceneClock.destroy();
 });

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { collectEarthSources } from '../worker/collector.js';
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
+import { collectionFactsEncoding } from '../src/core/collection-facts.js';
 import { createLocalGdeltSource } from './local-gdelt-source.mjs';
 
 export const LOCAL_PUBLISH_URL = 'https://giovannicallebaut.com/earth/api/collector';
@@ -23,7 +24,22 @@ function recordsOf(records) {
 
 const factsOf = (record) => { const { retrievedAt: _retrievedAt, ...facts } = record; return facts; };
 /** Portable algorithm: UTF-8 SHA-256 of JSON canonical records, ordinal ID sort, retrievedAt excluded only. */
-export const factsDigest = (records) => sha(recordsOf(records).map(factsOf));
+export const factsDigest = records => createHash('sha256').update(collectionFactsEncoding(records), 'utf8').digest('hex');
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  return value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
+}
+/** Retained GDELT evidence coverage is separate from selected records and operational retry/check clocks. */
+function gdeltCoverageDigest(packet) {
+  const source = packet?.payload?.sources?.find(source => source.id === 'gdelt');
+  const scope = packet?.payload?.indexCoverage?.sources?.find(source => source.id === 'gdelt');
+  if (!source) return null;
+  return sha(stable({ generatedAt: source.generatedAt ?? null, kind: source.kind ?? null,
+    processedBatches: source.processedBatches ?? null, sampleGaps: source.sampleGaps ?? null,
+    windowStart: source.windowStart ?? null, windowEnd: source.windowEnd ?? null, countryMeaning: source.countryMeaning ?? null,
+    coverage: source.coverage ?? null, generation: scope?.generation ?? null }));
+}
 
 function packetOf(packet) {
   if (packet?.schemaVersion !== 1 || typeof packet.collectedAt !== 'string' || !Number.isFinite(Date.parse(packet.collectedAt)) ||
@@ -132,7 +148,7 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
   const snapshotReader = localGdelt ? (filters) => localGdelt.read(filters, { signal: getSignal?.() }) : undefined;
   const inferDeadline = Math.max(10, Math.min(60000, Number.isFinite(inferTimeoutMs) ? inferTimeoutMs : 10000));
   let facts = null, clock = { schemaVersion: 1, lastCycleAt: null, lastCapturedAt: null, lastPublishedAt: null,
-    lastPublishedDigest: null, lastPublishedGdeltGeneration: null }, outbox = null;
+    lastPublishedDigest: null, lastPublishedGdeltGeneration: null, lastPublishedGdeltCoverageDigest: null }, outbox = null;
   let initialized, serial = Promise.resolve(), temporary = 0;
   const file = (name) => path.join(directory, name);
   async function read(name) {
@@ -168,7 +184,8 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
         if (outbox.body.analysis?.inputDigest !== digest || outbox.body.analysis?.createdAt !== packet.collectedAt || jsonBytes(outbox.body.analysis) > MAX_LOCAL_ANALYSIS_BYTES)
           throw new Error('Pending local analysis integrity validation failed');
         // Recover a crash between queuing publication and committing the local facts file.
-        if (!facts || packet.collectedAt >= facts.packet.collectedAt && digest !== facts.inputDigest) {
+        if (!facts || packet.collectedAt >= facts.packet.collectedAt &&
+            (digest !== facts.inputDigest || gdeltCoverageDigest(packet) !== gdeltCoverageDigest(facts.packet))) {
           const labels = (outbox.localLabels || []).map((row) => ({ id: row.id, labels: labelsOf(row.labels) }));
           facts = { schemaVersion: 1, inputDigest: digest, packet, labels, processedAt: packet.collectedAt };
           await save('facts.json', facts);
@@ -224,6 +241,7 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
       clock.lastPublishedDigest = outbox.body.action === 'publish' ? outbox.body.analysis.inputDigest : outbox.body.inputDigest;
       if (outbox.body.action === 'publish') clock.lastPublishedGdeltGeneration =
         outbox.body.packet.payload.sources.find((source) => source.id === 'gdelt')?.generatedAt || null;
+      if (outbox.body.action === 'publish') clock.lastPublishedGdeltCoverageDigest = gdeltCoverageDigest(outbox.body.packet);
       await save('clock.json', clock);
       await unlink(file('outbox.json')).catch((error) => { if (error.code !== 'ENOENT') throw error; }); outbox = null;
       return summary('published', { published: true });
@@ -254,17 +272,17 @@ export function createLocalPipeline({ fetchImpl = fetch, now = Date.now,
       for (const [id, labels] of inference.values) cached.set(id, labels);
       const method = [...cached.values()].some((labels) => labels.length) ? 'deterministic-metadata-with-optional-local-derived-labels' : 'deterministic-source-metadata';
       const analysis = analysisOf(packet, changes, cached, method), changed = inputDigest !== facts?.inputDigest;
+      const retainedCoverageDigest = gdeltCoverageDigest(packet), coverageChanged = retainedCoverageDigest !== gdeltCoverageDigest(facts?.packet);
       if (publishing) {
-        const gdeltGeneration = packet.payload.sources.find((source) => source.id === 'gdelt')?.generatedAt || null;
         // A processed batch can change coverage without changing selected IDs. Publish that real provenance in full.
-        const unchangedGdeltCoverage = gdeltMode !== 'local-gkg' || clock.lastPublishedGdeltGeneration === gdeltGeneration;
+        const unchangedGdeltCoverage = clock.lastPublishedGdeltCoverageDigest === retainedCoverageDigest;
         const body = clock.lastPublishedDigest === inputDigest && unchangedGdeltCoverage ? { action: 'heartbeat', collectedAt: packet.collectedAt,
           sources: packet.payload.sources, inputDigest } : { action: 'publish', packet, analysis };
         outbox = { schemaVersion: 1, body, failures: 0, nextRetryAt: 0,
           ...(body.action === 'publish' ? { localLabels: [...cached].map(([id, labels]) => ({ id, labels })) } : {}) };
         await save('outbox.json', outbox);
       }
-      if (changed) {
+      if (changed || coverageChanged) {
         facts = { schemaVersion: 1, inputDigest, packet, labels: [...cached].map(([id, labels]) => ({ id, labels })), processedAt: packet.collectedAt };
         await save('facts.json', facts);
       }

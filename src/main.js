@@ -264,7 +264,6 @@ export async function start() {
       if (destroyed || contextRecovery.isLost()) return;
       const run = () => { if (!destroyed && !contextRecovery.isLost()) warmTools(); };
       if ('requestIdleCallback' in window) window.requestIdleCallback(run, { timeout: 3000 }); else run();
-      if (import.meta.env.PROD && 'serviceWorker' in navigator) void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, { scope: import.meta.env.BASE_URL }).catch(() => {});
     }, 1000);
     await restoration;
     if (destroyed) return;

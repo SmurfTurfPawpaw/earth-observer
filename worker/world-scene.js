@@ -6,10 +6,17 @@ const WEEK = 7 * 86400000;
 const json = (value,status=200) => Response.json(value,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
 const iso = (value) => new Date(value).toISOString();
 const unavailable = () => ({schemaVersion:1,configured:false,available:false,events:[],reason:'The scoped archive or its migration is unavailable'});
+export class WorldSceneVersionConflict extends Error {
+  constructor(requestedVersion,currentVersion) {
+    super('The selected archive edition changed; restart the scene read');
+    this.name='WorldSceneVersionConflict';this.requestedVersion=requestedVersion;this.currentVersion=currentVersion;
+  }
+}
 function options(value, now) {
   if (value.scope !== undefined && value.scope !== ARCHIVE_SCOPE.id || value.window !== undefined && value.window !== '7d' ||
       value.knownMode !== undefined && !['none','fixed','scene'].includes(value.knownMode)) throw new TypeError('Invalid scene scope or lens');
   const metadata = value.metadata === true, at = value.at === undefined && metadata ? null : worldTime(value.at);
+  if(metadata&&value.cursor!==undefined)throw new TypeError('Metadata has no scene page cursor');
   const mode = value.knownMode || (value.knownAt === undefined ? 'none' : 'fixed');
   if (mode === 'scene' && !at || mode === 'none' && value.knownAt !== undefined || mode === 'fixed' && value.knownAt === undefined)
     throw new TypeError('Invalid scene knowledge mode');
@@ -213,8 +220,20 @@ async function scenePoints(env,rows) {
 
 export async function readWorldScene(env,value={}, {now=Date.now}={}) {
   const query=options(value,now); env=archivePrimary(env);
-  if(query.points&&query.cursor!==undefined){const cursor=cursorDecode(query.cursor);
-    if(cursor.bufferTo!==null)query.requestedBufferTo=worldTime(cursor.bufferTo);}
+  const after=query.cursor===undefined?null:cursorDecode(query.cursor);
+  if(after) {
+    if(![1,2].includes(after.v)||!isWorldDigest(after.query)||!/^item:[a-f0-9]{64}$/.test(after.itemId||'')||worldTime(after.eventAt)!==after.eventAt||
+      after.v===2&&(!/^archive:(0|[1-9]\d{0,14})$/.test(after.version||'')||
+        Object.keys(after).sort().join(',')!==(query.points?'bufferTo,eventAt,itemId,query,v,version':'eventAt,itemId,query,v,version')))
+      throw new TypeError('Invalid scene cursor');
+    if(query.points) {
+      if(after.bufferTo!==null&&(worldTime(after.bufferTo)!==after.bufferTo||after.bufferTo<=query.at||Date.parse(after.bufferTo)>Date.parse(query.at)+WEEK))
+        throw new TypeError('Invalid frozen scene buffer');
+      // A null upper bound is also frozen: later imports cannot silently extend
+      // a page chain that began at the old archive's endpoint.
+      query.requestedBufferTo=after.bufferTo===null?query.at:after.bufferTo;
+    }
+  }
   if(!await ensureArchiveSchema(env)) return unavailable();
   const state=await scopeState(env.EARTH_DB,query),version=`archive:${state.selected_version||0}`;
   const availableCoverage=await coverage(env.EARTH_DB,query,state);
@@ -223,23 +242,30 @@ export async function readWorldScene(env,value={}, {now=Date.now}={}) {
     note:'Stored scientific reconstruction and hosted-knowledge replay differ. Missing catalog records are not deletion; equal-date source conflicts remain traceable.'};
   if(query.metadata) return {...base,events:[],counts:{returned:0,eligible:null,omitted:null},complete:availableCoverage.complete,truncated:availableCoverage.truncated,cursor:null,
     validFrom:null,validTo:null,nextSceneChangeAt:null};
+  const identity={scope:query.scope,at:query.at,window:query.window,knownAt:query.knownAt,knownMode:query.knownMode,bbox:query.bbox,
+    points:query.points,span:query.span,bufferTo:query.bufferTo};
+  const queryId=await worldHash(identity);
+  if(after) {
+    if(after.v===1) {
+      if(after.query!==await worldHash({...identity,version}))throw new TypeError('Cursor does not match this immutable scene query');
+    } else {
+      if(after.query!==queryId||Number(after.version.slice(8))>Number(version.slice(8)))throw new TypeError('Cursor does not match this immutable scene query');
+      if(after.version!==version)throw new WorldSceneVersionConflict(after.version,version);
+    }
+  }
   const at=Date.parse(query.at),selectedTo=query.bufferTo||query.at;
   const rows=await candidates(env.EARTH_DB,query,iso(at-WEEK-(query.points?0:ARCHIVE_LIMITS.horizonMs)),
     query.points?selectedTo:iso(at+ARCHIVE_LIMITS.horizonMs),query.id);
   const truncated=rows.length>ARCHIVE_LIMITS.sceneCandidates,bounded=rows.slice(0,ARCHIVE_LIMITS.sceneCandidates);
   const selected=bounded.filter((row)=>row.event_at>iso(at-WEEK)&&row.event_at<=selectedTo&&row.magnitude>=ARCHIVE_SCOPE.minimumMagnitude&&inBounds(row,query.bbox))
     .sort((a,b)=>a.event_at.localeCompare(b.event_at)||a.item_id.localeCompare(b.item_id));
-  const queryId=await worldHash({scope:query.scope,at:query.at,window:query.window,knownAt:query.knownAt,knownMode:query.knownMode,bbox:query.bbox,
-    points:query.points,span:query.span,bufferTo:query.bufferTo,version});
-  let after=null;
-  if(query.cursor!==undefined) {
-    after=cursorDecode(query.cursor);
-    if(after.v!==1||after.query!==queryId||typeof after.itemId!=='string'||!/^item:[a-f0-9]{64}$/.test(after.itemId)||worldTime(after.eventAt)!==after.eventAt)
-      throw new TypeError('Cursor does not match this immutable scene query');
-  }
   const remaining=after?selected.filter((row)=>row.event_at>after.eventAt||row.event_at===after.eventAt&&row.item_id>after.itemId):selected;
   const page=remaining.slice(0,query.id?1:query.limit),last=page.at(-1);
   const events=query.points?[]:await projectionEvents(env,page,query,Boolean(query.id)),points=query.points?await scenePoints(env,page):null;
+  // Separate indexed reads must not label a correction published during this
+  // request with the earlier edition, even on its first page.
+  const finalState=await scopeState(env.EARTH_DB,query),finalVersion=`archive:${finalState.selected_version||0}`;
+  if(finalVersion!==version)throw new WorldSceneVersionConflict(version,finalVersion);
   if(query.id&&query.revision&&events[0]&&events[0].evidence.revision!==query.revision)
     return {...base,events:[],event:null,errorCode:'revision-changed',selectedRevision:events[0].evidence.revision};
   const returned=query.points?points.length:events.length;
@@ -249,11 +275,11 @@ export async function readWorldScene(env,value={}, {now=Date.now}={}) {
       candidateLimit:ARCHIVE_LIMITS.sceneCandidates,candidates:bounded.length},
     complete:!truncated&&availableCoverage.complete&&selected.length===returned,
     membershipComplete:!truncated,truncated:truncated||availableCoverage.truncated||selected.length>returned,
-    cursor:!query.id&&remaining.length>page.length&&last?cursorEncode({v:1,query:queryId,eventAt:last.event_at,itemId:last.item_id,
+    cursor:!query.id&&remaining.length>page.length&&last?cursorEncode({v:2,query:queryId,version,eventAt:last.event_at,itemId:last.item_id,
       ...(query.points?{bufferTo:query.bufferTo}:{})}):null,
     ...(query.points?{validFrom:!truncated&&query.bufferTo?query.at:null,validTo:!truncated?query.bufferTo:null,
       nextSceneChangeAt:null,intervalProof:'All selected current source heads in the requested buffered origin interval; local time filtering reconstructs each instant.'}:
-      interval(bounded,query,state,truncated)),...(query.id?{event:events[0]||null}:{} )};
+      interval(bounded,query,finalState,truncated)),...(query.id?{event:events[0]||null}:{} )};
 }
 
 /** Stored-only public routes. Neither request URLs nor queries choose providers. */
@@ -275,7 +301,9 @@ export function createWorldSceneHandler({env={},now=Date.now}={}) {
       if(value.errorCode==='revision-changed')return json({...value,error:'The selected event revision changed; reload the scene'},409);
       if(detail&&!value.event) return json({...value,error:'Event is not in the selected stored scene'},404);
       return json(value);
-    } catch(error) { return error instanceof TypeError?json({error:'Invalid bounded scene query'},400):
+    } catch(error) { return error instanceof WorldSceneVersionConflict?json({schemaVersion:1,configured:true,available:false,
+      scope:{id:ARCHIVE_SCOPE.id},errorCode:'scene-version-changed',requestedVersion:error.requestedVersion,currentVersion:error.currentVersion,
+      error:'The archive edition changed while loading; restart the scene read'},409):error instanceof TypeError?json({error:'Invalid bounded scene query'},400):
       json({schemaVersion:1,configured:true,available:false,error:'Retained archive evidence is unavailable or failed integrity validation'},503); }
   };
 }

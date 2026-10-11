@@ -85,12 +85,16 @@ test('oversized declared/streamed JSON, invalid UTF8, mismatched targets and mis
 });
 
 test('deadline and cancellation finish even when fetch or response streams ignore cancellation, preserving unknown commit outcome',async()=>{
-  let calls=0;const timer=createMinuteTimer({now:()=>NOW,timeoutMs:10,fetchImpl:()=>{calls++;return new Promise(()=>{});}});
+  let calls=0,entered;const timer=createMinuteTimer({now:()=>NOW,timeoutMs:100,fetchImpl:()=>{calls++;entered?.();return new Promise(()=>{});}});
   const timed=await timer.run(settings());assert.equal(timed.summary.status,'uncertain');assert.equal(timed.summary.stored,null);assert.equal(calls,1);
   const stopped=new AbortController();stopped.abort();assert.equal((await timer.run(settings(),{signal:stopped.signal})).summary.status,'cancelled');assert.equal(calls,1);
-  const running=new AbortController(),operation=timer.run(settings(),{signal:running.signal});setTimeout(()=>running.abort(),1);
+  const dispatched=new Promise(resolve=>{entered=resolve;});
+  const cancellationTimer=createMinuteTimer({now:()=>NOW,timeoutMs:1000,fetchImpl:()=>{calls++;entered();return new Promise(()=>{});}});
+  const running=new AbortController(),operation=cancellationTimer.run(settings(),{signal:running.signal});
+  try{await Promise.race([dispatched,operation.then(result=>{throw new Error(`Cancellation fixture finished before dispatch: ${result.summary.status}`);})]);}
+  finally{running.abort();}
   const cancelled=await operation;assert.equal(cancelled.summary.status,'cancelled');assert.equal(cancelled.summary.stored,null);assert.equal(calls,2);
-  let bodyCancelled=false;const streamed=createMinuteTimer({now:()=>NOW,timeoutMs:10,fetchImpl:async()=>new Response(new ReadableStream({
+  let bodyCancelled=false;const streamed=createMinuteTimer({now:()=>NOW,timeoutMs:100,fetchImpl:async()=>new Response(new ReadableStream({
     pull(){return new Promise(()=>{});},cancel(){bodyCancelled=true;}}),{headers:{'content-type':'application/json'}})});
   assert.equal((await streamed.run(settings())).summary.status,'uncertain');assert.equal(bodyCancelled,true);
 });

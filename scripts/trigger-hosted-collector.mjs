@@ -1,5 +1,6 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { collectionAcknowledgment } from '../src/core/collection-ack.js';
 
 export const HOSTED_COLLECTOR_TRIGGER_URL = 'https://giovannicallebaut.com/earth/api/collector/trigger';
 const BODY = '{"action":"collect"}', SIGNED_PATH = '/api/collector/trigger';
@@ -62,6 +63,7 @@ export async function runHostedCollectionTrigger({ key, now = Date.now, nonce, f
     const payload = await responseJson(response, controller.signal);
     const status = statuses.has(payload?.status) ? payload.status : 'invalid_response';
     const summary = { status, httpStatus: response.status,
+      ...collectionAcknowledgment(payload),
       stored: payload?.stored === true ? true : payload?.stored === null ? null : false,
       sourceCount: count(payload?.sourceCount, 4), snapshotCount: count(payload?.snapshotCount, 4),
       failureCount: count(payload?.failureCount, 20), recordCount: count(payload?.recordCount, 500),

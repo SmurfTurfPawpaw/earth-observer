@@ -1,3 +1,5 @@
+import { collectionAcknowledgment } from '../src/core/collection-ack.js';
+
 export const MINUTE_TRIGGER_URL = 'https://giovannicallebaut.com/earth/api/collector/trigger';
 export const MINUTE_TRIGGER_CRON = '* * * * *';
 export const MINUTE_TRIGGER_LIMITS = Object.freeze({ responseBytes: 4096, deadlineMs: 55_000 });
@@ -47,7 +49,7 @@ async function readSummary(response,signal) {
     if(!payload||typeof payload!=='object'||Array.isArray(payload)||!statuses.has(payload.status)||
         ![true,false,null].includes(payload.stored)||payload.status==='stored'&&payload.stored!==true||
         response.ok!==(payload.status==='stored')||payload.status!=='stored'&&payload.stored===true)throw new Error('Invalid timer response');
-    return {status:payload.status,httpStatus:response.status,stored:payload.stored,sourceCount:count(payload.sourceCount,4),
+    return {status:payload.status,httpStatus:response.status,stored:payload.stored,...collectionAcknowledgment(payload),sourceCount:count(payload.sourceCount,4),
       snapshotCount:count(payload.snapshotCount,4),failureCount:count(payload.failureCount,20),recordCount:count(payload.recordCount,500),
       worldStored:payload.worldStored===true,updatesPublished:payload.updatesPublished===true,
       ...(payload.readStatusBeforeRetry===true?{readStatusBeforeRetry:true}:{})};

@@ -8,7 +8,7 @@ import { worldRevision } from '../src/core/world-model.js';
 import { appendHistorySnapshot } from './history.js';
 import { projectWorldCollection } from './world-model.js';
 import { ARCHIVE_SCOPE, ARCHIVE_LIMITS, retainWorldArchiveRaw, publishWorldArchiveChunk, readWorldArchiveChunk, createWorldArchiveCandidate } from './world-archive.js';
-import { readWorldScene, createWorldSceneHandler } from './world-scene.js';
+import { readWorldScene, createWorldSceneHandler, WorldSceneVersionConflict } from './world-scene.js';
 
 const CLOCK=Date.parse('2026-10-12T02:00:00.000Z'),AT='2025-06-01T12:00:00.000Z',DAY=86400000,WEEK=7*DAY;
 const stamp=(offset=0)=>new Date(CLOCK+offset).toISOString(),hist=(offset=0)=>new Date(Date.parse(AT)+offset).toISOString();
@@ -168,7 +168,34 @@ test('keyset pages are exact and cursor reuse is rejected after changing time, l
   assert.equal(new Set([...first.events,...second.events,...third.events].map((event)=>event.id)).size,5);assert.equal(third.cursor,null);
   assert.equal(first.counts.eligible,5);await assert.rejects(f.scene({at:hist(1000),cursor:first.cursor}),TypeError);
   await assert.rejects(f.scene({knownAt:stamp(),cursor:first.cursor}),TypeError);
-  f.setClock(1000);await f.publish([feature('extra')],{offset:1000});await assert.rejects(f.scene({cursor:first.cursor}),TypeError);
+  f.setClock(1000);await f.publish([feature('extra')],{offset:1000});await assert.rejects(f.scene({cursor:first.cursor}),WorldSceneVersionConflict);
+});
+
+test('publication between pages returns an explicit edition conflict while malformed, changed-query and future-edition cursors stay400',async(t)=>{
+  const f=await fixture(t);await f.publish(Array.from({length:3},(_,n)=>feature(`race${n}`,{time:Date.parse(AT)-n*1000})));
+  const first=await f.scene({limit:1,points:true,span:'7d'});assert.equal(first.bufferTo,null);
+  const handle=createWorldSceneHandler({env:f.env,now:f.now}),base=`https://owned.example/api/world/scene?at=${AT}&points=1&span=7d&limit=1`;
+  f.setClock(1000);await f.publish([feature('expanded',{time:Date.parse(hist(DAY))})],{offset:1000,range:{from:AT,to:hist(DAY)}});
+  const result=await handle(new Request(base+'&cursor='+first.cursor));assert.equal(result.status,409);
+  const conflict=await result.json();assert.equal(conflict.errorCode,'scene-version-changed');assert.equal(conflict.requestedVersion,'archive:1');assert.equal(conflict.currentVersion,'archive:2');
+  for(const url of [base+'&cursor=not-json',base.replace(AT,hist(1000))+'&cursor='+first.cursor,base+'&metadata=1&cursor='+first.cursor])
+    assert.equal((await handle(new Request(url))).status,400);
+  const forged=JSON.parse(atob(first.cursor.replace(/-/g,'+').replace(/_/g,'/')));forged.version='archive:999';
+  const token=btoa(JSON.stringify(forged)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  assert.equal((await handle(new Request(base+'&cursor='+token))).status,400);
+});
+
+test('a correction published during a scene page cannot be labelled with the earlier archive edition',async(t)=>{
+  const f=await fixture(t);await f.publish();const db=f.env.EARTH_DB,prepare=db.prepare.bind(db);let reads=0;
+  db.prepare=(sql)=>{
+    const statement=prepare(sql);if(!sql.includes('AS current_version'))return statement;
+    return {...statement,bind(...values){const bound=statement.bind(...values);return {...bound,async all(){
+      if(++reads===2){f.setClock(1000);await f.publish([feature(undefined,{mag:5.8,updated:Date.parse(hist(7200000))})],{offset:1000,kind:'correction'});}
+      return bound.all();
+    }};}};
+  };
+  const handle=createWorldSceneHandler({env:f.env,now:f.now}),result=await handle(new Request(`https://owned.example/api/world/scene?at=${AT}&points=1&span=7d`));
+  assert.equal(result.status,409);assert.equal((await result.json()).errorCode,'scene-version-changed');
 });
 
 test('verified scene interval is half-open across entry and exact seven-day expiry; advancing knowledge also stops at publication',async(t)=>{
@@ -298,7 +325,7 @@ test('buffer pages are bounded and version-scoped, honor corrected heads/bounds,
   await assert.rejects(f.scene({cursor:first.cursor}),TypeError);
   f.setClock(1000);await f.publish([feature('buffer0',{updated:Date.parse(hist(WEEK+DAY)),time:Date.parse(hist(-9*DAY)),lon:30})],{offset:1000,kind:'correction'});
   const corrected=await f.scene({points:true,span:'7d'});assert.equal(corrected.points.some((p)=>p.sourceRecordId==='usgs:buffer0'),false);
-  await assert.rejects(f.scene({points:true,span:'7d',cursor:first.cursor}),TypeError);
+  await assert.rejects(f.scene({points:true,span:'7d',cursor:first.cursor}),WorldSceneVersionConflict);
 });
 
 test('buffers clamp to actual retained coverage and current wall time; detail rejects a superseded selected point revision',async(t)=>{

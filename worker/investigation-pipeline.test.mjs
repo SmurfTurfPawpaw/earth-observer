@@ -31,8 +31,8 @@ async function fixture(t) {
   const directory = new URL('../drizzle/', import.meta.url);
   for (const name of (await readdir(directory)).filter(name => /^\d{4}_.+\.sql$/.test(name)).sort())
     sqlite.exec(await readFile(new URL(name, directory), 'utf8'));
-  const records = new Map(), counters = { writes: 0, puts: 0, batches: 0 };
-  const store = { async get(key) { const row = records.get(key); return row ? { etag: row.etag,
+  const records = new Map(), counters = { writes: 0, puts: 0, batches: 0, reads: 0, gets: 0 };
+  const store = { async get(key) { counters.gets++; const row = records.get(key); return row ? { etag: row.etag,
     size: Buffer.byteLength(row.body), json: async () => JSON.parse(row.body), text: async () => row.body } : null; },
     async put(key, body, options = {}) { counters.puts++; const previous = records.get(key);
       if (options.onlyIf?.get?.('if-none-match') === '*' && previous || options.onlyIf?.etagMatches && options.onlyIf.etagMatches !== previous?.etag) return null;
@@ -40,7 +40,7 @@ async function fixture(t) {
     } };
   const db = { sqlite, withSession(value) { assert.equal(value, 'first-primary'); return this; },
     prepare(sql) { const bind = (...values) => { assert.ok(values.length <= 100); return { sql, values,
-      async all() { const results = sqlite.prepare(sql).all(...values), write = /^(UPDATE|INSERT|DELETE)/i.test(sql.trim());
+      async all() { counters.reads++; const results = sqlite.prepare(sql).all(...values), write = /^(UPDATE|INSERT|DELETE)/i.test(sql.trim());
         if (write) counters.writes++; return { success: true, results, meta: { changes: write ? Number(sqlite.prepare('SELECT changes() AS n').get().n) : 0 } }; },
       async first() { return sqlite.prepare(sql).get(...values) || null; },
       async run() { const result = sqlite.prepare(sql).run(...values); counters.writes++;
@@ -97,6 +97,88 @@ test('repeat sweeps reuse unchanged jobs and a later source correction supersede
   f.clock(122_000); await advanceInvestigationPipeline(f.env, { workerId: 'test:collector' }, { now: f.now, fetchImpl: f.fetchImpl });
   assert.equal(f.count('earth_investigation_jobs'), 4); assert.equal(f.count('earth_investigation_attempts'), 3);
   assert.deepEqual(f.fetches, ['us7000major', 'us7000second', 'us7000recent']);
+});
+
+test('due-only advancement completes retained work without selecting or re-enqueueing candidates; idle checks write nothing', async t => {
+  const f = await fixture(t); await f.capture();
+  await advanceInvestigationPipeline(f.env, { workerId: 'test:enqueue' }, { now: f.now, fetchImpl: f.fetchImpl });
+  const heads = f.sqlite.prepare('SELECT * FROM earth_investigation_heads ORDER BY event_id').all();
+  const captures = f.count('earth_world_captures'), jobs = f.count('earth_investigation_jobs');
+  f.clock(61_000);
+  const second = await advanceInvestigationPipeline(f.env, { workerId: 'test:due', enqueueCandidates: false }, { now: f.now, fetchImpl: f.fetchImpl });
+  assert.equal(second.mode, 'due-only'); assert.equal(second.candidateCount, 0); assert.equal(second.enqueueCount, 0);
+  assert.equal(second.jobStarted, true); assert.equal(second.jobAccepted, true); assert.equal(second.jobState, 'succeeded');
+  assert.equal(f.count('earth_investigation_jobs'), jobs); assert.equal(f.count('earth_world_captures'), captures);
+  assert.deepEqual(f.sqlite.prepare('SELECT * FROM earth_investigation_heads ORDER BY event_id').all(), heads);
+  f.clock(122_000);
+  await advanceInvestigationPipeline(f.env, { workerId: 'test:due', enqueueCandidates: false }, { now: f.now, fetchImpl: f.fetchImpl });
+  f.clock(183_000); const writes = f.counters.writes, puts = f.counters.puts, fetched = f.fetches.length;
+  const idle = await advanceInvestigationPipeline(f.env, { workerId: 'test:due', enqueueCandidates: false }, { now: f.now, fetchImpl: f.fetchImpl });
+  assert.equal(idle.mode, 'due-only'); assert.equal(idle.jobStarted, false); assert.equal(idle.jobAccepted, false); assert.equal(idle.jobId, null);
+  assert.equal(f.counters.writes, writes); assert.equal(f.counters.puts, puts); assert.equal(f.fetches.length, fetched);
+  // A full sweep of already-completed identical inputs also avoids enqueue upserts.
+  const repeat = await advanceInvestigationPipeline(f.env, { workerId: 'test:repeat' }, { now: f.now, fetchImpl: f.fetchImpl });
+  assert.equal(repeat.enqueueCount, 0); assert.equal(repeat.jobStarted, false); assert.equal(f.counters.writes, writes);
+  assert.equal(f.count('earth_investigation_jobs'), jobs);
+});
+
+test('due-only empty queue has no acquisition, candidate reads, or mutations', async t => {
+  const f = await fixture(t), writes = f.counters.writes, puts = f.counters.puts;
+  // No stored world source capture exists: due-only must not require world discovery.
+  const result = await advanceInvestigationPipeline(f.env, { workerId: 'test:idle', enqueueCandidates: false }, { now: f.now, fetchImpl: f.fetchImpl });
+  assert.equal(result.status, 'advanced'); assert.equal(result.mode, 'due-only'); assert.equal(result.jobStarted, false);
+  assert.equal(result.candidateCount, 0); assert.equal(result.enqueueCount, 0);
+  assert.equal(f.counters.writes, writes); assert.equal(f.counters.puts, puts); assert.equal(f.fetches.length, 0);
+  assert.equal(f.count('earth_investigation_jobs'), 0);
+});
+
+test('a crash after the first corrected enqueue resumes admission from a new isolate on a compact wake', async t => {
+  const f = await fixture(t); await f.capture();
+  await advanceInvestigationPipeline(f.env, { workerId: 'test:initial' }, { now: f.now, fetchImpl: f.fetchImpl });
+  f.clock(61_000);
+  const corrected = inputs().map(item => ['us7000major', 'us7000second'].includes(item.id) ?
+    { ...item, properties: { ...item.properties, mag: item.properties.mag + 0.1, updated: CLOCK + 60_000 } } : item);
+  await f.capture(corrected);
+  const original = f.env.EARTH_DB.batch.bind(f.env.EARTH_DB); let enqueues = 0;
+  f.env.EARTH_DB.batch = statements => {
+    if (statements.some(statement => /^INSERT INTO earth_investigation_jobs/.test(statement.sql.trim())) && ++enqueues === 2)
+      throw Error('TEST ONLY crash before second corrected enqueue');
+    return original(statements);
+  };
+  const interrupted = await advanceInvestigationPipeline(f.env, { workerId: 'test:lost-isolate' }, { now: f.now, fetchImpl: f.fetchImpl });
+  assert.equal(interrupted.status, 'failed'); assert.equal(f.count('earth_investigation_jobs'), 4);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM earth_investigation_admissions WHERE captured_at=?').get(stamp(61_000)).n, 0);
+  f.env.EARTH_DB.batch = original;
+  const restarted = { ...f.env, EARTH_DB: { ...f.env.EARTH_DB, withSession() { return this; } },
+    EARTH_STORE: { ...f.env.EARTH_STORE } };
+  const resumed = await advanceInvestigationPipeline(restarted, { workerId: 'test:new-isolate', enqueueCandidates: false }, { now: f.now, fetchImpl: f.fetchImpl });
+  assert.equal(resumed.status, 'advanced'); assert.equal(resumed.mode, 'due-only'); assert.equal(resumed.admissionRepaired, true);
+  assert.equal(resumed.admissionCompleted, true); assert.equal(f.count('earth_investigation_jobs'), 5);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM earth_investigation_admissions WHERE captured_at=?').get(stamp(61_000)).n, 1);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM earth_investigation_jobs WHERE state='superseded'").get().n, 1);
+  const before = { ...f.counters };
+  const warm = await advanceInvestigationPipeline(restarted, { workerId: 'test:warm', enqueueCandidates: false }, { now: f.now, fetchImpl: f.fetchImpl });
+  assert.equal(warm.admissionRepaired, false); assert.equal(warm.candidateCount, 0); assert.equal(warm.enqueueCount, 0);
+  assert.equal(f.counters.gets, before.gets, 'A completed admission needs no world body read');
+  assert.equal(f.counters.puts, before.puts); assert.equal(f.count('earth_investigation_jobs'), 5);
+});
+
+test('a changed publication during held research coalesces one durable metadata admission without another detail start', async t => {
+  const f = await fixture(t); await f.capture();
+  const tasks = []; let entered, release;
+  const arrived = new Promise(resolve => { entered = resolve; }), held = new Promise(resolve => { release = resolve; });
+  const fetchImpl = async (...args) => { entered(); await held; return f.fetchImpl(...args); };
+  const ctx = { waitUntil(task) { tasks.push(task); } };
+  startInvestigationPipeline(f.env, ctx, { workerId: 'test:held' }, { now: f.now, fetchImpl });
+  await arrived; f.clock(61_000);
+  const corrected = inputs().map(item => item.id === 'us7000second' ?
+    { ...item, properties: { ...item.properties, mag: 6.9, updated: CLOCK + 60_000 } } : item);
+  await f.capture(corrected);
+  assert.equal(startInvestigationPipeline(f.env, ctx, { workerId: 'test:new-publication' }, { now: f.now, fetchImpl }).status, 'already_running');
+  release(); const completed = await tasks[0];
+  assert.equal(completed.coalescedAdmission, true); assert.equal(tasks[0], tasks[1]);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM earth_investigation_admissions WHERE captured_at=?').get(stamp(61_000)).n, 1);
+  assert.equal(f.count('earth_investigation_jobs'), 4); assert.equal(f.fetches.length, 1);
 });
 
 test('actual authorized factual publication responds before background research; heartbeat and denied calls register no tasks', async t => {
@@ -160,6 +242,22 @@ test('cancelled collection cannot enqueue or claim investigation work', async t 
   startInvestigationPipeline(f.env, { waitUntil(task) { tasks.push(task); } }, { workerId: 'test:cancel' }, { now: f.now, fetchImpl: f.fetchImpl, signal: live.signal });
   live.abort(); assert.equal((await tasks[0]).status, 'cancelled');
   assert.equal(f.counters.writes, writes); assert.equal(f.fetches.length, 0); assert.equal(f.count('earth_investigation_jobs'), 0);
+});
+
+test('cancellation while enqueue retained-input read is pending cannot mutate the queue after that read settles', async t => {
+  const f = await fixture(t); await f.capture(); const writes = f.counters.writes;
+  const original = f.env.EARTH_STORE.get.bind(f.env.EARTH_STORE), controller = new AbortController();
+  let snapshots = 0, entered, release;
+  const arrived = new Promise(resolve => { entered = resolve; }), held = new Promise(resolve => { release = resolve; });
+  f.env.EARTH_STORE.get = async key => {
+    if (key.startsWith('history/snapshots/usgs/') && ++snapshots === 2) { entered(); await held; }
+    return original(key);
+  };
+  const operation = advanceInvestigationPipeline(f.env, { workerId: 'test:cancel-read' },
+    { now: f.now, fetchImpl: f.fetchImpl, signal: controller.signal });
+  await arrived; controller.abort(); release();
+  assert.equal((await operation).status, 'cancelled'); assert.equal(f.counters.writes, writes);
+  assert.equal(f.count('earth_investigation_jobs'), 0); assert.equal(f.count('earth_investigation_admissions'), 0); assert.equal(f.fetches.length, 0);
 });
 
 test('public stored routing reads jobs/artifacts and respects known time without any provider or write effects', async t => {

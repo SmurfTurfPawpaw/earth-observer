@@ -138,7 +138,7 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
     const generated = cached ? Date.parse(cached.snapshot.generatedAt) : null;
     const ageMs = generated === null ? null : Math.max(0, now() - generated);
     const gkg = cached?.snapshot.schemaVersion === 2;
-    const batchCoverage = gkg ? gkgCoverage(cached.snapshot.coverage.processedBatches.filter((entry) => now() - Date.parse(gkgBatchTime(entry.id)) <= MAX_AGE_MS)) : null;
+    const batchCoverage = gkg ? gkgCoverage(cached.snapshot.coverage.processedBatches.filter((entry) => now() - Date.parse(gkgBatchTime(entry.id)) <= MAX_AGE_MS), cached.snapshot.coverage.catchup) : null;
     const expired = ageMs !== null && ageMs > MAX_AGE_MS || gkg && !batchCoverage.processedBatches.length;
     const available = Boolean(cached && !expired);
     const sourceAgeMs = gkg && batchCoverage.processedBatches.length ? Math.max(0, now() - Date.parse(batchCoverage.windowEnd)) : ageMs;
@@ -159,6 +159,7 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
       snapshotCheckedAt: cached ? new Date(cached.checkedAt ?? cached.acquiredAt).toISOString() : null,
       ageMs, sourceAgeMs, refreshIntervalMs: GDELT_RELEASE_CHECK_INTERVAL_MS, sourceCadenceMs: 900000, retryAt: retryAt || null, coverage, filtersAppliedLocally: local,
       ...(batchCoverage ? { processedBatches: batchCoverage.processedBatches, sampleGaps: batchCoverage.sampleGaps, windowStart: batchCoverage.windowStart, windowEnd: batchCoverage.windowEnd, countryMeaning: 'country-mentioned' } : {}),
+      ...(batchCoverage?.catchup ? { catchup: batchCoverage.catchup } : {}),
       reason: expired ? 'Scheduled GDELT snapshot exceeded the 24-hour age limit' : !available ? lastFailure || 'Scheduled GDELT snapshot unavailable' :
         [stale ? lastFailure || 'Older scheduled discovery sample' : gkg ? 'Scheduled machine-extracted topic sample' : 'Scheduled discovery sample', local ? gkg ? 'Local filters apply only to reviewed topics, domains and country mentions' : 'Local filters apply only to this bounded title sample' : 'At most 80 records per topic'].join('; ') } };
   };

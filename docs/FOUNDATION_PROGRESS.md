@@ -242,3 +242,73 @@ capability contracts. The timeline's manually selected gap test also verifies th
 unrelated completed periods cannot imply local coverage. Its app commit, combined
 build, actual deployed assets, one-week import and browser journey remain release
 gates; these results do not yet establish hosted historical playback.
+
+
+## 2026-10-11T23:10Z published archive, research and release adoption gate
+
+- Site version 27 succeeded at 23:01:04Z with environment revision 5. Exact app
+  revision bdc6783dd0fa06b1f78d1d8d427d046285c0c4e3 and combined source
+  df9bc9f61b77f6023950abf8697af534d846a964 were pushed before packaging/saving.
+  The custom domain serves index-m8toravE, main-qgIn_pMv and index-j4QqTKmg.
+  healthz, configured archive reads and stored investigation reads return HTTP 200.
+- The prepared first week, 1–8 October 2025, was imported without another provider
+  download. Hosted readback contains 184 USGS M4.5+ earthquakes over two pages,
+  complete scoped coverage and an evidence-linked event dossier. A knowledge cutoff
+  in 2025 returns zero events and unavailable-at-cutoff coverage, correctly keeping
+  today's imported knowledge separate from the historical scientific reconstruction.
+  Live collection/check dates were unchanged by archive publication.
+- Following that gate, bounded resumable imports began from 12 October 2024 to
+  11 October 2026, ending before actual UTC wall time. Each pass admits at most eight
+  complete intervals/2,000 records with independent count and original GeoJSON.
+  Exact hosted receipts advance the local journal; errors halt, not blindly retry.
+  Expansion is underway: the first eight intervals retained 908 records; later
+  progress must be read from completed receipts, not assumed two-year coverage.
+- Independent cloud dispatch 38182955658 on app bdc6783 succeeded. Hosted collection
+  advanced to 23:05:44Z. One retained USGS scientific investigation completed at
+  23:06:01Z with original detail SHA, field citations and separate acquisition/
+  completion dates. Two other candidates are pending. This proves functioning
+  hosted research, not broad journalism, causal analysis or unattended schedule SLA.
+- Actual browser tab 19 still used version 26 assets after normal reloads. The
+  offline worker serves its saved shell before its availability-only network check;
+  a running old document also has no controller-adoption listener. Release adoption
+  is now a gate ahead of further visual claims. Fix online navigation/update flow
+  while preserving digest-verified universal offline shell and privacy boundaries.
+- Measured unchanged collection still performs 14 SQL statements/seven writes and
+  nine R2 writes, although no new factual revisions exist. A compact hosted check
+  is being implemented only after exact history/world/notification completion proof.
+  No-operation facts and operational clocks remain distinct. Durable research
+  admission is also needed: a lost post-publication enqueue must be recoverable
+  after isolate restart; isolate-only coalescing is insufficient.
+- GDELT missing-batch repair uses reviewed fixed quarter-hour HTTPS URLs, bounded
+  HEAD/If-Match size/ETag admission and strict ZIP CRC/inflation plus retained SHA.
+  It never invents provider MD5 for historical batches. The strict consumer schema
+  must deploy before the optional producer flag is enabled; old latest-only mode
+  remains the rollout default. This is implementation underway, not repaired coverage.
+
+Re-examination: the timeline foundation is ahead of initial allocation, while release
+adoption and independent runtime reliability remain open. Move those gates before
+broader source/analysis expansion. Current/future understanding still needs original
+claims, stable stories/entities, cited typed relations and prospectively evaluated
+scenarios; the next intelligence slice documents these missing contracts.
+## Archive completion and browser acceptance — 2026-10-11 23:22 UTC
+
+The bounded USGS backfill completed 113 count-matched intervals, with no pending
+intervals. Its journal records 15,971 imported reports and 11,457,977 original source
+bytes before identity/revision deduplication. Hosted scene metadata now reports
+`archive:114` (including the separate first-week proof), one complete coverage
+segment from 2024-10-12 00:00 UTC to 2026-10-11 00:00 UTC, and no coverage gaps.
+This is M4.5+ catalog coverage, not proof that every earthquake was detected or a
+complete archive for all other layers.
+
+Actual in-app browser verification of published Site version 27 loaded the October
+2025 scene, displayed 184 source reports, advanced the shared scene clock during
+playback and changed the result to 185 reports. Pausing retained the selected time.
+A historical HTTP 400 encountered during concurrent import disappeared once the
+archive settled: the page cursor was bound to a superseded archive revision. The
+third package adds a distinct revision-conflict response and one bounded restart;
+malformed queries remain errors. The previous scene remains visible while loading.
+
+Ordinary browser navigation still served the previous cached shell in this test.
+Version 27 was inspected through a deliberate QA query, which is not evidence of
+ordinary release adoption. The third package's early registration and public-shell
+navigation policy must pass a normal-URL browser check after publication.

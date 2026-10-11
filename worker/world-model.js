@@ -111,6 +111,7 @@ const references = (items) => boundedJson(items.map(({ itemId, revision, capture
 async function sourceStates(db, inputs) {
   return rows(db, `SELECT json_extract(i.value, '$.sourceId') AS source_id,
     h.snapshot_id AS history_id, h.record_count AS history_count, s.snapshot_id AS previous_id, s.captured_at AS previous_at,
+    s.recorded_at AS previous_recorded_at,
     c.snapshot_id AS receipt_id, c.recorded_at AS receipt_at FROM json_each(?) i
     LEFT JOIN earth_observations h ON h.source = json_extract(i.value, '$.sourceId') AND h.at = json_extract(i.value, '$.capturedAt')
     LEFT JOIN earth_world_sources s ON s.source_id = json_extract(i.value, '$.sourceId')
@@ -171,14 +172,17 @@ async function publishCaptures(db, inputs) {
         ON c.source_id = json_extract(i.value, '$.sourceId') AND c.captured_at = json_extract(i.value, '$.capturedAt')
           AND c.snapshot_id = json_extract(i.value, '$.snapshotId') WHERE 1
       ON CONFLICT(source_id) DO UPDATE SET snapshot_id = excluded.snapshot_id, captured_at = excluded.captured_at, recorded_at = excluded.recorded_at
-      WHERE excluded.captured_at > earth_world_sources.captured_at`).bind(input),
+      WHERE excluded.captured_at > earth_world_sources.captured_at OR
+        excluded.captured_at = earth_world_sources.captured_at AND excluded.snapshot_id = earth_world_sources.snapshot_id
+        AND excluded.recorded_at <> earth_world_sources.recorded_at`).bind(input),
   ]));
   if (!Array.isArray(results) || results.length !== 2 || results.some((result) => result?.success === false)) throw new Error('World projection publication failed');
   const saved = new Map((await sourceStates(db, inputs)).map((row) => [row.source_id, row]));
   for (const capture of inputs) {
     const state = saved.get(capture.sourceId);
     if (state?.receipt_id !== capture.snapshotId || !state.previous_at || state.previous_at < capture.capturedAt ||
-        state.previous_at === capture.capturedAt && state.previous_id !== capture.snapshotId) throw new Error('World publication was incomplete or conflicting');
+        state.previous_at === capture.capturedAt &&
+        (state.previous_id !== capture.snapshotId || state.previous_recorded_at !== state.receipt_at)) throw new Error('World publication was incomplete or conflicting');
   }
 }
 
@@ -204,7 +208,13 @@ export async function projectWorldCollection(env, { packet, snapshots } = {}, { 
       if (state.receipt_id && Date.parse(capturedAt) > Date.parse(retainedTime(state.receipt_at)) + PUBLICATION_FUTURE_MS)
         throw new Error('A retained receipt violates its enforced publication clock bound');
       initial.itemCount += body.records.length; initial.eventCount += eventCountFor(body);
-      if (state.receipt_id) continue;
+      if (state.receipt_id) {
+        // The completed receipt is the publication-time authority. Retry may
+        // restore a missing/older watermark without recreating factual evidence.
+        if (!state.previous_at || state.previous_at < capturedAt ||
+            state.previous_at === capturedAt && state.previous_recorded_at !== state.receipt_at) pending.push(inputs[i]);
+        continue;
+      }
       pending.push(inputs[i]);
       if (state.previous_id === capture.id) continue;
       const items = await Promise.all(body.records.map((record) => createWorldSourceItem(record, { snapshotId: capture.id, capturedAt, recordedAt: retainedAt })));

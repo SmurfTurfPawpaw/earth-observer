@@ -221,6 +221,27 @@ test('a partial immutable artifact write retains diagnostic evidence refs and ca
   assert.equal((await readInvestigationArtifact(f.env, { jobId: result.job.jobId })).available, false);
 });
 
+test('A to B to A revives unaccepted partial artifacts without losing attempt diagnostics or resetting the attempt fence', async t => {
+  const f = await fixture(t), [a] = await f.capture(0); const original = await f.enqueue(a);
+  const put = f.env.EARTH_STORE.put.bind(f.env.EARTH_STORE);
+  f.env.EARTH_STORE.put = async (key, ...args) => {
+    if (key.startsWith('investigations/usgs-detail/artifacts/')) throw Error('TEST ONLY partial artifact');
+    return put(key, ...args);
+  };
+  const failed = await runInvestigationJob(f.env, { workerId: 'test:partial-a' }, { now: f.now, fetchImpl: async () => Response.json(detail()) });
+  assert.equal(failed.job.state, 'retry'); assert.ok(f.db.sqlite.prepare('SELECT artifact_key FROM earth_investigation_jobs').get().artifact_key);
+  f.env.EARTH_STORE.put = put; f.clock(61_000);
+  const [b] = await f.capture(61_000, [quake(ID, { magnitude: 5.7, updatedAt: stamp(60_000) })]); await f.enqueue(b);
+  assert.equal(f.db.sqlite.prepare('SELECT state FROM earth_investigation_jobs WHERE job_id=?').get(original.job.jobId).state, 'superseded');
+  f.clock(122_000); const [reverted] = await f.capture(122_000, [quake(ID, { retrievedAt: stamp(122_000) })]);
+  const revived = await f.enqueue(reverted); assert.equal(revived.job.jobId, original.job.jobId); assert.equal(revived.job.state, 'pending');
+  assert.equal(revived.job.attemptCount, 1); assert.equal(revived.job.artifactSha256, null);
+  const diagnostic = f.db.sqlite.prepare('SELECT raw_key,artifact_key FROM earth_investigation_attempts WHERE job_id=? AND fence=1').get(original.job.jobId);
+  assert.ok(diagnostic.artifact_key); assert.ok(f.records.has(diagnostic.raw_key));
+  const completed = await runInvestigationJob(f.env, { workerId: 'test:reverted-a' }, { now: f.now, fetchImpl: async () => Response.json(detail()) });
+  assert.equal(completed.job.state, 'succeeded'); assert.equal(completed.job.attemptCount, 2);
+});
+
 test('mismatched IDs and oversized detail responses fail without invented artifacts or following supplied URLs', async t => {
   for (const invalid of ['identity', 'size']) {
     const f = await fixture(t), [event] = await f.capture(0); await f.enqueue(event);

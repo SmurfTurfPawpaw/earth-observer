@@ -1,5 +1,7 @@
 import { showSavedScene } from './core/scene-preview.js';
 import { loadEngineScript } from './bootstrap-engine.js';
+import { installReleaseUpdates } from './core/release-updates.js';
+if (import.meta.env.PROD) installReleaseUpdates({ scope: import.meta.env?.BASE_URL || '/' });
 // The worker reports actual network fallback; observations retain their own source times.
 navigator.serviceWorker?.addEventListener('message', (event) => {
   if (event.data?.type !== 'earth-observer:shell-status' || typeof event.data.message !== 'string') return;

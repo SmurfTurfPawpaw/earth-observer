@@ -1,4 +1,5 @@
 import { handleCollection } from './collection-api.js';
+import { collectionAcknowledgment } from '../src/core/collection-ack.js';
 
 export const COLLECTOR_TRIGGER_PATH = '/api/collector/trigger';
 export const COLLECTOR_TRIGGER_BODY = '{"action":"collect"}';
@@ -52,13 +53,11 @@ async function boundedText(message, limit, signal) {
 const boundedCount = (value, max) => Number.isSafeInteger(value) && value >= 0 && value <= max ? value : null;
 function safeSummary(payload, ok) {
   return { schemaVersion: 1, status: ok ? 'stored' : 'failed', stored: ok,
-    collectedAt: typeof payload?.collectedAt === 'string' && payload.collectedAt.length === 24 &&
-      Number.isFinite(Date.parse(payload.collectedAt)) && new Date(payload.collectedAt).toISOString() === payload.collectedAt
-      ? payload.collectedAt : null,
+    ...collectionAcknowledgment(payload),
     sourceCount: boundedCount(payload?.plugins?.length, 4),
     snapshotCount: boundedCount(payload?.snapshots?.length, 4),
     failureCount: boundedCount(payload?.failures?.length, 20),
-    recordCount: boundedCount(payload?.prepared?.recordCount, 500),
+    recordCount: boundedCount(payload?.prepared?.recordCount ?? payload?.recordCount, 500),
     worldStored: payload?.world?.stored === true, updatesPublished: payload?.updatesPublished === true };
 }
 

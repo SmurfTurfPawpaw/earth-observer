@@ -8,6 +8,7 @@ import { normalizeGdelt } from '../server/hosted/intelligence-sources.js';
 import { gdeltQueryUrl } from '../server/hosted/gdelt-query.js';
 import { GDELT_SNAPSHOT_URL } from '../server/hosted/gdelt-snapshot.js';
 import { EONET_QUERY_URL } from '../server/hosted/eonet-snapshot.js';
+import { createGkgSnapshot, gkgTopicReport } from '../server/hosted/gdelt-gkg.js';
 
 const CLOCK = Date.parse('2026-10-11T18:00:00.000Z'), iso = (at) => new Date(at).toISOString(), TOKEN = 'synthetic_test_token_12345678901234567890';
 
@@ -19,7 +20,7 @@ async function directory(t) {
 }
 
 function sources() {
-  let clock = CLOCK, revision = 0, empty = false, sink = () => Response.json({ stored: true });
+  let clock = CLOCK, revision = 0, empty = false, release = null, sink = () => Response.json({ stored: true });
   const requests = [], publications = [];
   const fetchImpl = async (input, options = {}) => {
     const url = String(input); requests.push(url);
@@ -29,7 +30,8 @@ function sources() {
       return sink(body);
     }
     if (url === GDELT_SNAPSHOT_URL) {
-      const retrievedAt = iso(clock), categories = Object.fromEntries(['geopolitics', 'economy', 'disasters'].map((category) => [category, {
+      if (release) return Response.json(release);
+      const retrievedAt = iso(CLOCK), categories = Object.fromEntries(['geopolitics', 'economy', 'disasters'].map((category) => [category, {
         queryUrl: gdeltQueryUrl({ category }), retrievedAt, reports: normalizeGdelt({ articles: [{ title: `Source ${category} metadata`,
           url: `https://publisher.test/${category}`, seendate: iso(CLOCK - 60000) }] }, retrievedAt, category),
       }]));
@@ -52,8 +54,42 @@ function sources() {
     throw new Error('Only fixed metadata sources and the owned writer are permitted');
   };
   return { requests, publications, fetchImpl, now: () => clock, advance(ms = 61000) { clock += ms; },
-    revise(value) { revision = value; }, empty() { empty = true; }, sink(callback) { sink = callback; } };
+    revise(value) { revision = value; }, empty() { empty = true; }, release(value) { release = value; }, sink(callback) { sink = callback; } };
 }
+
+test('owned release publishes real batch/integrity/gap changes even with unchanged links, while retry metadata remains compact across restart', async (t) => {
+  const stateDirectory = await directory(t), source = sources(); let jobs = 0;
+  const reports = ['geopolitics', 'economy', 'disasters'].map((category, n) => gkgTopicReport({
+    url: `https://publisher.example/retained/${category}`, themes: [['ARMEDCONFLICT'], ['WB_698_TRADE'], ['NATURAL_DISASTER']][n],
+    batch: '20261011174500', retrievedAt: iso(CLOCK), category, mentionedCountries: ['BE'] }));
+  const processedBatches = ['20261011171500', '20261011174500'].map(id => ({ id, retrievedAt: iso(CLOCK), rows: 1, matchedRecords: 3 }));
+  const initial = createGkgSnapshot({ reports, processedBatches, generatedAt: iso(CLOCK) }); source.release(initial);
+  const options = { stateDirectory, fetchImpl: source.fetchImpl, now: source.now, publishUrl: LOCAL_PUBLISH_URL,
+    publishCredential: TOKEN, infer: async () => { jobs++; return []; } };
+  const pipeline = createLocalPipeline(options), first = await pipeline.cycle(); assert.equal(first.published, true);
+  source.advance();
+  const retryOnly = createGkgSnapshot({ reports, processedBatches, generatedAt: initial.generatedAt,
+    catchup: { checkedAt: iso(source.now()), attemptedBatches: ['20261011173000'], attempts: [{ id: '20261011173000',
+      checkedAt: iso(source.now()), retryAt: iso(source.now() + 300000), code: 'http-error', httpStatus: 503 }] } });
+  source.release(retryOnly); const retry = await pipeline.cycle();
+  assert.equal(retry.inputDigest, first.inputDigest); assert.equal(source.publications.at(-1).action, 'heartbeat'); assert.equal(jobs, 1);
+  source.advance();
+  const repaired = createGkgSnapshot({ reports, generatedAt: iso(source.now()), processedBatches: [...processedBatches, {
+    id: '20261011173000', retrievedAt: iso(source.now()), rows: 0, matchedRecords: 0, integrity: { mode: 'https-head-size-and-zip-crc',
+      sha256: 'a'.repeat(64), archiveBytes: 120, expandedBytes: 0, providerMd5: null, providerEtag: '"synthetic-empty-archive"' } }],
+    catchup: { checkedAt: iso(source.now()), attemptedBatches: ['20261011173000'], attempts: [] } });
+  source.release(repaired); const full = await pipeline.cycle();
+  assert.equal(source.publications.at(-1).action, 'publish'); assert.equal(full.changedRecords, 0); assert.equal(full.inputDigest, first.inputDigest);
+  assert.deepEqual(full.packet.payload.sources.find(row => row.id === 'gdelt').sampleGaps, []); assert.equal(jobs, 1);
+  const saved = JSON.parse(await readFile(path.join(stateDirectory, 'facts.json'), 'utf8'));
+  assert.equal(saved.packet.payload.sources.find(row => row.id === 'gdelt').generatedAt, repaired.generatedAt, 'retain source-only evidence for crash/fallback recovery');
+  source.advance(); const restarted = createLocalPipeline(options); await restarted.cycle(); assert.equal(source.publications.at(-1).action, 'heartbeat');
+  source.advance(); const integrityRevision = structuredClone(repaired);
+  integrityRevision.coverage.processedBatches.find(batch => batch.id === '20261011173000').integrity.sha256 = 'b'.repeat(64);
+  source.release(integrityRevision); const revised = await restarted.cycle();
+  assert.equal(source.publications.at(-1).action, 'publish', 'integrity changes cannot hide behind identical generatedAt and record digest');
+  assert.equal(revised.inputDigest, first.inputDigest); assert.equal(jobs, 1);
+});
 
 test('laptop processing runs inference only for new/revised metadata, deduplicates retrieval-only updates and preserves actual facts/dates', async (t) => {
   const stateDirectory = await directory(t), source = sources(), jobs = [];

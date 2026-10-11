@@ -349,3 +349,21 @@ test('publication clock bound is evaluated during database execution after queue
   assert.equal(at.events[0].capture.publishedAt, stamp(5000)); assert.equal(at.events[0].capture.capturedAt, stamp(310000));
   assert.equal(at.events[0].eventTime.at, stamp(-300000));
 });
+
+test('retry restores the current watermark from its exact receipt and repaired receipts remain visible', async (t) => {
+  const f = await fixture(t), accepted = await f.capture(0, [quake()]);
+  assert.equal((await projectWorldCollection(f.env, accepted, { now: f.now })).stored, true);
+  f.env.EARTH_DB.sqlite.prepare('DELETE FROM earth_world_sources WHERE source_id = ?').run('usgs');
+  f.setClock(1000);
+  const replay = await projectWorldCollection(f.env, accepted, { now: f.now });
+  assert.equal(replay.stored, true); assert.equal(replay.revisionCount, 0);
+  let scene = await readWorldEvents(f.env, {}, { now: f.now });
+  assert.equal(scene.events.length, 1); assert.equal(scene.events[0].capture.publishedAt, stamp());
+  f.env.EARTH_DB.sqlite.prepare('DELETE FROM earth_world_captures WHERE source_id = ?').run('usgs');
+  f.setClock(2000);
+  assert.equal((await projectWorldCollection(f.env, accepted, { now: f.now })).stored, true);
+  scene = await readWorldEvents(f.env, {}, { now: f.now });
+  assert.equal(scene.events.length, 1); assert.equal(scene.events[0].capture.publishedAt, stamp(2000));
+  assert.equal(scene.events[0].knowledge.firstRecordedAt, stamp());
+  assert.equal(f.count('earth_world_revisions'), 1);
+});

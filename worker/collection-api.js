@@ -83,8 +83,10 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
     // Research is separately budgeted retained work. Its availability never changes
     // the factual publication outcome or blocks the collector's HTTP response.
     let research;
-    if (accepted && result.world?.stored && ['collect', 'publish'].includes(body.action)) {
-      try { research = startInvestigationPipeline(env, ctx, { workerId: 'hosted-collector' }, { now, fetchImpl, signal: request.signal }); }
+    const advanceDueResearch = accepted && body.action === 'collect' && result.heartbeat === true;
+    if (advanceDueResearch || accepted && result.world?.stored && ['collect', 'publish'].includes(body.action)) {
+      try { research = startInvestigationPipeline(env, ctx, { workerId: 'hosted-collector',
+        ...(advanceDueResearch ? { enqueueCandidates: false } : {}) }, { now, fetchImpl, signal: request.signal }); }
       catch { research = { scheduled: false, status: 'unavailable' }; }
     }
     return json({ ...result, ...(research ? { research } : {}), stored: accepted, updatesConfigured: Boolean(env.EARTH_DB?.prepare), updatesPublished: Boolean(revision?.stored) },

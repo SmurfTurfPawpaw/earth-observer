@@ -13,11 +13,11 @@ const jsonBytes = (value) => Buffer.byteLength(JSON.stringify(value));
 const timestamp = (value) => value === null || typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 
 /** CRC, inflation and TSV parsing run in a bounded local thread, never a hosted Worker or browser. */
-export function parseLocalGkgArchive(archive, descriptor, { retrievedAt, signal, priority } = {}) {
+export function parseLocalGkgArchive(archive, descriptor, { retrievedAt, signal, priority, expiresAt } = {}) {
   signal?.throwIfAborted();
   const bytes = !Buffer.isBuffer(archive) && archive.byteOffset === 0 && archive.byteLength === archive.buffer.byteLength ? archive : new Uint8Array(archive);
   const worker = new Worker(new URL(import.meta.url), { workerData: {
-    kind: 'local-gkg-parser', archive: bytes.buffer, descriptor, retrievedAt, priority,
+    kind: 'local-gkg-parser', archive: bytes.buffer, descriptor, retrievedAt, priority, expiresAt,
   }, transferList: [bytes.buffer], execArgv: [], resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32, stackSizeMb: 4 } });
   return new Promise((resolve, reject) => {
     let finishing = false;
@@ -39,7 +39,7 @@ export function parseLocalGkgArchive(archive, descriptor, { retrievedAt, signal,
 
 /** Fixed official latest-batch acquisition with persistent deduplication and failure backoff. No GitHub bootstrap. */
 export function createLocalGdeltSource({ fetchImpl = fetch, now = Date.now, stateDirectory = '.cache/collector/gdelt',
-  timeoutMs = LOCAL_GDELT_TIMEOUT_MS, archiveParser = parseLocalGkgArchive, demandPriority = false } = {}) {
+  timeoutMs = LOCAL_GDELT_TIMEOUT_MS, archiveParser = parseLocalGkgArchive, demandPriority = false, repairEnabled = false } = {}) {
   const directory = path.resolve(stateDirectory);
   const deadline = Number.isFinite(timeoutMs) ? Math.max(1, Math.min(LOCAL_GDELT_TIMEOUT_MS, timeoutMs)) : LOCAL_GDELT_TIMEOUT_MS;
   let snapshot = null, reader, initialized, pending, controller, serial = Promise.resolve(), temporary = 0;
@@ -100,7 +100,7 @@ export function createLocalGdeltSource({ fetchImpl = fetch, now = Date.now, stat
       // Persist admission first: an abrupt restart cannot immediately repeat a admitted acquisition.
       state.nextCheckAt = now() + LOCAL_GDELT_CHECK_INTERVAL_MS; await saveState();
       const result = await generateGkgSnapshot({ fetchImpl, now, timeoutMs: deadline, signal: combined,
-        previousSnapshot: snapshot, archiveParser, demandPriority });
+        previousSnapshot: snapshot, archiveParser, demandPriority, repairEnabled });
       if (result.checkedAt) state.lastCheckedAt = result.checkedAt;
       state.lastCode = result.code || 'invalid-response'; state.lastHttpStatus = result.httpStatus || null;
       if (result.status === 'generated') {
@@ -128,7 +128,7 @@ export function createLocalGdeltSource({ fetchImpl = fetch, now = Date.now, stat
       const status = result.state.status === 'unavailable' ? 'unavailable' : failed ? 'stale' : result.state.status;
       const coverage = result.state.coverage?.replaceAll('Scheduled GDELT', 'Locally acquired GDELT') || '';
       return { ...result, indexSource: { ...result.indexSource, status, coverage }, state: { ...result.state, status,
-        stale: status === 'stale', mode: 'local-gkg', acquisition: 'official-latest-batch', coverage,
+        stale: status === 'stale', mode: 'local-gkg', acquisition: repairEnabled ? 'official-latest-and-bounded-repair' : 'official-latest-batch', coverage,
         lastAttemptAt: state.lastAttemptAt, lastCheckedAt: state.lastCheckedAt,
         snapshotRetrievedAt: snapshot?.coverage.processedBatches.at(-1)?.retrievedAt || null,
         snapshotCheckedAt: state.lastCheckedAt, refreshIntervalMs: LOCAL_GDELT_CHECK_INTERVAL_MS, sourceCadenceMs: 900000,
@@ -146,7 +146,7 @@ export function createLocalGdeltSource({ fetchImpl = fetch, now = Date.now, stat
 
 if (!isMainThread && workerData?.kind === 'local-gkg-parser') {
   readGkgArchive(new Uint8Array(workerData.archive), workerData.descriptor, {
-    retrievedAt: workerData.retrievedAt, priority: workerData.priority,
+    retrievedAt: workerData.retrievedAt, priority: workerData.priority, expiresAt: workerData.expiresAt,
   }).then((parsed) => parentPort.postMessage({ ok: true, parsed }))
     .catch(() => parentPort.postMessage({ ok: false }))
     .finally(() => parentPort.close());

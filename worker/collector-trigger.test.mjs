@@ -65,9 +65,26 @@ test('Node signer interoperates with WebCrypto and delegates only the fixed serv
   assert.equal(response.status, 200);
   const text = await response.text(), summary = JSON.parse(text);
   assert.deepEqual(summary, { schemaVersion: 1, status: 'stored', stored: true, collectedAt: new Date(NOW).toISOString(),
+    checkedAt: null, heartbeat: false, factualPublication: false, completionRepaired: false, notificationRepaired: false,
     sourceCount: 4, snapshotCount: 2, failureCount: 0, recordCount: 12, worldStored: true, updatesPublished: true });
   assert.ok(!text.includes(KEY)); assert.ok(!text.includes(TOKEN)); assert.ok(!text.includes('upstream'));
   assert.equal(calls, 1);
+});
+
+test('compact hosted checks carry their count and operational clock without claiming a new factual publication', async () => {
+  const capture = new Date(NOW - 60000).toISOString(), check = new Date(NOW).toISOString();
+  const configured = env(), handle = createCollectorTriggerHandler({ now: () => NOW, collectionHandler: async () => Response.json({
+    stored: true, heartbeat: true, factualPublication: false, collectedAt: capture, checkedAt: check,
+    plugins: ['usgs', 'gdacs', 'eonet', 'gdelt'], recordCount: 12, snapshots: [], failures: [],
+    completionRepaired: true, notificationRepaired: true, unsafe: KEY }) });
+  const result = await runHostedCollectionTrigger({ key: KEY, now: () => NOW, nonce: NONCE,
+    fetchImpl: (_url, init) => handle(new Request('https://owned.example/api/collector/trigger', init), configured) });
+  assert.equal(result.ok, true); assert.equal(result.summary.recordCount, 12); assert.equal(result.summary.snapshotCount, 0);
+  assert.equal(result.summary.collectedAt, capture); assert.equal(result.summary.checkedAt, check);
+  assert.equal(result.summary.heartbeat, true); assert.equal(result.summary.factualPublication, false);
+  assert.equal(result.summary.worldStored, false); assert.equal(result.summary.updatesPublished, false);
+  assert.equal(result.summary.completionRepaired, true); assert.equal(result.summary.notificationRepaired, true);
+  assert.equal(JSON.stringify(result.summary).includes(KEY), false);
 });
 
 test('empty signed body is accepted; same-isolate replay and minute admission prevent duplicate invocation', async () => {

@@ -43,6 +43,13 @@
       "when": 1791758590597,
       "tag": "0005_investigation_queue_index",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791760212860,
+      "tag": "0006_investigation_admission",
+      "breakpoints": true
     }
   ]
 }

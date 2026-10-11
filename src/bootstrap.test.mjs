@@ -69,7 +69,7 @@ test('download and append failures remove owned script/listeners and leave no wa
 // and downstream application entry. The loader and catch/retry path are unmodified.
 const bootstrapBundle = build({
   entryPoints: [fileURLToPath(new URL('./bootstrap.js', import.meta.url))], bundle: true, write: false,
-  format: 'iife', platform: 'browser', define: { 'import.meta.env.PROD': 'true' },
+  format: 'iife', platform: 'browser', define: { 'import.meta.env': '{"PROD":true,"BASE_URL":"/earth/"}' },
   plugins: [{ name: 'bootstrap-downstream-fixtures', setup(plugin) {
     plugin.onResolve({ filter: /^\.\/core\/scene-preview\.js$/ }, () => ({ path: 'preview', namespace: 'fixture' }));
     plugin.onResolve({ filter: /^\.\/main\.js$/ }, () => ({ path: 'main', namespace: 'fixture' }));
@@ -79,24 +79,27 @@ const bootstrapBundle = build({
   } }],
 }).then((result) => result.outputFiles[0].text);
 
-async function productionFixture({ alreadyLoaded = false } = {}) {
+async function productionFixture({ alreadyLoaded = false, releaseUpdates = false } = {}) {
   const f = scriptFixture(), workerListeners = new Map(), sent = [], logs = [];
   let reloads = 0;
   const retryListeners = new Map();
+  const registrations = [], workerGate = Promise.withResolvers();
   const nodes = { loading: { hidden: false }, error: { hidden: true }, 'error-message': {}, notification: { hidden: true },
     reload: { addEventListener(name, fn, options) { retryListeners.set(name, { fn, once: options?.once }); } } };
   const label = { textContent: '' };
   f.document.getElementById = (id) => nodes[id];
   f.document.querySelector = (selector) => selector === 'link[data-globe-engine]' ? { href: '/earth/cesium/1.138.0/Cesium.js' } : label;
   const context = { document: f.document,
-    navigator: { serviceWorker: { addEventListener: (name, fn) => workerListeners.set(name, fn), controller: { postMessage: (message) => sent.push(message) } } },
+    navigator: { serviceWorker: { addEventListener: (name, fn) => workerListeners.set(name, fn),
+      ...(releaseUpdates ? { register(url, options) { registrations.push({ url, options }); return workerGate.promise; } } : {}),
+      controller: { scriptURL: 'https://example.com/earth/sw.js', postMessage: (message) => sent.push(message) } } },
     setTimeout: f.setTimeoutImpl, clearTimeout: f.clearTimeoutImpl,
-    location: { reload() { reloads++; } }, console: { error: (...args) => logs.push(args) }, previewCalls: 0, mainCalls: 0,
+    location: { origin: 'https://example.com', href: 'https://example.com/earth/', pathname: '/earth/', reload() { reloads++; } }, console: { error: (...args) => logs.push(args) }, previewCalls: 0, mainCalls: 0,
     ...(alreadyLoaded ? { Cesium: {} } : {}) };
   vm.runInNewContext(await bootstrapBundle, context);
   const flush = async () => { for (let step = 0; step < 8; step++) await Promise.resolve(); };
   const retry = () => { const listener = retryListeners.get('click'); if (!listener) return; if (listener.once) retryListeners.delete('click'); listener.fn(); };
-  return { ...f, nodes, label, context, flush, retry, reloads: () => reloads, logs, workerListeners, sent };
+  return { ...f, nodes, label, context, flush, retry, reloads: () => reloads, logs, workerListeners, sent, registrations, workerGate };
 }
 
 test('the production bootstrap exposes retry after timeout and never imports main after late events', async () => {
@@ -128,4 +131,12 @@ test('an already available engine preserves startup without adding a script or t
   const f = await productionFixture({ alreadyLoaded: true }); await f.flush();
   assert.equal(f.context.mainCalls, 1); assert.equal(f.context.previewCalls, 1);
   assert.equal(f.scripts.length, 0); assert.equal(f.timers.size, 0); assert.equal(f.nodes.error.hidden, true);
+});
+
+test('production starts its worker release check before the engine finishes, and a stalled check cannot delay the globe', async () => {
+  const f = await productionFixture({ releaseUpdates: true });
+  assert.equal(f.registrations.length, 1); assert.equal(f.registrations[0].url, '/earth/sw.js'); assert.equal(f.registrations[0].options.updateViaCache, 'none');
+  assert.equal(f.context.mainCalls, 0); f.scripts[0].emit('load'); await f.flush();
+  assert.equal(f.context.mainCalls, 1); assert.equal(f.nodes.error.hidden, true);
+  f.workerGate.reject(new Error('Update connection unavailable')); await f.flush(); assert.equal(f.context.mainCalls, 1); assert.equal(f.nodes.error.hidden, true);
 });

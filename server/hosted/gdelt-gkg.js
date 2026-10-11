@@ -40,6 +40,8 @@ SH:SH SC:KN ST:LC RN:MF SB:PM VC:VC TB:BL WS:WS SM:SM TP:ST SA:SA SG:SN RI:RS SE
 TW:TW TI:TJ TZ:TZ TH:TH TO:TG TL:TK TN:TO TD:TT TS:TN TU:TR TX:TM TK:TC TV:TV UG:UG UP:UA AE:AE UK:GB US:US UY:UY UZ:UZ NH:VU VT:VA VE:VE VM:VN VQ:VI WF:WF WE:PS WI:EH YM:YE ZA:ZM ZI:ZW
 `.trim().split(/\s+/).map((entry) => entry.split(':'))));
 const DAY = 86400000, STEP = 900000;
+export const GKG_CATCHUP_BUDGET = Object.freeze({ maxArchives: 3, maxRepairs: 2,
+  maxCompressedBytes: 48 * 1024 * 1024, maxExpandedBytes: 384 * 1024 * 1024, maxRuntimeMs: 45000 });
 const ISO_COUNTRIES = new Set(Object.values(GKG_FIPS_TO_ISO));
 const UTF8 = new TextEncoder();
 export function gkgBatchTime(value) {
@@ -77,15 +79,25 @@ export function parseGkgRow(line, { batch, retrievedAt } = {}) {
   return GKG_CATEGORIES.map((category) => gkgTopicReport({ url: fields[4], themes, mentionedCountries: countries, batch, retrievedAt, category })).filter(Boolean);
 }
 
-export function gkgCoverage(processedBatches) {
+export function gkgCoverage(processedBatches, catchup) {
   const batches = [...processedBatches].sort((a, b) => a.id.localeCompare(b.id));
   const seen = new Set(batches.map((batch) => batch.id)), gaps = [];
   if (batches.length) for (let time = Date.parse(gkgBatchTime(batches[0].id)); time <= Date.parse(gkgBatchTime(batches.at(-1).id)); time += STEP)
     if (!seen.has(batchId(time))) gaps.push(batchId(time));
-  return { timespan: '24h', maxRecordsPerCategory: 80, categories: [...GKG_CATEGORIES], sampled: true,
+  const coverage = { timespan: '24h', maxRecordsPerCategory: 80, categories: [...GKG_CATEGORIES], sampled: true,
     batchIntervalMinutes: 15, scheduledIntervalMinutes: 30, processedBatches: batches, sampleGaps: gaps,
     windowStart: batches.length ? gkgBatchTime(batches[0].id) : null, windowEnd: batches.length ? gkgBatchTime(batches.at(-1).id) : null,
     note: 'Bounded sample of processed GDELT batches; gaps and records omitted by topic, country and publisher quotas are not evidence of absence. Country filters match countries mentioned, not publisher countries or incident locations.' };
+  if (catchup) {
+    const pending = new Set(gaps), attempts = (catchup.attempts || []).filter((entry) => pending.has(entry.id)).sort((a, b) => a.id.localeCompare(b.id)).slice(-96);
+    const attemptedBatches = [...new Set(catchup.attemptedBatches || [])];
+    const hostRetryAt = Math.max(0, ...attempts.filter((entry) => entry.httpStatus === 429).map((entry) => Date.parse(entry.retryAt)));
+    const deferredBatches = hostRetryAt > Date.parse(catchup.checkedAt) ? gaps : attempts.filter((entry) => Date.parse(entry.retryAt) > Date.parse(catchup.checkedAt)).map((entry) => entry.id);
+    coverage.catchup = { schemaVersion: 1, checkedAt: catchup.checkedAt, latestBatch: batches.at(-1)?.id || null,
+      attemptedBatches, attempts, pendingBatches: gaps, deferredBatches,
+      cappedBatches: gaps.filter((id) => !attemptedBatches.includes(id) && !deferredBatches.includes(id)), budget: { ...GKG_CATCHUP_BUDGET } };
+  }
+  return coverage;
 }
 /** Preserve topic/country/publisher diversity rather than taking the first TSV rows. */
 function balanced(rows) {
@@ -113,11 +125,12 @@ function balanced(rows) {
   }
   return selected.sort((a, b) => b.indexedAt.localeCompare(a.indexedAt) || a.url.localeCompare(b.url));
 }
-export function createGkgSnapshot({ reports, processedBatches, generatedAt }) {
+export function createGkgSnapshot({ reports, processedBatches, generatedAt, catchup }) {
   const now = Date.parse(generatedAt), uniqueBatches = new Map();
   for (const entry of processedBatches) {
     const time = Date.parse(gkgBatchTime(entry.id));
-    if (Number.isFinite(time) && time <= now + 300000 && now - time <= DAY) uniqueBatches.set(entry.id, { id: entry.id, retrievedAt: entry.retrievedAt, rows: entry.rows, matchedRecords: entry.matchedRecords });
+    if (Number.isFinite(time) && time <= now + 300000 && now - time <= DAY) uniqueBatches.set(entry.id, { id: entry.id, retrievedAt: entry.retrievedAt, rows: entry.rows, matchedRecords: entry.matchedRecords,
+      ...(entry.integrity ? { integrity: { ...entry.integrity } } : {}) });
   }
   const batches = [...uniqueBatches.values()].sort((a, b) => a.id.localeCompare(b.id)).slice(-96);
   const retained = new Set(batches.map((entry) => entry.id)), categories = {};
@@ -127,7 +140,7 @@ export function createGkgSnapshot({ reports, processedBatches, generatedAt }) {
     for (const row of rows) if (!unique.has(row.url)) unique.set(row.url, row);
     categories[category] = { reports: balanced([...unique.values()]) };
   }
-  return { schemaVersion: 2, kind: 'gkg-topic-sample', generatedAt, source: { ...GKG_SOURCE }, coverage: gkgCoverage(batches), categories };
+  return { schemaVersion: 2, kind: 'gkg-topic-sample', generatedAt, source: { ...GKG_SOURCE }, coverage: gkgCoverage(batches, catchup), categories };
 }
 
 const isObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -146,14 +159,43 @@ export function validateGkgSnapshot(payload, nowMs = Date.now()) {
   const generated = Date.parse(payload.generatedAt), seenBatches = new Map();
   if (generated > nowMs + 300000 || nowMs - generated > DAY) throw new Error('GKG snapshot is expired or future-dated');
   for (const entry of payload.coverage.processedBatches) {
-    if (!isObject(entry) || !keysOnly(entry, ['id', 'retrievedAt', 'rows', 'matchedRecords']) || !gkgBatchTime(entry.id) ||
+    if (!isObject(entry) || !keysOnly(entry, ['id', 'retrievedAt', 'rows', 'matchedRecords', 'integrity']) || !gkgBatchTime(entry.id) ||
         !canonicalStamp(entry.retrievedAt) || seenBatches.has(entry.id) || !Number.isInteger(entry.rows) || entry.rows < 0 || entry.rows > 50000 ||
         !Number.isInteger(entry.matchedRecords) || entry.matchedRecords < 0 || entry.matchedRecords > entry.rows * 3) throw new Error('Invalid GKG processed batch');
     const time = Date.parse(gkgBatchTime(entry.id)), retrieved = Date.parse(entry.retrievedAt);
     if (generated - time > DAY || time > generated + 300000 || retrieved > generated || retrieved < time - 300000 || generated - retrieved > DAY) throw new Error('Invalid GKG batch time');
+    if (entry.integrity) {
+      const integrity = entry.integrity;
+      if (!isObject(integrity) || !keysOnly(integrity, ['mode', 'sha256', 'archiveBytes', 'expandedBytes', 'providerMd5', 'providerEtag']) ||
+          !/^[a-f0-9]{64}$/.test(integrity.sha256 || '') || !Number.isInteger(integrity.archiveBytes) || integrity.archiveBytes < 1 || integrity.archiveBytes > 16 * 1024 * 1024 ||
+          !Number.isInteger(integrity.expandedBytes) || integrity.expandedBytes < 0 || integrity.expandedBytes > 128 * 1024 * 1024 ||
+          !['manifest-md5-and-zip-crc', 'https-head-size-and-zip-crc'].includes(integrity.mode) ||
+          (integrity.mode === 'manifest-md5-and-zip-crc' ? !/^[a-f0-9]{32}$/.test(integrity.providerMd5 || '') || integrity.providerEtag !== undefined :
+            integrity.providerMd5 !== null || typeof integrity.providerEtag !== 'string' || !/^"[\x21\x23-\x7e]{1,126}"$/.test(integrity.providerEtag))) throw new Error('Invalid GKG archive integrity provenance');
+    }
     seenBatches.set(entry.id, entry);
   }
-  const coverage = gkgCoverage([...seenBatches.values()]);
+  const catchup = payload.coverage.catchup;
+  if (catchup !== undefined) {
+    if (!isObject(catchup) || !keysOnly(catchup, ['schemaVersion', 'checkedAt', 'latestBatch', 'attemptedBatches', 'attempts', 'pendingBatches', 'deferredBatches', 'cappedBatches', 'budget']) ||
+        catchup.schemaVersion !== 1 || !canonicalStamp(catchup.checkedAt) || Date.parse(catchup.checkedAt) > nowMs + 300000 || Date.parse(catchup.checkedAt) < generated ||
+        !Array.isArray(catchup.attemptedBatches) || catchup.attemptedBatches.length > 2 || new Set(catchup.attemptedBatches).size !== catchup.attemptedBatches.length ||
+        catchup.attemptedBatches.some((id) => !gkgBatchTime(id)) || !Array.isArray(catchup.attempts) || catchup.attempts.length > 96 ||
+        !same(catchup.budget, GKG_CATCHUP_BUDGET)) throw new Error('Invalid GKG catch-up checkpoint');
+    const seenAttempts = new Set();
+    const span = gkgCoverage([...seenBatches.values()]);
+    if (catchup.attemptedBatches.some((id) => gkgBatchTime(id) < span.windowStart || gkgBatchTime(id) > span.windowEnd)) throw new Error('GKG catch-up attempt outside retained coverage');
+    for (const attempt of catchup.attempts) {
+      if (!isObject(attempt) || !keysOnly(attempt, ['id', 'checkedAt', 'retryAt', 'code', 'httpStatus']) || !gkgBatchTime(attempt.id) || seenAttempts.has(attempt.id) ||
+          !canonicalStamp(attempt.checkedAt) || !canonicalStamp(attempt.retryAt) || Date.parse(attempt.checkedAt) > Date.parse(catchup.checkedAt) ||
+          Date.parse(attempt.checkedAt) < Date.parse(gkgBatchTime(attempt.id)) - 300000 || Date.parse(attempt.retryAt) < Date.parse(attempt.checkedAt) ||
+          Date.parse(attempt.retryAt) > Date.parse(attempt.checkedAt) + DAY || !['http-error', 'invalid-response', 'timeout', 'aborted'].includes(attempt.code) ||
+          (attempt.httpStatus !== undefined && (!Number.isInteger(attempt.httpStatus) || attempt.httpStatus < 400 || attempt.httpStatus > 599)) ||
+          (attempt.code === 'http-error') !== (attempt.httpStatus !== undefined)) throw new Error('Invalid GKG catch-up retry');
+      seenAttempts.add(attempt.id);
+    }
+  }
+  const coverage = gkgCoverage([...seenBatches.values()], catchup);
   if (!keysOnly(payload.coverage, Object.keys(coverage)) || Object.keys(coverage).some((key) => !same(payload.coverage[key], coverage[key]))) throw new Error('Invalid GKG sampling coverage');
   const categories = {};
   for (const category of GKG_CATEGORIES) {

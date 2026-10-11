@@ -6,6 +6,9 @@ export const WORLD_SCENE_LIMITS = Object.freeze({ events: 1000, pages: 10, bytes
 const WEEK = 7 * 86400000;
 const canonical = (value) => { try { return worldTime(value); } catch { return null; } };
 const count = (value) => Number.isInteger(value) && value >= 0 && value <= 10000000;
+class SceneVersionConflict extends Error {
+  constructor(bytes = 0) { super('Historical evidence is updating. Try again shortly.'); this.bytes = bytes; }
+}
 const official = (value) => {
   try { const url = new URL(value); return url.protocol === 'https:' && url.hostname === 'earthquake.usgs.gov' && !url.username && !url.password && url.href.length <= 2048; }
   catch { return false; }
@@ -116,6 +119,8 @@ async function readBounded(response, signal, maximum) {
   }
   if (bytes > maximum) throw new Error('Historical scene exceeds the browser budget');
   const value = JSON.parse(body);
+  if (response.status === 409 && value?.schemaVersion === 1 && value.errorCode === 'scene-version-changed' && value.scope?.id === WORLD_SCENE_SCOPE &&
+      /^archive:\d+$/.test(value.requestedVersion || '') && /^archive:\d+$/.test(value.currentVersion || '')) throw new SceneVersionConflict(bytes);
   if (!response.ok && value?.configured !== false && value?.available !== false) throw new Error(`Historical scene HTTP ${response.status}`);
   return { value, bytes };
 }
@@ -176,23 +181,38 @@ export function createWorldSceneController({ fetchImpl = globalThis.fetch, docum
     return null;
   }
   async function load(at, selectedLens, signal) {
-    let result, bytes = 0, cursor, pages = 0; const events = new Map(), seen = new Set();
-    do {
-      const response = await fetchImpl(`${url}?${query(at, selectedLens, { limit: '100', ...(cursor ? { cursor } : {}) })}`,
-        { signal, cache: 'no-store', headers: { Accept: 'application/json' } });
-      const body = await readBounded(response, signal, WORLD_SCENE_LIMITS.bytes - bytes); bytes += body.bytes;
-      const page = await normalizeWorldScene(body.value, { at, lens: selectedLens, buffered: selectedLens === 'reconstruction' }); signal.throwIfAborted();
-      if (result && (page.version !== result.version || page.currentVersion !== result.currentVersion || page.counts.eligible !== result.counts.eligible ||
-          page.validFrom !== result.validFrom || page.validTo !== result.validTo || page.bufferTo !== result.bufferTo)) throw new Error('Historical evidence changed while loading; refresh the scene.');
-      result ||= page;
-      for (const event of page.points || page.events) {
-        if (events.has(event.id)) throw new Error('Historical pages overlap');
-        events.set(event.id, event);
+    let result, bytes = 0, cursor, pages = 0, restarts = 0; const events = new Map(), seen = new Set();
+    while (true) {
+      pages++; signal.throwIfAborted();
+      try {
+        const response = await fetchImpl(`${url}?${query(at, selectedLens, { limit: '100', ...(cursor ? { cursor } : {}) })}`,
+          { signal, cache: 'no-store', headers: { Accept: 'application/json' } });
+        const body = await readBounded(response, signal, WORLD_SCENE_LIMITS.bytes - bytes); bytes += body.bytes;
+        const page = await normalizeWorldScene(body.value, { at, lens: selectedLens, buffered: selectedLens === 'reconstruction' }); signal.throwIfAborted();
+        if (result && page.version !== result.version) throw new SceneVersionConflict();
+        if (result && (page.counts.eligible !== result.counts.eligible || page.validFrom !== result.validFrom || page.validTo !== result.validTo || page.bufferTo !== result.bufferTo)) {
+          if (page.currentVersion !== result.currentVersion) throw new SceneVersionConflict();
+          throw new Error('Historical page bounds or membership are inconsistent');
+        }
+        result ||= page;
+        for (const event of page.points || page.events) {
+          if (events.has(event.id)) throw new Error('Historical pages overlap');
+          events.set(event.id, event);
+        }
+        cursor = page.cursor;
+        if (cursor && seen.has(cursor)) throw new Error('Historical pagination did not advance');
+        if (cursor) seen.add(cursor);
+        if (!cursor || pages >= WORLD_SCENE_LIMITS.pages || events.size >= WORLD_SCENE_LIMITS.events) break;
+      } catch (failure) {
+        if (!(failure instanceof SceneVersionConflict)) throw failure;
+        bytes += failure.bytes; signal.throwIfAborted();
+        if (restarts || pages >= WORLD_SCENE_LIMITS.pages || bytes >= WORLD_SCENE_LIMITS.bytes) throw failure;
+        restarts++; result = undefined; cursor = undefined; events.clear(); seen.clear();
+        // Only an explicit edition conflict restarts from page one. The same
+        // deadline, request/byte budget and selected UTC still own both chains.
+        continue;
       }
-      cursor = page.cursor; pages++;
-      if (cursor && seen.has(cursor)) throw new Error('Historical pagination did not advance');
-      if (cursor) seen.add(cursor);
-    } while (cursor && pages < WORLD_SCENE_LIMITS.pages && events.size < WORLD_SCENE_LIMITS.events);
+    }
     result = { ...result, ...(selectedLens === 'reconstruction' ? { points: [...events.values()].sort((a, b) => a._originMs - b._originMs || a.id.localeCompare(b.id)), events: [] } : { events: [...events.values()] }), cursor,
       counts: { ...result.counts, returned: events.size, omitted: result.counts.eligible === null ? null : Math.max(0, result.counts.eligible - events.size) } };
     result.truncated = !result.membershipComplete || result.coverage.truncated || Boolean(cursor) || result.counts.omitted !== 0;
@@ -233,15 +253,21 @@ export function createWorldSceneController({ fetchImpl = globalThis.fetch, docum
     const canonicalAt = canonical(at);
     if (!canonicalAt || !['reconstruction', 'known-then'].includes(selectedLens) || !opened || destroyed || documentRef?.hidden) return Promise.resolve(false);
     if (pending && selectedAt === canonicalAt && lens === selectedLens) return pending;
+    const previous = selection?.at === canonicalAt && lens === selectedLens ? selection : null;
     cancel(); selectedAt = canonicalAt; lens = selectedLens; error = null;
     const cached = cachedAt(canonicalAt, lens);
-    selection = cached; loading = !cached; emit(); if (cached) return Promise.resolve(true);
+    selection = cached || previous; loading = !cached; emit(); if (cached) return Promise.resolve(true);
     const owner = generation, controller = new AbortController(); request = controller;
     const work = (async () => {
       try {
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
         const loaded = await load(canonicalAt, selectedLens, signal); signal.throwIfAborted();
         if (destroyed || owner !== generation || !opened || documentRef?.hidden) return false;
+        if (metadata && metadata.currentVersion !== loaded.result.currentVersion) {
+          clearCache(); metadata = { ...metadata, currentVersion: loaded.result.currentVersion,
+            coverage: { ...metadata.coverage, availableRange: loaded.result.coverage.availableRange,
+              ...(selectedLens === 'reconstruction' ? { segments: loaded.result.coverage.segments } : {}) } };
+        }
         admit(loaded.result, loaded.bytes, selectedLens); selection = materialize(loaded.result, canonicalAt, selectedLens); metadataError = null; return true;
       } catch (failure) {
         if (controller.signal.aborted || owner !== generation) return false;

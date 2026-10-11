@@ -5,7 +5,7 @@
  * Existing provider-policy.json remains the source-admission authority.
  */
 export const SOURCE_CAPABILITY_SCHEMA_VERSION = 1;
-export const SOURCE_CAPABILITY_REVISION = 2;
+export const SOURCE_CAPABILITY_REVISION = 3;
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const WEATHER_BASE = 'https://nowcoast.noaa.gov/geoserver/observations/';
@@ -151,12 +151,15 @@ const sources = [
     geography: { type: 'country-mentions-only', completeness: 'bounded-sample', resolution: 'Mentioned country is context; neither publisher country nor a country centroid is an incident point.' },
     temporal: { validTime: 'indexedAt: GDELT index/batch time, not incident time', publicationTime: 'unknown', captureTime: 'Retain source batch, generation and actual acquisition separately.' },
     cadence: { providerIntervalMs: 15 * MINUTE, providerMeaning: 'GKG batch cadence; release creation has a separate runtime and may be delayed/skipped.', checkIntervalMs: MINUTE, sourceLatencyMs: null, guaranteed: false },
-    bounds: { maxRecords: 240, maxSnapshotBytes: 1024 * 1024, categories: ['geopolitics', 'economy', 'disasters'] },
-    archive: 'Official bulk archives/codebooks are available; current pipeline consumes one latest bounded batch, without catch-up.',
+    bounds: { maxRecords: 240, maxSnapshotBytes: 1024 * 1024, categories: ['geopolitics', 'economy', 'disasters'],
+      optionalCatchup: { enabledByDefault: false, horizonMs: 24 * HOUR, maxHistoricalBatches: 2,
+        maxArchivesPerRun: 3, compressedBytesPerRun: 48 * 1024 * 1024,
+        expandedBytesPerRun: 384 * 1024 * 1024, deadlineMs: 45000 } },
+    archive: 'Official bulk archives/codebooks are available. The latest-first producer includes opt-in bounded repair of explicit missed batches within its retained 24-hour span; this is not a two-year discovery archive.',
     rights: { status: 'reviewed-public-display', policyProvider: 'gdelt-metadata', scope: 'GDELT-released datasets may be reused with citation/link; original articles and images retain publisher rights.', attribution: 'The GDELT Project, https://www.gdeltproject.org/', evidence: ['https://gdeltproject.org/about.html'] },
     documentation: ['https://gdeltproject.org/data.html', 'https://blog.gdeltproject.org/gdelt-2-0-our-global-world-in-realtime/'],
     paths: ['server/hosted/gdelt-snapshot.js', 'server/hosted/gdelt-gkg.js', 'scripts/gdelt-snapshot.mjs'],
-    gaps: ['Hosted Worker does not decode bulk GKG ZIP files.', 'No full article text or source-truth verification.', 'Repeated reports may be syndicated copies.', 'Two-year backfill and missed-batch recovery are not implemented.'],
+    gaps: ['Hosted Worker does not decode bulk GKG ZIP files.', 'No full article text or source-truth verification.', 'Repeated reports may be syndicated copies.', 'Two-year discovery backfill is not implemented. Optional missed-batch recovery requires a verified producer run and completed batch receipts; its mere presence in code does not fill gaps.'],
   }),
   {
     id: 'astronomy', name: 'Calculated Sun, Moon and day/night lighting', kind: 'calculated',

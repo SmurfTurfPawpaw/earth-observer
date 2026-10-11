@@ -4,6 +4,11 @@ import { worldTime } from './world-model.js';
 import { createWorldSceneController } from './world-scene-controller.js';
 
 const stamp = (value) => { try { return worldTime(value); } catch { return null; } };
+/** datetime-local omits zero seconds; its calendar is explicitly interpreted as UTC. */
+export const timelineDateUtc = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d{1,3})?)?$/.test(value)) return null;
+  return stamp(`${value.length === 16 ? `${value}:00` : value}Z`);
+};
 const utc = (value) => stamp(value)?.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') || 'Time unavailable';
 const members = (scene) => scene?.points || scene?.events || [];
 const origin = (item) => item.originAt || item.eventTime?.at;
@@ -198,7 +203,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     void selectTime(at, true);
   };
   const changeRate = (event) => { event?.stopPropagation?.(); sceneTime.setRate?.(Number(rate.value)); };
-  const chooseDate = () => { const at = stamp(`${date.value}Z`); if (at) void selectTime(at); };
+  const chooseDate = () => { const at = timelineDateUtc(date.value); if (at) void selectTime(at); };
   const changeLens = () => { if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value); else controller.setLens(lens.value); };
   const light = () => { const enabled = !viewer.earthTime.getState().lighting; viewer.earthTime.setLighting(enabled); sunlight.setAttribute('aria-pressed', String(enabled)); };
   const refresh = async () => { await controller.refresh(); if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value); };

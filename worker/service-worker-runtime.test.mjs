@@ -52,21 +52,46 @@ test('online essential Cesium remains HTTP-first with no CacheStorage read or du
   assert.equal(h.reads.length, 0); assert.equal(h.writes.length, 0); assert.equal(h.timers.size, 0);
 });
 
-test('warm verified root returns before a hung server; availability checks coalesce, time out and respect cooldown', async () => {
-  const h = harness({ values: new Map([[release + ':' + scope, fixed()]]), fetchImpl: () => new Promise(() => {}) });
-  const first = h.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await bounded(first.result)).text(), html); assert.equal(h.fetches.length, 1); assert.equal(h.writes.length, 0);
-  const [request, options] = h.fetches[0]; assert.equal(request.credentials, 'omit'); assert.equal(request.redirect, 'error'); assert.equal(options.cache, 'no-cache');
-  const second = h.dispatch(scope, { mode: 'navigate', clientId: 'second' }); assert.equal(await (await bounded(second.result)).text(), html); assert.equal(h.fetches.length, 1);
-  assert.equal(h.timers.size, 1); [...h.timers.values()][0].fn(); await settled(first); await settled(second); assert.equal(options.signal.aborted, true); assert.match(h.messages[0].message, /server was unavailable/);
-  const recent = h.dispatch(scope, { mode: 'navigate' }); await recent.result; await settled(recent); assert.equal(h.fetches.length, 1);
-  h.advance(30000); const later = h.dispatch(scope, { mode: 'navigate' }); await later.result; assert.equal(h.fetches.length, 2); [...h.timers.values()][0].fn(); await settled(later);
+test('online navigation adopts current HTTP bytes and never consults or overwrites a warm old document', async () => {
+  const current = html + '<p>New release</p>', values = new Map([[release + ':' + scope, fixed()]]);
+  const h = harness({ values, fetchImpl: async () => response(current, scope, { 'content-type': 'text/html' }) });
+  const event = h.dispatch(scope, { mode: 'navigate' });
+  assert.equal(await (await event.result).text(), current); await settled(event);
+  assert.equal(h.fetches[0][1].cache, 'no-cache'); assert.equal(h.reads.length, 0); assert.equal(h.writes.length, 0);
+  assert.equal(await values.get(release + ':' + scope).clone().text(), html);
 });
 
-test('changed request-specific HTML is canceled without reading or replacing the fixed release', async () => {
-  let canceled = false; const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('<script>request-specific-identity</script>')); }, cancel() { canceled = true; } });
-  const values = new Map([[release + ':' + scope, fixed()]]), h = harness({ values, fetchImpl: async () => response(body, scope, { 'content-type': 'text/html', 'set-cookie': 'opaque-platform-cookie' }) });
-  const event = h.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await event.result).text(), html); await bounded(settled(event));
-  assert.equal(canceled, true); assert.equal(h.writes.length, 0); assert.equal(await values.get(release + ':' + scope).clone().text(), html);
+test('an unresponsive online navigation has a bounded deadline before verified offline fallback', async () => {
+  const h = harness({ values: new Map([[release + ':' + scope, fixed()]]), fetchImpl: () => new Promise(() => {}) });
+  const event = h.dispatch(scope, { mode: 'navigate' }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.fetches.length, 1); assert.equal(h.reads.length, 0); assert.equal(h.timers.size, 1);
+  const options = h.fetches[0][1]; [...h.timers.values()][0].fn();
+  assert.equal(await (await bounded(event.result)).text(), html); await settled(event);
+  assert.equal(options.signal.aborted, true); assert.equal(h.writes.length, 0); assert.match(h.messages[0].message, /server was unavailable/);
+});
+
+test('request-specific online HTML passes through unchanged but never replaces the verified universal offline release', async () => {
+  const privateHtml = '<script>request-specific-identity</script>', values = new Map([[release + ':' + scope, fixed()]]);
+  const h = harness({ values, fetchImpl: async () => response(privateHtml, scope, { 'content-type': 'text/html', 'set-cookie': 'opaque-platform-cookie', 'cache-control': 'private' }) });
+  const event = h.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await event.result).text(), privateHtml); await settled(event);
+  assert.equal(h.reads.length, 0); assert.equal(h.writes.length, 0); assert.equal(await values.get(release + ':' + scope).clone().text(), html);
+});
+
+test('intentional access and private server responses cannot be bypassed by a saved public shell', async () => {
+  for (const [status, headers] of [[401, {}], [403, {}], [404, {}], [503, { 'cache-control': 'private' }], [503, { 'cache-control': 'no-store' }], [503, { 'set-cookie': 'session=opaque' }], [503, { 'content-type': 'application/json' }]]) {
+    const h = harness({ values: new Map([[release + ':' + scope, fixed()]]), fetchImpl: async () => {
+      const value = new Response('Server-owned result', { status, headers: { 'content-type': 'text/html', ...headers } }); Object.defineProperty(value, 'url', { value: origin + scope }); return value;
+    } });
+    const result = await h.dispatch(scope, { mode: 'navigate' }).result;
+    assert.equal(result.status, status); assert.equal(await result.text(), 'Server-owned result'); assert.equal(h.reads.length, 0); assert.equal(h.writes.length, 0);
+  }
+});
+
+test('a public HTML server failure may restore only the matching verified fixed document', async () => {
+  const h = harness({ values: new Map([[release + ':' + scope, fixed()]]), fetchImpl: async () => {
+    const value = new Response('Unavailable', { status: 503, headers: { 'content-type': 'text/html' } }); Object.defineProperty(value, 'url', { value: origin + scope }); return value;
+  } });
+  const event = h.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await event.result).text(), html); await settled(event); assert.equal(h.writes.length, 0);
 });
 
 test('install replaces root acquisition with fixed JSON and waits for all critical assets before activating', async () => {
@@ -142,12 +167,18 @@ test('offline engine and optional assets preserve the existing cache safety net 
   const handshake = []; h.listeners.get('message')({ data: { type: 'earth-observer:shell-status' }, source: { id: 'page', postMessage(message) { handshake.push(message); } } }); assert.equal(handshake[0].message, h.messages[0].message);
 });
 
-test('a complete new release changes only its own document cache and never forces a page reload', async () => {
+test('a complete new release retains one matching offline document without persisting newer request-specific navigation', async () => {
   const values = new Map(), nextHtml = html.replace('public globe', 'updated public globe');
   await harness({ values }).install();
-  const old = harness({ values, fetchImpl: async () => response(nextHtml + '<script>request-specific</script>', scope, { 'content-type': 'text/html' }) }); const oldEvent = old.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await oldEvent.result).text(), html); await settled(oldEvent);
-  const next = harness({ values, version: 'next', shell: publicShellAsset({ html: nextHtml, version: 'next', scope }) }); await next.install(); await next.activate(); assert.equal(next.activated, 1); assert.equal(next.claimed, 1);
-  const event = next.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await event.result).text(), nextHtml); await settled(event); assert.equal(await values.get(release + ':' + scope).clone().text(), html); assert.equal(next.deleted.length, 0);
+  const requestHtml = nextHtml + '<script>request-specific</script>';
+  const old = harness({ values, fetchImpl: async () => response(requestHtml, scope, { 'content-type': 'text/html' }) });
+  const oldEvent = old.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await oldEvent.result).text(), requestHtml); await settled(oldEvent);
+  const nextShell = publicShellAsset({ html: nextHtml, version: 'next', scope });
+  const next = harness({ values, version: 'next', shell: nextShell }); await next.install(); await next.activate();
+  assert.equal(next.activated, 1); assert.equal(next.claimed, 1);
+  const offline = harness({ values, version: 'next', shell: nextShell, online: false });
+  const event = offline.dispatch(scope, { mode: 'navigate' }); assert.equal(await (await event.result).text(), nextHtml); await settled(event);
+  assert.equal(await values.get(release + ':' + scope).clone().text(), html); assert.equal(next.deleted.length, 0);
 });
 
 test('completion metadata appears only after all successful writes and adds no network acquisition', async () => {

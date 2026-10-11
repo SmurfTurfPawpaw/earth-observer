@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import { createInflateRaw } from 'node:zlib';
 import { gdeltQueryUrl } from '../server/hosted/gdelt-query.js';
 import { validateGdeltSnapshot, GDELT_SNAPSHOT_URL } from '../server/hosted/gdelt-snapshot.js';
-import { parseGkgRow, createGkgSnapshot, gkgBatchTime } from '../server/hosted/gdelt-gkg.js';
+import { parseGkgRow, createGkgSnapshot, gkgBatchTime, gkgCoverage, GKG_CATCHUP_BUDGET } from '../server/hosted/gdelt-gkg.js';
 import { normalizeGdelt } from '../server/hosted/intelligence-sources.js';
 import { readResponseJsonCapped, readResponseTextCapped, readResponseBytesCapped } from '../server/providers/common/http.js';
 import { readDemandPriority, createPriorityReservoir, applyDemandPriority } from './intelligence-priority.mjs';
@@ -20,6 +20,33 @@ export const MAX_GKG_ZIP_BYTES = 16 * 1024 * 1024;
 export const MAX_GKG_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
 const MAX_GKG_ROWS = 50000, MAX_ROW_BYTES = 524288, MAX_CANDIDATES = 10000;
 const HEADERS = { 'User-Agent': 'earth-observer-snapshots/1.0 (+https://github.com/SmurfTurfPawpaw/earth-observer)' };
+const strongEtag = (value) => typeof value === 'string' && /^"[\x21\x23-\x7e]{1,126}"$/.test(value) ? value : null;
+const archiveUrl = (batch) => `https://data.gdeltproject.org/gdeltv2/${batch}.gkg.csv.zip`;
+
+// Bound even an injected transport that fails to settle when its signal aborts.
+async function fetchBounded(fetchImpl, url, options) {
+  const { signal } = options; signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const abort = () => { if (!settled) { settled = true; reject(signal.reason); } };
+    signal?.addEventListener('abort', abort, { once: true });
+    Promise.resolve().then(() => fetchImpl(url, options)).then((response) => {
+      signal?.removeEventListener('abort', abort);
+      if (settled) { void response.body?.cancel().catch(() => {}); return; }
+      settled = true; resolve(response);
+    }, (error) => { signal?.removeEventListener('abort', abort); if (!settled) { settled = true; reject(error); } });
+  });
+}
+
+/** A historical fixed URL is verified by HEAD size/strong ETag, not an invented manifest MD5. */
+export function historicalGkgDescriptor(response, batch, nowMs = Date.now()) {
+  const stamp = gkgBatchTime(batch), age = nowMs - Date.parse(stamp), sizeText = response.headers.get('content-length');
+  const size = /^\d{1,8}$/.test(sizeText || '') ? Number(sizeText) : NaN, etag = strongEtag(response.headers.get('etag'));
+  const encoding = response.headers.get('content-encoding');
+  if (!response.ok || !stamp || age < -300000 || age > 86400000 || !Number.isInteger(size) || size < 1 || size > MAX_GKG_ZIP_BYTES || !etag ||
+      encoding && encoding.toLowerCase() !== 'identity') throw new Error('Historical GKG HEAD lacks bounded size, identity encoding or strong ETag');
+  return { batch, size, md5: null, url: archiveUrl(batch), etag, integrityMode: 'https-head-size-and-zip-crc' };
+}
 
 /** Only the current official GKG archive; HTTP manifest links are upgraded to HTTPS. */
 export function parseGkgUpdateManifest(text, nowMs = Date.now()) {
@@ -103,14 +130,21 @@ function candidateReservoir(limit) {
 }
 
 /** Stream decompression, CRC and TSV parsing; retain at most 10,000 candidate metadata records. */
-export async function readGkgArchive(archive, descriptor, { retrievedAt, signal, priority } = {}) {
-  if (archive.byteLength !== descriptor.size || createHash('md5').update(archive).digest('hex') !== descriptor.md5) throw new Error('GKG manifest size or MD5 mismatch');
+export async function readGkgArchive(archive, descriptor, { retrievedAt, signal, priority, expiresAt } = {}) {
+  const checkDeadline = () => { signal?.throwIfAborted(); if (Number.isFinite(expiresAt) && Date.now() >= expiresAt) throw new DOMException('GKG parse deadline exceeded', 'TimeoutError'); };
+  checkDeadline();
+  const historical = descriptor.integrityMode === 'https-head-size-and-zip-crc';
+  if (archive.byteLength !== descriptor.size || (historical ? descriptor.md5 !== null || !strongEtag(descriptor.etag) || descriptor.url !== archiveUrl(descriptor.batch) :
+      !/^[a-f0-9]{32}$/.test(descriptor.md5 || '') || createHash('md5').update(archive).digest('hex') !== descriptor.md5)) throw new Error('GKG verified archive size, manifest MD5 or integrity descriptor mismatch');
+  const sha256 = createHash('sha256').update(archive).digest('hex');
   const entry = inspectGkgZip(archive, descriptor.batch), candidates = createPriorityReservoir(priority, candidateReservoir, MAX_CANDIDATES) || candidateReservoir(MAX_CANDIDATES);
-  const source = Readable.from([entry.compressed]), stream = entry.method === 8 ? source.pipe(createInflateRaw({ chunkSize: 65536 })) : source;
+  function* compressedChunks() { for (let at = 0; at < entry.compressed.byteLength; at += 65536) yield entry.compressed.subarray(at, at + 65536); }
+  const source = Readable.from(compressedChunks()), stream = entry.method === 8 ? source.pipe(createInflateRaw({ chunkSize: 65536 })) : source;
   const cancel = () => stream.destroy(signal.reason); signal?.throwIfAborted(); signal?.addEventListener('abort', cancel, { once: true });
   let total = 0, rows = 0, matchedRecords = 0, crc = 0xffffffff, pending = '';
   const decoder = new TextDecoder('utf-8', { fatal: true });
   const row = (line) => {
+    checkDeadline();
     if (!line) throw new Error('Empty GKG TSV row');
     if (++rows > MAX_GKG_ROWS || Buffer.byteLength(line, 'utf8') > MAX_ROW_BYTES) throw new Error('GKG row count or byte length exceeds its limit');
     const reports = parseGkgRow(line, { batch: descriptor.batch, retrievedAt }); matchedRecords += reports.length;
@@ -118,16 +152,18 @@ export async function readGkgArchive(archive, descriptor, { retrievedAt, signal,
   };
   try {
     for await (const chunk of stream) {
-      signal?.throwIfAborted(); total += chunk.byteLength;
+      checkDeadline(); total += chunk.byteLength;
       if (total > entry.uncompressedSize || total > MAX_GKG_UNCOMPRESSED_BYTES) throw new Error('GKG inflation exceeds its declared size');
       crc = crcUpdate(crc, chunk); pending += decoder.decode(chunk, { stream: true });
       let newline;
       while ((newline = pending.indexOf('\n')) !== -1) { row(pending.slice(0, newline)); pending = pending.slice(newline + 1); }
       if (Buffer.byteLength(pending, 'utf8') > MAX_ROW_BYTES) throw new Error('GKG row exceeds its byte limit');
     }
-    pending += decoder.decode(); if (pending) row(pending);
+    checkDeadline(); pending += decoder.decode(); if (pending) row(pending);
     if (total !== entry.uncompressedSize || (crc ^ 0xffffffff) >>> 0 !== entry.crc || entry.method === 8 && stream.bytesWritten !== entry.compressed.byteLength) throw new Error('GKG ZIP CRC or uncompressed/compressed size mismatch');
-    return { reports: candidates.values(), rows, matchedRecords };
+    return { reports: candidates.values(), rows, matchedRecords, integrity: { mode: historical ? 'https-head-size-and-zip-crc' : 'manifest-md5-and-zip-crc',
+      sha256, archiveBytes: descriptor.size, expandedBytes: total, providerMd5: historical ? null : descriptor.md5,
+      ...(historical ? { providerEtag: descriptor.etag } : {}) } };
   } finally { signal?.removeEventListener('abort', cancel); stream.destroy(); source.destroy(); }
 }
 
@@ -135,18 +171,19 @@ export async function readGkgArchive(archive, descriptor, { retrievedAt, signal,
 export function retainedGkgSnapshot(value, nowMs = Date.now()) {
   if (value?.schemaVersion !== 2 || !Number.isFinite(Date.parse(value.generatedAt)) ||
       nowMs - Date.parse(value.generatedAt) > 86400000) return null;
-  const original = validateGdeltSnapshot(value, Math.min(nowMs, Date.parse(value.generatedAt)));
+  const original = validateGdeltSnapshot(value, nowMs);
   const processedBatches = original.coverage.processedBatches.filter((batch) =>
     nowMs - Date.parse(gkgBatchTime(batch.id)) <= 86400000 && nowMs - Date.parse(batch.retrievedAt) <= 86400000);
   if (!processedBatches.length) return null;
   return validateGdeltSnapshot(createGkgSnapshot({ generatedAt: original.generatedAt, processedBatches,
-    reports: Object.values(original.categories).flatMap((category) => category.reports) }), nowMs);
+    reports: Object.values(original.categories).flatMap((category) => category.reports), catchup: original.coverage.catchup }), nowMs);
 }
 
 /** One public latest GKG batch; a failure cannot replace the published last-good sample. */
 export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, timeoutMs = 45000, previousSnapshot,
-  demandPriority = false, signal: callerSignal, archiveParser = readGkgArchive } = {}) {
-  const deadline = AbortSignal.timeout(Math.max(1, Math.min(45000, timeoutMs)));
+  demandPriority = false, repairEnabled = false, signal: callerSignal, archiveParser = readGkgArchive } = {}) {
+  const duration = Math.max(1, Math.min(45000, timeoutMs)), expiresAt = Date.now() + duration;
+  const deadline = AbortSignal.timeout(duration);
   const signal = callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
   let checkedAt = null;
   const httpError = async (response, source) => {
@@ -162,32 +199,80 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
     if (previousSnapshot === undefined) {
       try {
         const priorSignal = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
-        const response = await fetchImpl(GDELT_SNAPSHOT_URL, { signal: priorSignal, redirect: 'follow', headers: { ...HEADERS, Accept: 'application/json' } });
+        const response = await fetchBounded(fetchImpl, GDELT_SNAPSHOT_URL, { signal: priorSignal, redirect: 'follow', headers: { ...HEADERS, Accept: 'application/json' } });
         if (response.ok) previousSnapshot = await readResponseJsonCapped(response, MAX_GDELT_SNAPSHOT_BYTES, priorSignal);
         else await response.body?.cancel();
       } catch {} // No prior asset is valid on a first deployment.
     }
     if (previousSnapshot?.schemaVersion === 2) { try { previous = retainedGkgSnapshot(previousSnapshot, now()); } catch {} }
-    const manifestResponse = await fetchImpl(GKG_UPDATE_MANIFEST, { signal, redirect: 'error', headers: { ...HEADERS, Accept: 'text/plain' } });
+    const hostRetryAt = repairEnabled ? Math.max(0, ...(previous?.coverage.catchup?.attempts || []).filter((entry) => entry.httpStatus === 429).map((entry) => Date.parse(entry.retryAt))) : 0;
+    if (hostRetryAt > now()) return { status: 'skipped', code: 'unchanged', checkedAt: null, retryAfterMs: hostRetryAt - now(),
+      reason: 'GDELT provider backoff retained; no manifest or archive request issued, original source dates preserved' };
+    const manifestResponse = await fetchBounded(fetchImpl, GKG_UPDATE_MANIFEST, { signal, redirect: 'error', headers: { ...HEADERS, Accept: 'text/plain' } });
     if (!manifestResponse.ok) throw await httpError(manifestResponse, 'manifest');
     const descriptor = parseGkgUpdateManifest(await readResponseTextCapped(manifestResponse, 16384, signal), now());
     checkedAt = new Date(now()).toISOString();
-    if (previous?.coverage.processedBatches.some((batch) => batch.id === descriptor.batch)) return { status: 'skipped', code: 'unchanged',
+    const latestRetained = previous?.coverage.processedBatches.some((batch) => batch.id === descriptor.batch);
+    if (latestRetained && !repairEnabled) return { status: 'skipped', code: 'unchanged',
       batch: descriptor.batch, checkedAt, reason: 'Latest GKG batch already processed; previous snapshot preserved' };
-    const [archiveResponse, priority] = await Promise.all([
-      fetchImpl(descriptor.url, { signal, redirect: 'error', headers: { ...HEADERS, Accept: 'application/zip' } }),
-      readDemandPriority({ enabled: demandPriority, fetchImpl, now, signal }),
-    ]);
-    if (!archiveResponse.ok) throw await httpError(archiveResponse, 'archive');
-    const archive = await readResponseBytesCapped(archiveResponse, MAX_GKG_ZIP_BYTES, signal), retrievedAt = new Date(now()).toISOString();
-    const parsed = await archiveParser(archive, descriptor, { retrievedAt, signal, priority });
-    signal.throwIfAborted();
-    const processedBatches = [...(previous?.coverage.processedBatches || []), { id: descriptor.batch, retrievedAt, rows: parsed.rows, matchedRecords: parsed.matchedRecords }];
-    const reports = [...(previous ? Object.values(previous.categories).flatMap((category) => category.reports) : []), ...parsed.reports];
-    const proposed = applyDemandPriority(createGkgSnapshot({ reports, processedBatches, generatedAt: new Date(now()).toISOString() }), reports, priority);
+    const priority = await readDemandPriority({ enabled: demandPriority, fetchImpl: (url, options) => fetchBounded(fetchImpl, url, options), now, signal });
+    const processedBatches = [...(previous?.coverage.processedBatches || [])];
+    const reports = previous ? Object.values(previous.categories).flatMap((category) => category.reports) : [];
+    let compressedBytes = 0, expandedBytes = 0, acquired = 0, latestParsed = null, factualChanged = false, generatedAt = previous?.generatedAt;
+    const ingest = async (candidate) => {
+      signal.throwIfAborted();
+      if (acquired >= GKG_CATCHUP_BUDGET.maxArchives || compressedBytes + candidate.size > GKG_CATCHUP_BUDGET.maxCompressedBytes) throw new Error('GKG aggregate archive budget exceeded');
+      const archiveResponse = await fetchBounded(fetchImpl, candidate.url, { signal, redirect: 'error', headers: { ...HEADERS, Accept: 'application/zip', 'Accept-Encoding': 'identity',
+        ...(candidate.etag ? { 'If-Match': candidate.etag } : {}) } });
+      if (!archiveResponse.ok) throw await httpError(archiveResponse, 'archive');
+      if (candidate.etag && (archiveResponse.headers.get('etag') !== candidate.etag || archiveResponse.headers.get('content-length') !== String(candidate.size) ||
+          archiveResponse.headers.get('content-encoding') && archiveResponse.headers.get('content-encoding').toLowerCase() !== 'identity')) {
+        await archiveResponse.body?.cancel(); throw new Error('Historical GKG GET does not match verified HEAD');
+      }
+      const archive = await readResponseBytesCapped(archiveResponse, MAX_GKG_ZIP_BYTES, signal);
+      const entry = inspectGkgZip(archive, candidate.batch); // Reject inflation before allocating parser work.
+      if (expandedBytes + entry.uncompressedSize > GKG_CATCHUP_BUDGET.maxExpandedBytes) throw new Error('GKG aggregate expansion budget exceeded');
+      compressedBytes += archive.byteLength; expandedBytes += entry.uncompressedSize; acquired++;
+      const retrievedAt = new Date(now()).toISOString(), parsed = await archiveParser(archive, candidate, { retrievedAt, signal, priority, expiresAt });
+      signal.throwIfAborted();
+      if (repairEnabled && (!parsed.integrity || parsed.integrity.archiveBytes !== candidate.size || parsed.integrity.expandedBytes !== entry.uncompressedSize)) throw new Error('GKG parser did not retain verified integrity provenance');
+      processedBatches.push({ id: candidate.batch, retrievedAt, rows: parsed.rows, matchedRecords: parsed.matchedRecords,
+        ...(repairEnabled ? { integrity: parsed.integrity } : {}) });
+      reports.push(...parsed.reports); factualChanged = true; generatedAt = new Date(now()).toISOString();
+      return parsed;
+    };
+    // Failure of the newest batch never publishes a partial catch-up or discards last-good source facts.
+    if (!latestRetained) latestParsed = await ingest(descriptor);
+    const attemptedBatches = [], attempts = new Map((previous?.coverage.catchup?.attempts || []).map((attempt) => [attempt.id, attempt]));
+    if (repairEnabled) {
+      const gaps = gkgCoverage(processedBatches).sampleGaps.filter((id) => now() - Date.parse(gkgBatchTime(id)) <= 86400000);
+      for (const batch of gaps) {
+        if (attemptedBatches.length >= GKG_CATCHUP_BUDGET.maxRepairs || signal.aborted) break;
+        if (Date.parse(attempts.get(batch)?.retryAt) > now()) continue;
+        attemptedBatches.push(batch);
+        try {
+          const head = await fetchBounded(fetchImpl, archiveUrl(batch), { method: 'HEAD', signal, redirect: 'error', headers: { ...HEADERS, 'Accept-Encoding': 'identity' } });
+          if (!head.ok) throw await httpError(head, 'historical HEAD');
+          let candidate;
+          try { candidate = historicalGkgDescriptor(head, batch, now()); } finally { await head.body?.cancel(); }
+          await ingest(candidate); attempts.delete(batch);
+        } catch (error) {
+          const failedAt = now(), code = signal.aborted ? deadline.aborted ? 'timeout' : 'aborted' : error.name === 'TimeoutError' ? 'timeout' : error.httpStatus ? 'http-error' : 'invalid-response';
+          attempts.set(batch, { id: batch, checkedAt: new Date(failedAt).toISOString(), retryAt: new Date(failedAt + Math.max(300000, error.retryAfterMs || 0)).toISOString(), code,
+            ...(error.httpStatus ? { httpStatus: error.httpStatus } : {}) });
+          // A deadline/cancellation prevents more requests; an upstream Retry-After prevents a burst against the same host.
+          if (signal.aborted || error.retryAfterMs > 0) break;
+        }
+      }
+    }
+    checkedAt = new Date(now()).toISOString();
+    const catchup = repairEnabled ? { checkedAt, attemptedBatches, attempts: [...attempts.values()] } : undefined;
+    const base = createGkgSnapshot({ reports, processedBatches, generatedAt, catchup });
+    const proposed = factualChanged ? applyDemandPriority(base, reports, priority) : { ...base, categories: previous.categories };
     const snapshot = validateGdeltSnapshot(proposed, now()), bytes = new TextEncoder().encode(`${JSON.stringify(snapshot)}\n`);
     if (bytes.byteLength > MAX_GDELT_SNAPSHOT_BYTES) throw new Error('GKG snapshot exceeds 1 MiB');
-    return { status: 'generated', code: 'generated', checkedAt, snapshot, bytes, batch: descriptor.batch, archiveBytes: descriptor.size, rows: parsed.rows, matchedRecords: parsed.matchedRecords,
+    return { status: 'generated', code: factualChanged ? 'generated' : 'checked', checkedAt, factualChanged, snapshot, bytes, batch: descriptor.batch,
+      archiveBytes: compressedBytes, expandedBytes, archives: acquired, rows: latestParsed?.rows || 0, matchedRecords: latestParsed?.matchedRecords || 0,
       sampling: { mode: priority.mode, reason: priority.reason, publishedInterests: priority.interests.length, maximumDemandShare: 0.25 } };
   } catch (error) {
     const timedOut = deadline.aborted || error.name === 'TimeoutError';
@@ -254,13 +339,16 @@ export async function writeGdeltSnapshot(outputDir, result) {
 }
 
 async function main() {
-  const result = await generateGkgSnapshot({ demandPriority: process.env.INTELLIGENCE_DEMAND_PRIORITY !== '0' });
+  const result = await generateGkgSnapshot({ demandPriority: process.env.INTELLIGENCE_DEMAND_PRIORITY !== '0', repairEnabled: process.env.INTELLIGENCE_GKG_REPAIR_ENABLED === '1' });
   const destination = await writeGdeltSnapshot(process.argv[2] || '.cache/intelligence-snapshots', result);
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `status=${result.status}\n`);
   console.log(JSON.stringify({ status: result.status, ...(result.reason ? { reason: result.reason, category: result.category } : {}),
     ...(destination ? { destination, bytes: result.bytes.byteLength, generatedAt: result.snapshot.generatedAt,
       kind: result.snapshot.kind, batch: result.batch, archiveBytes: result.archiveBytes, rows: result.rows, matchedRecords: result.matchedRecords,
       sampling: result.sampling,
+      ...(result.snapshot.coverage.catchup ? { catchup: { pending: result.snapshot.coverage.catchup.pendingBatches.length,
+        deferred: result.snapshot.coverage.catchup.deferredBatches.length, capped: result.snapshot.coverage.catchup.cappedBatches.length,
+        attempted: result.snapshot.coverage.catchup.attemptedBatches.length }, factualChanged: result.factualChanged, expandedBytes: result.expandedBytes, archives: result.archives } : {}),
       counts: Object.fromEntries(GDELT_SNAPSHOT_CATEGORIES.map((category) => [category, result.snapshot.categories[category].reports.length])) } : {}) }));
 }
 

@@ -147,3 +147,56 @@ test('one thousand retained points support accelerated frame-local scenes throug
   t.diagnostic(`600 accelerated local membership frames including assertions: ${(performance.now() - began).toFixed(1)} ms; browser/GPU timing is separate.`);
   assert.equal(requests, 11); controller.destroy();
 });
+
+const conflictResponse = (requestedVersion = 'archive:1', currentVersion = 'archive:2') => Response.json({ schemaVersion: 1, configured: true, available: false,
+  scope: { id: WORLD_SCENE_SCOPE }, errorCode: 'scene-version-changed', requestedVersion, currentVersion }, { status: 409 });
+
+test('one edition conflict restarts from page one without mixing revisions, and the accepted fresh buffer remains usable', async (t) => {
+  const old = await point('old'), fresh = await point('fresh'), final = await point('final'); let pages = 0, calls = 0;
+  const controller = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async (url) => {
+    calls++; const query = new URL(url, 'https://example.test').searchParams;if(query.has('metadata'))return Response.json(payload());
+    pages++;
+    if(pages===1){assert.equal(query.has('cursor'),false);return Response.json(payload(start,[old],{counts:{returned:1,eligible:2,omitted:1},cursor:'YQ'}));}
+    if(pages===2){assert.equal(query.get('cursor'),'YQ');return conflictResponse();}
+    if(pages===3){assert.equal(query.has('cursor'),false);return Response.json(payload(start,[fresh],{version:'archive:2',currentVersion:'archive:2',counts:{returned:1,eligible:2,omitted:1},cursor:'Yg'}));}
+    assert.equal(query.get('cursor'),'Yg');return Response.json(payload(start,[final],{version:'archive:2',currentVersion:'archive:2',counts:{returned:1,eligible:2,omitted:1}}));
+  } });
+  t.after(()=>controller.destroy());
+  await controller.open();assert.equal(await controller.select(start),true);
+  assert.deepEqual(controller.getState().selection.points.map((p)=>p.title).sort(),['final','fresh']);assert.equal(controller.getState().selection.version,'archive:2');
+  assert.equal(controller.getState().metadata.currentVersion,'archive:2');assert.equal(controller.advance(after(start,1)),true);assert.equal(calls,5);controller.destroy();
+});
+
+test('same-time refresh retains its accepted scene during a restart, while another date never borrows that frame', async (t) => {
+  const old=await point('accepted'), fresh=await point('corrected'), gate=Promise.withResolvers(), began=Promise.withResolvers(), otherGate=Promise.withResolvers();let metadataCalls=0,pages=0;
+  const controller=createWorldSceneController({documentRef:documentFixture(),fetchImpl:async(url)=>{
+    const query=new URL(url,'https://example.test').searchParams;
+    if(query.has('metadata'))return Response.json(payload(null,[],++metadataCalls>1?{version:'archive:2',currentVersion:'archive:2'}:{}));
+    if(++pages===1)return Response.json(payload(start,[old]));
+    if(pages===2)return Response.json(payload(start,[fresh],{version:'archive:2',currentVersion:'archive:2',counts:{returned:1,eligible:2,omitted:1},cursor:'YQ'}));
+    if(pages===3)return conflictResponse('archive:2','archive:3');
+    if(pages===4){began.resolve();return gate.promise;}return otherGate.promise;
+  }});
+  t.after(()=>controller.destroy());
+  await controller.open();await controller.select(start);const previous=controller.getState().selection;
+  await controller.refresh();await began.promise;assert.equal(controller.getState().selection,previous);assert.equal(controller.getState().loading,true);assert.equal(controller.getState().selectedAt,start);
+  const refreshing=controller.select(start);gate.resolve(Response.json(payload(start,[fresh],{version:'archive:3',currentVersion:'archive:3'})));assert.equal(await refreshing,true);
+  assert.equal(controller.getState().selection.version,'archive:3');assert.deepEqual(controller.getState().selection.points.map((p)=>p.title),['corrected']);
+  const nextAt=after(start,8*DAY),other=controller.select(nextAt);assert.equal(controller.getState().selection,null);assert.equal(controller.getState().selectedAt,nextAt);
+  controller.live();otherGate.resolve(Response.json(payload(nextAt,[],{version:'archive:3',currentVersion:'archive:3'})));
+  assert.equal(await other,false);assert.equal(controller.getState().selection,null);controller.destroy();
+});
+
+test('a second edition conflict stops after one restart, and arbitrary400/other409 responses never retry', async (t) => {
+  const p=await point('candidate');
+  for(const status of ['conflict',400,409]){
+    let pages=0;const controller=createWorldSceneController({documentRef:documentFixture(),fetchImpl:async(url)=>{
+      if(new URL(url,'https://example.test').searchParams.has('metadata'))return Response.json(payload());
+      pages++;if(status==='conflict')return pages%2===1?Response.json(payload(start,[p],{counts:{returned:1,eligible:2,omitted:1},cursor:'YQ'})):conflictResponse();
+      return Response.json({error:'Invalid bounded scene query',errorCode:'different-conflict'},{status});
+    }});
+    t.after(()=>controller.destroy());
+    await controller.open();assert.equal(await controller.select(start),false);assert.equal(pages,status==='conflict'?4:1);assert.equal(controller.getState().selection,null);
+    assert.match(controller.getState().error,status==='conflict'?/updating/:new RegExp(`HTTP ${status}`));controller.destroy();
+  }
+});

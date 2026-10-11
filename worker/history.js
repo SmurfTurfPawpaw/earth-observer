@@ -1,5 +1,6 @@
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { groupReports } from '../src/core/intelligence-grouping.js';
+import { collectionFactsDigest } from '../src/core/collection-facts.js';
 
 export const HISTORY_MAX_SOURCES = 20;
 export const HISTORY_MAX_OBSERVATIONS = 1200;
@@ -91,6 +92,12 @@ function canonicalSnapshot(source, records, coordinates = []) {
   const value = { schemaVersion: 1, source, records: canonical, coordinates: points };
   if (encoded(value).byteLength > HISTORY_MAX_SNAPSHOT_BYTES) throw new TypeError('History snapshot exceeded its byte limit');
   return value;
+}
+
+/** The existing immutable source schema/order remains authoritative for receipts. */
+export async function historySnapshotIdentity(source, records, coordinates = []) {
+  const value = canonicalSnapshot(source, records, coordinates);
+  return { id: await factsHash(value), recordCount: value.records.length };
 }
 
 function observation(value, expectedSource) {
@@ -270,12 +277,10 @@ function preparedPayload(payload) {
 export class PreparedBaselineConflict extends Error {}
 
 async function preparedFactsDigest(payload) {
-  const records = preparedPayload(payload).indexRecords;
-  records.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  return hash(records.map(({ retrievedAt: _retrievedAt, ...facts }) => facts));
+  return collectionFactsDigest(preparedPayload(payload).indexRecords);
 }
 async function assertPreparedCandidate(previous, value, inputDigest, matchesBaseline) {
-  if (matchesBaseline && !await matchesBaseline(previous?.payload)) throw new PreparedBaselineConflict('Prepared baseline changed');
+  if (matchesBaseline && !await matchesBaseline(previous?.payload, previous)) throw new PreparedBaselineConflict('Prepared baseline changed');
   if (previous?.schemaVersion === 1 && iso(previous.collectedAt) === value.collectedAt &&
       await preparedFactsDigest(previous.payload) !== inputDigest)
     throw new PreparedBaselineConflict('The same collection capture already contains different source facts');
@@ -305,13 +310,14 @@ export async function writePreparedIntelligence(env, payload, { now = Date.now, 
 }
 
 /** Compact operational checks preserve all factual records/capture dates and never publish history/world. */
-export async function writePreparedOperationalCheck(env, { checkedAt, inputDigest }, updatePayload) {
+export async function writePreparedOperationalCheck(env, { checkedAt, inputDigest }, updatePayload, { matchesBaseline } = {}) {
   if (!configured(env)) return { configured: false, stored: false };
   checkedAt = iso(checkedAt);
   if (!digestId(inputDigest) || typeof updatePayload !== 'function') throw new TypeError('Use a checked factual baseline');
   const stored = await conditionalUpdate(env.EARTH_STORE, PREPARED_INTELLIGENCE_KEY, async (previous) => {
     if (previous?.schemaVersion !== 1 || await preparedFactsDigest(previous.payload) !== inputDigest)
       throw new PreparedBaselineConflict('Prepared factual baseline changed');
+    if (matchesBaseline && !await matchesBaseline(previous)) throw new PreparedBaselineConflict('Prepared capture or source semantics changed');
     const previousCheck = iso(previous.checkedAt || previous.collectedAt);
     if (checkedAt < previousCheck) return previous;
     const payload = preparedPayload(await updatePayload(previous.payload));

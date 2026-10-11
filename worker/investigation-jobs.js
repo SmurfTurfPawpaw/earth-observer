@@ -71,13 +71,16 @@ function lease(row) { return { ...publicJob(row), itemId: row.item_id, sourceRec
   snapshotId: row.snapshot_id, fence: row.fence, leaseToken: row.lease_token, leaseUntil: row.lease_until }; }
 
 /** Validates current retained event/revision and creates no provider traffic. Corrections supersede unfinished input. */
-export async function enqueueInvestigation(env, input, { now = Date.now } = {}) {
+export async function enqueueInvestigation(env, input, { now = Date.now, signal } = {}) {
+  signal?.throwIfAborted();
   if (!closed(input, ['eventId', 'inputRevision', 'policyId', 'priority']) || !EVENT_ID.test(input.eventId || '') ||
     !isWorldDigest(input.inputRevision) || input.policyId !== undefined && input.policyId !== USGS_DETAIL_POLICY.id ||
     input.priority !== undefined && (!Number.isInteger(input.priority) || input.priority < 0 || input.priority > 10))
     throw new TypeError('Use one retained USGS event, input revision and fixed policy');
   if (!await schema(env)) return { configured: false, enqueued: false };
+  signal?.throwIfAborted();
   const current = await readWorldEvents(env, { id: input.eventId, limit: 1 }, { now });
+  signal?.throwIfAborted();
   const event = current.events?.[0];
   if (!current.available || !event || event.evidence?.revision !== input.inputRevision ||
     event.evidence.sourceId !== 'usgs' || !providerId(event.evidence.sourceRecordId) || !isWorldDigest(event.evidence.snapshotId))
@@ -85,22 +88,27 @@ export async function enqueueInvestigation(env, input, { now = Date.now } = {}) 
   const capturedAt = worldTime(event.capture.capturedAt), recordedAt = worldTime(event.capture.publishedAt);
   const jobId = `investigation:${await worldHash([input.eventId, input.inputRevision, USGS_DETAIL_POLICY.id])}`;
   const db = primary(env), priority = input.priority ?? 0;
+  const existing = (await rows(db, `SELECT j.*,h.job_id AS head_id FROM earth_investigation_jobs j
+    LEFT JOIN earth_investigation_heads h ON h.event_id=j.event_id AND h.policy_id=j.policy_id WHERE j.job_id=?`, [jobId], signal))[0];
+  if (existing?.head_id === jobId && existing.state !== 'superseded' && existing.priority >= priority)
+    return { configured: true, enqueued: false, reused: true, job: publicJob(existing) };
   await batch(db, [
     db.prepare(`INSERT INTO earth_investigation_jobs
       (job_id,event_id,item_id,input_revision,policy_id,source_record_id,snapshot_id,basis_captured_at,basis_recorded_at,
        state,priority,due_at,attempt_count,fence,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,'pending',?,${DB_NOW},0,0,${DB_NOW},${DB_NOW})
-      ON CONFLICT(event_id,input_revision,policy_id) DO UPDATE SET priority=MAX(earth_investigation_jobs.priority,excluded.priority)`)
+      ON CONFLICT(event_id,input_revision,policy_id) DO UPDATE SET priority=MAX(earth_investigation_jobs.priority,excluded.priority)
+      WHERE excluded.priority > earth_investigation_jobs.priority`)
       .bind(jobId, input.eventId, event.evidence.itemId, input.inputRevision, USGS_DETAIL_POLICY.id,
         event.evidence.sourceRecordId, event.evidence.snapshotId, capturedAt, recordedAt, priority),
     db.prepare(`INSERT INTO earth_investigation_heads (event_id,policy_id,job_id,basis_recorded_at,updated_at)
       VALUES (?,?,?,?,${DB_NOW}) ON CONFLICT(event_id,policy_id) DO UPDATE
       SET job_id=excluded.job_id,basis_recorded_at=excluded.basis_recorded_at,updated_at=${DB_NOW}
-      WHERE excluded.basis_recorded_at > earth_investigation_heads.basis_recorded_at OR
+      WHERE excluded.job_id <> earth_investigation_heads.job_id AND (excluded.basis_recorded_at > earth_investigation_heads.basis_recorded_at OR
         (excluded.basis_recorded_at = earth_investigation_heads.basis_recorded_at AND
           ((SELECT basis_captured_at FROM earth_investigation_jobs WHERE job_id=excluded.job_id) >
             (SELECT basis_captured_at FROM earth_investigation_jobs WHERE job_id=earth_investigation_heads.job_id)
-            OR excluded.job_id = earth_investigation_heads.job_id))`)
+            )))`)
       .bind(input.eventId, USGS_DETAIL_POLICY.id, jobId, recordedAt),
     db.prepare(`UPDATE earth_investigation_jobs SET state='superseded',
       superseded_by=(SELECT job_id FROM earth_investigation_heads h WHERE h.event_id=earth_investigation_jobs.event_id AND h.policy_id=earth_investigation_jobs.policy_id),
@@ -111,12 +119,15 @@ export async function enqueueInvestigation(env, input, { now = Date.now } = {}) 
     db.prepare(`UPDATE earth_investigation_attempts SET state='superseded',finished_at=COALESCE(finished_at,${DB_NOW})
       WHERE state='running' AND job_id IN (SELECT job_id FROM earth_investigation_jobs WHERE event_id=? AND policy_id=? AND state='superseded')`)
       .bind(input.eventId, USGS_DETAIL_POLICY.id),
-    db.prepare(`UPDATE earth_investigation_jobs SET state='pending',superseded_by=NULL,lease_token=NULL,lease_until=NULL,
-      due_at=${DB_NOW},updated_at=${DB_NOW},finished_at=NULL WHERE job_id=? AND state='superseded' AND artifact_key IS NULL AND attempt_count<?
+    db.prepare(`UPDATE earth_investigation_jobs SET state=CASE WHEN attempt_count<? THEN 'pending' ELSE 'failed' END,
+      superseded_by=NULL,lease_token=NULL,lease_until=NULL,artifact_key=NULL,artifact_sha256=NULL,
+      error_code=CASE WHEN attempt_count<? THEN NULL ELSE COALESCE(error_code,'input_changed') END,
+      due_at=${DB_NOW},updated_at=${DB_NOW},finished_at=CASE WHEN attempt_count<? THEN NULL ELSE ${DB_NOW} END
+      WHERE job_id=? AND state='superseded'
       AND EXISTS(SELECT 1 FROM earth_investigation_heads h WHERE h.job_id=earth_investigation_jobs.job_id)`)
-      .bind(jobId, USGS_DETAIL_POLICY.maxAttempts),
-  ]);
-  const saved = (await rows(db, 'SELECT * FROM earth_investigation_jobs WHERE job_id=?', [jobId]))[0];
+      .bind(USGS_DETAIL_POLICY.maxAttempts, USGS_DETAIL_POLICY.maxAttempts, USGS_DETAIL_POLICY.maxAttempts, jobId),
+  ], signal);
+  const saved = (await rows(db, 'SELECT * FROM earth_investigation_jobs WHERE job_id=?', [jobId], signal))[0];
   if (!saved) throw failure('storage_unavailable');
   return { configured: true, enqueued: saved.state !== 'superseded', job: publicJob(saved) };
 }
@@ -128,6 +139,13 @@ export async function claimInvestigation(env, { workerId } = {}, { signal } = {}
   if (!await schema(env)) return { configured: false, job: null };
   signal?.throwIfAborted();
   const db = primary(env), token = nonce();
+  // A read-only idle gate avoids repeated recovery/claim writes when no work is due.
+  // The subsequent conditional SQL batch remains the authority under concurrency.
+  const due = await rows(db, `SELECT j.job_id FROM earth_investigation_jobs j
+    JOIN earth_investigation_heads h ON h.job_id=j.job_id WHERE j.policy_id=? AND
+      ((j.state IN ('pending','retry') AND j.attempt_count<? AND j.due_at<=${DB_NOW}) OR
+        (j.state='running' AND j.lease_until<=${DB_NOW})) LIMIT 1`, [USGS_DETAIL_POLICY.id, USGS_DETAIL_POLICY.maxAttempts], signal);
+  if (!due.length) return { configured: true, job: null };
   const output = await batch(db, [
     db.prepare(`UPDATE earth_investigation_attempts SET state='lease_expired',error_code='lease_expired',finished_at=COALESCE(finished_at,${DB_NOW})
       WHERE state='running' AND EXISTS(SELECT 1 FROM earth_investigation_jobs j WHERE j.job_id=earth_investigation_attempts.job_id

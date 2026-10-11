@@ -3,10 +3,16 @@
 Reviewed 11 October 2026 against foundation baseline `822d73a`. This is a source and
 code audit, not a deployment, freshness, completeness or uptime assertion. The
 machine-readable ledger is [source-capabilities.js](../src/core/source-capabilities.js),
-schema 1, revision 2. `getSourceCapability(id)` returns a frozen reviewed entry or
+schema 1, revision 3. `getSourceCapability(id)` returns a frozen reviewed entry or
 `null`; it does not enable an adapter. The existing public-hosting provider policy
 still governs admission. Actual manifests, outages and retained evidence restrict
 the ledger further at query time.
+
+Foundation update, 12 October: the separate USGS archive is now hosted with
+completed count-matched M4.5+ coverage from 2024-10-12 to 2026-10-11. Optional GDELT
+missed-batch repair is implemented behind a disabled rollout flag with explicit
+budget and provenance; its production acceptance is a separate gate. Neither
+addition establishes guaranteed unattended collection cadence.
 
 ## Retained intelligence feeds
 
@@ -80,8 +86,8 @@ that was available at the historical time.
 
 | Candidate | Useful contribution | Verified route/constraints | Current status |
 | --- | --- | --- | --- |
-| USGS/GDACS archives | Scientific and modeled disaster history | Fixed official date-range endpoints; bounded pagination, revision semantics and source limits need an adapter | Not implemented |
-| GDELT archives | Two-year discovery/index coverage and media context | Official bulk files/codebooks; checkpointed Node ingestion before compact hosted publication. No automatic right to republish publisher content | Latest batch only; no archive or independent cloud bulk ingestion |
+| USGS/GDACS archives | Scientific and modeled disaster history | Fixed official date-range endpoints; bounded pagination, revision semantics and source limits need an adapter | USGS M4.5+ count-matched archive implemented and hosted 2024-10-12 to 2026-10-11; GDACS archive remains a proposal |
+| GDELT archives | Discovery/index coverage and media context | Official bulk files/codebooks; checkpointed Node ingestion before compact hosted publication. No automatic right to republish publisher content | Opt-in latest-first repair of at most two explicit missed batches/run in a retained 24-hour span is implemented behind a disabled rollout flag; no two-year discovery archive |
 | ReliefWeb | Humanitarian situation reports, disasters and dated source links | Free read-only API; pre-approved `appname` required since November 2025; 1,000 calls/day and 1,000 results/call. Partner report copyright remains separate | Approval/account eligibility unverified; no adapter |
 | Eurostat | Trade, prices, housing and regional indicators for mechanism investigations | Public statistical API and source-credited reuse; individual notices/third-party exceptions apply. Preserve units, periods, revisions and dataset geography | No adapter; would add periodic series, not breaking-event pins |
 | Wikidata | Stable place/organization/asset identifiers and attributed relations | Structured data CC0; API/bulk access available. Check each referenced statement and qualifiers; linked text/images are separate | No adapter; not a source of verified real-time event truth |

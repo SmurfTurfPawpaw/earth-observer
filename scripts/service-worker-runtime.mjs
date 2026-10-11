@@ -25,7 +25,6 @@ const OFM_ENTRIES = 64, OFM_BYTES = 16 * 1024 * 1024;
 ${ofmCacheKind.toString()}
 let ofmLedger, ofmWrites = Promise.resolve(), ofmCopies = 0;
 const offlineClients = new Map();
-let shellRevalidation, shellCheckedAt = -Infinity, shellAvailable = true;
 self.addEventListener('install', event => event.waitUntil((async () => {
   if (!SHELL) throw new Error('The fixed public shell is not configured');
   const cache = await caches.open(RELEASE);
@@ -122,29 +121,6 @@ async function savedShell() {
     !Object.entries(DOCUMENT_HEADERS).every(([name, value]) => response.headers.get(name) === value)) return null;
   const bytes = await boundedBytes(response, SHELL_BYTES, 3500);
   return bytes && await digest(bytes) === SHELL.htmlDigest ? documentResponse(bytes) : null;
-}
-function revalidateShell(event) {
-  if (self.navigator?.onLine === false) { reportFallback(event, 'Saved app loaded offline. Live sources may be unavailable.'); return; }
-  if (!shellRevalidation && Date.now() - shellCheckedAt >= 30000) {
-    shellCheckedAt = Date.now();
-    shellRevalidation = (async () => {
-      let response;
-      try {
-        const url = new URL(SCOPE, location.origin).href;
-        response = await network(new Request(url, {credentials:'omit', redirect:'error', mode:'same-origin'}), 'no-cache');
-        shellAvailable = publicShellResponse(response, url) && (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() === 'text/html';
-      } catch { shellAvailable = false; }
-      finally {
-        // Observe availability only: never read, replay or persist request-specific HTML.
-        void response?.body?.cancel().catch(() => {});
-        shellRevalidation = null;
-      }
-      return shellAvailable;
-    })();
-  }
-  background(event, (shellRevalidation || Promise.resolve(shellAvailable)).then(available => {
-    if (!available) reportFallback(event, 'Saved app loaded while the server was unavailable. Live sources may be unavailable.');
-  }));
 }
 function publicMapResponse(response) {
   return response.status === 200 && !['opaque', 'opaqueredirect', 'error'].includes(response.type) && !response.redirected &&
@@ -266,16 +242,25 @@ self.addEventListener('fetch', event => {
     // The sole universal document has no query-dependent or private variant. All other routes remain network-owned.
     if(url.origin !== location.origin || url.pathname !== SCOPE || url.search) return;
     event.respondWith((async () => {
-      let cached;
-      try { cached = await savedShell(); } catch {}
-      if (cached) { revalidateShell(event); return cached; }
       let response;
       try {
         if (self.navigator?.onLine === false) throw new Error('Offline');
-        response = await network(request);
-        if (!response.ok) throw new Error('The document is unavailable');
-        return response;
+        // Navigation remains network-owned. New releases and request-specific
+        // documents pass through unchanged; none enter offline CacheStorage.
+        response = await network(request, 'no-cache');
+        const type = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (response.status < 500 || response.redirected || type !== 'text/html' ||
+            /private|no-store/i.test(response.headers.get('cache-control') || '') || response.headers.has('set-cookie') ||
+            response.url && response.url !== request.url) return response;
+        throw new Error('The public document is unavailable');
       } catch {
+        let cached;
+        try { cached = await savedShell(); } catch {}
+        if (cached) {
+          reportFallback(event, self.navigator?.onLine === false ? 'Saved app loaded offline. Live sources may be unavailable.' :
+            'Saved app loaded while the server was unavailable. Live sources may be unavailable.');
+          return cached;
+        }
         return response || new Response('Offline. Reconnect for the first visit.', {status:503});
       }
     })()); return;

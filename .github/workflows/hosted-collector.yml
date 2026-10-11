@@ -2,7 +2,7 @@ name: Collect fixed hosted sources
 
 on:
   schedule:
-    - cron: '3-58/5 * * * *'
+    - cron: '4-59/5 * * * *'
   workflow_dispatch:
 
 permissions:

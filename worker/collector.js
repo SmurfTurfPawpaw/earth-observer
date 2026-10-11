@@ -7,6 +7,10 @@ import { createWorkerFetch } from './fetch.js';
 import { createWorkerMiddleware } from './middleware.js';
 import { appendHistorySnapshot, readPreparedIntelligence, checkPreparedIntelligence, writePreparedIntelligence, PreparedBaselineConflict } from './history.js';
 import { projectWorldCollection } from './world-model.js';
+import { collectionFactsDigest } from '../src/core/collection-facts.js';
+import { collectionSemantics, matchesCollectionBaseline, checkCollectionOperational, fitsCollectionOperationalSources } from './collection-check.js';
+import { readCollectionCompletion } from './collection-completion.js';
+import { publishCollectionRevision } from './collection-updates.js';
 
 export const COLLECTOR_PLUGINS = Object.freeze([
   Object.freeze({ id: 'usgs', name: 'USGS earthquakes', endpoint: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson',
@@ -92,6 +96,61 @@ export async function persistEarthCollection(env, input, { now = Date.now, match
     indexConfigured: Boolean(env.EARTH_DB?.prepare), world, prepared: prepared || null, status: failures.length ? 'partial' : 'stored' };
 }
 
+/** Hosted-only admission: completed unchanged facts become operational checks.
+ * Explicit uploaded publication/retries retain their existing full-capture contract.
+ */
+export async function persistHostedCollection(env, input, { now = Date.now } = {}) {
+  const packet = collectionPacket(input, now);
+  const prepared = await readPreparedIntelligence(env, { now });
+  const semantics = prepared ? collectionSemantics(prepared.payload) : null;
+  if (!prepared || semantics === null || !env.EARTH_DB?.prepare || !env.EARTH_DB?.batch)
+    return persistEarthCollection(env, packet, { now });
+  const inputDigest = await collectionFactsDigest(prepared.payload.indexRecords);
+  const matches = current => matchesCollectionBaseline(current, prepared, inputDigest, semantics);
+  let completion = await readCollectionCompletion(env, prepared, inputDigest, { now });
+  const partial = () => ({ configured: true, stored: false, collectedAt: prepared.collectedAt,
+    checkedAt: packet.collectedAt, snapshots: [], failures: ['The original prepared capture could not prove complete publication; no newer capture was substituted'], status: 'partial' });
+  if (!completion.available) return partial();
+  let completionRepaired = false, notificationRepaired = false;
+  if (!completion.complete) {
+    if (!completion.receiptsComplete) {
+      const retained = { schemaVersion: 1, collectedAt: prepared.collectedAt, payload: { ...prepared.payload,
+        sources: prepared.payload.sources.map(source => completion.captures.some(capture => capture.source === source.id) &&
+          !['ready', 'stale'].includes(source.status) ? { ...source, status: 'stale', stale: true } : source) } };
+      const repaired = await persistEarthCollection(env, retained, { now,
+        matchesBaseline: (_payload, current) => matches(current) });
+      if (!repaired.stored || !repaired.prepared?.promoted || repaired.prepared.collectedAt !== prepared.collectedAt ||
+          repaired.prepared.inputDigest !== inputDigest) return partial();
+      completionRepaired = true;
+    }
+    // Re-read the prepared pointer before announcing the exact original capture.
+    const current = await readPreparedIntelligence(env, { now });
+    if (!current || !await matches({ schemaVersion: 1, ...current })) throw new PreparedBaselineConflict('Prepared capture changed during repair');
+    if (!completion.notificationComplete) {
+      const repaired = await publishCollectionRevision(env, { at: prepared.collectedAt, digest: inputDigest,
+        recordCount: prepared.payload.indexRecords.length });
+      if (!repaired.stored || repaired.superseded || repaired.collectedAt !== prepared.collectedAt || repaired.inputDigest !== inputDigest)
+        return partial();
+      notificationRepaired = true; completionRepaired = true;
+    }
+    completion = await readCollectionCompletion(env, prepared, inputDigest, { now });
+    if (!completion.available || !completion.complete) return partial();
+  }
+  const candidateSemantics = collectionSemantics(packet.payload);
+  // A valid maximum batch ledger can exceed the external compact source envelope.
+  // Select full publication before attempting any operational mutation; other
+  // validation errors retain their ordinary bounded failure behavior.
+  if (!fitsCollectionOperationalSources(packet.payload.sources) || candidateSemantics !== semantics ||
+      await collectionFactsDigest(packet.payload.indexRecords) !== inputDigest) {
+    const result = await persistEarthCollection(env, packet, { now });
+    return { ...result, ...(completionRepaired ? { completionRepaired, notificationRepaired } : {}) };
+  }
+  const checked = await checkCollectionOperational(env, { collectedAt: packet.collectedAt,
+    inputDigest, sources: packet.payload.sources }, { now, prepared, matchesBaseline: matches });
+  if (checked.conflict) throw new PreparedBaselineConflict('Prepared capture changed before its operational check');
+  return { ...checked, ...(completionRepaired ? { completionRepaired, notificationRepaired } : {}) };
+}
+
 /** Fixed adapters run independently of all visitor map/layer toggles. Trigger provisioning belongs to the host. */
 export function collectEarthSources(env = {}, _ctx = {}, { now = Date.now, fetchImpl = fetch, snapshotReader } = {}) {
   const owner = env.EARTH_STORE || env;
@@ -102,7 +161,7 @@ export function collectEarthSources(env = {}, _ctx = {}, { now = Date.now, fetch
     if (!response.ok) throw new Error('Fixed-source collection did not produce an accepted response');
     const payload = await response.json();
     const packet = collectionPacket({ schemaVersion: 1, collectedAt: new Date(now()).toISOString(), payload }, now);
-    const publication = await persistEarthCollection(env, packet, { now });
+    const publication = await persistHostedCollection(env, packet, { now });
     return { ...publication, ...(!publication.configured ? { packet } : {}), plugins: COLLECTOR_PLUGINS.map((plugin) => plugin.id) };
   })().finally(() => { if (pending.get(owner) === work) pending.delete(owner); });
   pending.set(owner, work); return work;
