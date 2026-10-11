@@ -26,25 +26,36 @@ export async function generateEonetSnapshot({ fetchImpl = fetch, now = Date.now,
   const previous = retryState(previousRetryState, now());
   if (previous.retryAt > now()) return { status: 'skipped', reason: 'EONET acquisition paused by persisted provider backoff; previous snapshot preserved', retryState: previous };
   const lastAttemptAt = new Date(now()).toISOString(), signal = AbortSignal.timeout(timeoutMs);
+  let upstream;
   try {
     const response = await fetchImpl(EONET_QUERY_URL, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store', headers: HEADERS });
+    const mediaType = (response.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
+    upstream = { status: response.status, mediaType: mediaType.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 80) };
     if (!response.ok) {
       const retryAfterMs = retryAfter(response, now()); await response.body?.cancel();
       throw Object.assign(new Error(`EONET HTTP ${response.status}`), { httpStatus: response.status, retryAfterMs });
     }
-    if (!(response.headers.get('content-type') || '').toLowerCase().includes('application/json')) { await response.body?.cancel(); throw new Error('EONET response is not JSON metadata'); }
-    const payload = await readResponseJsonCapped(response, EONET_UPSTREAM_MAX_BYTES, signal);
+    // This fixed NASA endpoint has returned valid JSON labeled application/rss+xml.
+    // The observed header exception never bypasses bounded JSON/schema validation.
+    if (!['application/json', 'application/rss+xml'].includes(mediaType)) { await response.body?.cancel(); throw new Error('EONET response is not JSON metadata'); }
+    let payload;
+    try { payload = await readResponseJsonCapped(response, EONET_UPSTREAM_MAX_BYTES, signal); }
+    catch (error) {
+      if (error instanceof SyntaxError) throw new Error('EONET response is not valid JSON metadata');
+      throw error;
+    }
     signal.throwIfAborted();
     const retrievedAt = new Date(now()).toISOString();
     const snapshot = await createEonetSnapshot(payload, { retrievedAt, generatedAt: new Date(now()).toISOString(), nowMs: now() });
     signal.throwIfAborted();
     const bytes = new TextEncoder().encode(`${JSON.stringify(snapshot)}\n`);
     if (bytes.byteLength > EONET_SNAPSHOT_MAX_BYTES) throw new Error('Normalized EONET snapshot exceeds 100 KiB');
-    return { status: 'generated', snapshot, bytes,
+    return { status: 'generated', snapshot, bytes, upstream,
       retryState: { failures: 0, retryAt: 0, lastAttemptAt, lastSuccessAt: retrievedAt } };
   } catch (error) {
     const failures = Math.min(6, previous.failures + 1);
-    return { status: 'skipped', reason: `${error.name === 'TimeoutError' ? 'EONET request timed out' : error.message}; previous snapshot preserved`,
+    const reason = error.name === 'TimeoutError' ? 'EONET request timed out' : String(error.message || 'EONET acquisition unavailable').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160);
+    return { status: 'skipped', reason: `${reason}; previous snapshot preserved`, ...(upstream ? { upstream } : {}),
       retryState: { failures, retryAt: now() + Math.max(Math.min(300000 * 2 ** (failures - 1), 3600000), error.retryAfterMs || 0),
         lastAttemptAt, lastSuccessAt: previous.lastSuccessAt } };
   }
@@ -79,7 +90,7 @@ async function main() {
   await mkdir(path.dirname(stateFile), { recursive: true });
   await writeFile(stateFile, `${JSON.stringify(result.retryState)}\n`);
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `status=${result.status}\n`);
-  console.log(JSON.stringify({ status: result.status, ...(result.reason ? { reason: result.reason } : {}), retryAt: result.retryState.retryAt || null,
+  console.log(JSON.stringify({ status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.upstream ? { upstream: result.upstream } : {}), retryAt: result.retryState.retryAt || null,
     ...(destination ? { destination, bytes: result.bytes.byteLength, generation: result.snapshot.generation,
       retrievedAt: result.snapshot.retrievedAt, generatedAt: result.snapshot.generatedAt, coverage: result.snapshot.coverage } : {}) }));
 }

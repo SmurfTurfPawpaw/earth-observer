@@ -42,9 +42,22 @@ https://eonet.gsfc.nasa.gov/api/v3/events?category=wildfires,severeStorms,volcan
 
 The scheduled workflow runs at minutes 7 and 37, at most 48 scheduled
 opportunities per day. Manual dispatches are additional opportunities. A
-15-second deadline, 2 MiB decoded response limit, JSON media-type check and
+15-second deadline, 2 MiB decoded response limit, reviewed media-type check and
 redirect rejection bound that single request. Visitor text, country filters
 and arbitrary URLs never change the acquisition URL.
+
+The fixed endpoint has an observed content-type inconsistency. A single local
+diagnostic completed at **2026-10-11T11:53:15.734Z** with HTTP 200 and
+`application/rss+xml; charset=utf-8`, while its 68,901-byte body was valid JSON
+and passed the complete normalization contract for 49 events. The generator
+therefore accepts exactly `application/json` or `application/rss+xml` media
+types for this fixed request, with parameters such as charset allowed. The
+latter is header compatibility only: actual RSS XML, HTML and invalid metadata
+still fail bounded JSON parsing or schema validation and preserve last-good
+bytes. An unrecognized HTTP 200 media type is still rejected. Compact
+diagnostics retain status and at most 80 characters of media type, without
+logging source bodies or JSON parser excerpts. This is a measured source quirk,
+not a claim that EONET documents RSS as its JSON response type.
 
 All returned events must normalize successfully. Invalid fields, unsupported
 categories, duplicate IDs, unsafe links, future dates, malformed calendar
@@ -146,11 +159,12 @@ It does not demonstrate complete world coverage, an absence of volcano events,
 an activated schedule, a published release asset, a browser rendering or
 production deployment.
 
-Twenty-one focused tests cover field/date meaning, calendar validity including
+Twenty-three focused tests cover field/date meaning, calendar validity including
 offset ISO dates, strict provenance and generation checks, size and event
 bounds, empty reconciliation, shared acquisition, non-applicable filters,
 unchanged-copy freshness, persistent outage/expiry, provider backoff, exact
-request count, last-good atomic writes and stalled optional-storage reads/writes.
+request count, last-good atomic writes, stalled optional-storage reads/writes
+and the observed MIME exception versus rejected XML/HTML.
 Optional snapshot storage has a one-second default deadline; timed-out or late
 restores cannot overwrite a newly acquired release generation:
 

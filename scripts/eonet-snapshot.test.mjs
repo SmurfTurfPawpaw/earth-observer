@@ -22,6 +22,43 @@ test('generation performs exactly one fixed uncached request, copies only approv
   assert.equal(new TextDecoder().decode(result.bytes).includes('"coordinates"'), false);
 });
 
+test('the observed RSS media-type exception still requires valid JSON and the full fixed-endpoint schema', async () => {
+  let calls = 0;
+  const result = await generateEonetSnapshot({ now: () => at, fetchImpl: async (url, options) => {
+    calls++; assert.equal(url, EONET_QUERY_URL); assert.equal(options.redirect, 'error');
+    return new Response(JSON.stringify({ events: [event] }), { headers: { 'content-type': 'application/rss+xml; charset=utf-8' } });
+  } });
+  assert.equal(calls, 1); assert.equal(result.status, 'generated'); assert.equal(result.snapshot.records.length, 1);
+  assert.deepEqual(result.upstream, { status: 200, mediaType: 'application/rss+xml' });
+  assert.equal(result.snapshot.records[0].sourceId, 'eonet'); assert.equal(result.snapshot.records[0].sourceGeometryAt, '2026-10-10T00:00:00.000Z');
+});
+
+test('XML, HTML, invalid JSON metadata and unknown media types preserve last-good bytes with bounded body-free diagnostics', async () => {
+  const root = path.resolve(tmpdir()), directory = await mkdtemp(path.join(root, 'earth-eonet-'));
+  assert.ok(directory.startsWith(root + path.sep)); assert.match(path.basename(directory), /^earth-eonet-/);
+  try {
+    const good = await generateEonetSnapshot({ now: () => at, fetchImpl: async () => response({ events: [event] }) });
+    const destination = await writeEonetSnapshot(directory, good), original = await readFile(destination, 'utf8');
+    for (const [mediaType, body] of [
+      ['application/rss+xml', '<rss><channel>synthetic body must stay private</channel></rss>'],
+      ['application/rss+xml', '<html>synthetic body must stay private</html>'],
+      ['text/html', '<html>synthetic body must stay private</html>'],
+      ['application/rss+xml', JSON.stringify({ events: [{ ...event, id: 'invalid' }] })],
+      ['application/rss+xml-extra', JSON.stringify({ events: [event] })],
+      [`application/${'x'.repeat(1000)}`, JSON.stringify({ events: [event] })],
+    ]) {
+      let calls = 0;
+      const failed = await generateEonetSnapshot({ now: () => at, fetchImpl: async () => {
+        calls++; return new Response(body, { status: 200, headers: { 'content-type': mediaType } });
+      } });
+      assert.equal(calls, 1); assert.equal(failed.status, 'skipped'); assert.equal(failed.bytes, undefined);
+      assert.equal(failed.upstream.status, 200); assert.equal(failed.upstream.mediaType, mediaType.slice(0, 80));
+      assert.ok(failed.reason.length <= 190); assert.equal(JSON.stringify(failed).includes('synthetic body must stay private'), false);
+      assert.equal(await writeEonetSnapshot(directory, failed), false); assert.equal(await readFile(destination, 'utf8'), original);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('rate-limit Retry-After persists across scheduled runs with no immediate retry or fanout', async () => {
   let calls = 0;
   const result = await generateEonetSnapshot({ now: () => at, fetchImpl: async () => { calls++; return new Response('', { status: 429, headers: { 'retry-after': '7200' } }); } });
