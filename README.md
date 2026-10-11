@@ -10,6 +10,14 @@ Browsing is public. It includes a compact collapsible interface, keyboard comman
 facts, and a private evidence notebook. Public contributions require sign-in,
 explicit publication consent, and a separate moderator's approval.
 
+The hosted intelligence feed reads prepared data from durable storage. Four
+reviewed collectors (USGS, GDACS, NASA EONET and GDELT) run independently of
+visitor layer choices. The owner can process source changes on a laptop before
+authenticated publication; unchanged data uses compact heartbeats, while facts
+and derived labels remain separate. The expandable UTC control reviews actual
+recorded captures and calculates day/night, Sun and Moon positions. See
+[the local pipeline](docs/LOCAL_PIPELINE.md) for operation and limits.
+
 On a new visit the browser asks for location permission without blocking the globe.
 When permission is granted, the app selects a rounded local position and a 10 km
 area; searching a place works without sharing device location. Camera position,

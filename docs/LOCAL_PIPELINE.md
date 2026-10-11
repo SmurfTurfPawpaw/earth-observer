@@ -2,6 +2,8 @@
 
 `scripts/local-intelligence-pipeline.mjs` moves the processing stage onto the owner's laptop: fixed-source acquisition → canonical change detection → local derived analysis → authenticated publication. The hosted website reads the resulting prepared data and durable history. This is a runnable processing interface, not evidence that the laptop daemon or hosted publish action is already running unattended.
 
+Production version 24 was deployed on 11 October 2026 at 13:06:50 UTC. One actual laptop cycle published 350 source records and 350 deterministic analysis rows, and the hidden minute daemon subsequently completed two successful unchanged heartbeats. D1 history and R2 prepared reads were verified. Runtime observations are recorded in `.qa/live-v24-collection-evidence.json` and `.qa/collector-runtime.log`; the running process is still a laptop bridge, with no verified restart autostart or always-on cloud trigger.
+
 ```js
 import { createLocalPipeline } from './scripts/local-intelligence-pipeline.mjs';
 const pipeline = createLocalPipeline({
