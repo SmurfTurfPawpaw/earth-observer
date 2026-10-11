@@ -19,12 +19,12 @@ platform goal. Passing a foundation slice does not complete the global objective
 
 | Phase | Status | Evidence / next gate |
 | --- | --- | --- |
-| 0 Baseline and contracts | Locally established | Design/source ledgers, real production globe and zoom checked; runtime limits unresolved |
-| 1 Acquisition | Pending feasibility | Native Sites execution/writer identity verification first; no unattended claim |
-| 2 Evidence/world model | Local integration passes | Immutable revisions and atomic publication receipts; reducing database budget |
-| 3 Shared time | Local checks pass | Continuous UTC/monotonic clock, native sunlight, calendar replay and shared weather frames |
-| 4 Design/performance | In progress | Unified search/rail/dossier/time layout; actual browser gate after integration |
-| 5 Investigation/release | Planned | End-to-end evidence, agent journeys, coherent package |
+| 0 Baseline and contracts | Established | Preserved WIP, real deployment provenance, reviewed source/design contracts |
+| 1 Acquisition | Partial hosted proof | Manual cloud and temporary laptop collection verified; scheduled cloud wake still unproven |
+| 2 Evidence/world model | Published core | Immutable revisions, atomic receipts, durable research recovery; typed plugins locally verified |
+| 3 Shared time | Published scoped replay | Two-year USGS M4.5+ reconstruction and distinct known-then lens; other history remains source-limited |
+| 4 Design/performance | Published baseline; refining | Normal release adoption, UTC date/play/zoom verified; compact context package next |
+| 5 Investigation/release | In progress | One actual cited USGS detail job; broader journalism, mechanisms and scenario evaluation still ahead |
 
 ## Decision log
 
@@ -312,3 +312,45 @@ Ordinary browser navigation still served the previous cached shell in this test.
 Version 27 was inspected through a deliberate QA query, which is not evidence of
 ordinary release adoption. The third package's early registration and public-shell
 navigation policy must pass a normal-URL browser check after publication.
+## Third release acceptance and next dependency gate — 2026-10-11 23:51 UTC
+
+Site version 28 succeeded with app 2e0c914f1e2bcf4cef8b9e4b004c48a22d6705ad
+and combined source 1cff4e7542c1661e03bb4065152cd9a04174ca06. Native HTTP and
+ordinary browser reload both delivered index-C61TEUe1/main-CJ8tznC6, without a
+QA query, cache purge or service-worker removal. Midnight input selected exact
+2025-10-08 History with 184 reports. Actual 1-day/s playback advanced to 14 October,
+paused with 215 reports, and returned Live. Native /earth/healthz remains HTTP 200.
+The screenshot is in ignored qa-artifacts/published-foundation-v28-history.jpg.
+
+The supervised awake-laptop minute bridge started at 23:39 UTC and has produced
+separate successful unchanged checks and factual acquisitions. It has a fixed
+06:39:10Z stop, collect-only HMAC capability in RAM, sequential attempts, bounded
+backoff and public acknowledgments only. Its first unchanged acknowledgment kept
+the 23:05:44 factual capture while recording a new 23:39:14 check. A later new
+capture published at 23:43:04. This is temporary operation while the laptop runs,
+not permanent cloud availability. Hosted scheduled workflow runs remain absent.
+
+GDELT repair passed a real fixed one-file proof (HEAD + If-Match GET, no retries):
+21:30 batch, 3,075,305 compressed bytes, verified ZIP CRC/SHA and no fabricated MD5.
+Following deployed-consumer acceptance, the producer flag was enabled and bounded
+cloud run 38185144472 succeeded. Its stored release contains latest 23:45 batch
+plus repaired 09:15/09:30 acquisitions, eight processed batches and 52 explicit gaps.
+Hosted prepared readback subsequently admitted it. The legacy scheduledIntervalMinutes
+field remains a compatibility value; it is not the actual runtime cadence.
+
+The next package adds reviewed typed Eurostat/ECB plugins, durable per-source due
+state and fences, exact original bytes/receipts, indexed current publication heads,
+and lazy context views. Independent tests cover no-due/304, A/B/A knowledge,
+rolling-feed disappearance, expiry during atomic publication, rollback, corruption,
+source independence and interleaved delivery. Review exposed and corrected adapter
+304 mismatch, a registration exception, mixed feed/item evidence and unbounded
+historical ranking. Historical pilot work now stops at 4,096 candidates before
+ranking; scalable interval indexing is a gate before broader archive expansion.
+These plugins and the compact UI are local until the matching package is published
+and actual source/browser readback passes.
+
+Re-examination: dependable permanent execution is still an external dependency.
+Prioritize a coherent typed-evidence package and its actual acceptance before more
+providers, AI notes or hypothetical forecasts. Future understanding requires cited
+mechanisms and saved scenario assumptions/cutoffs, not source extrapolation passed
+as observation. The original personal portfolio and all paused WIP remain preserved.

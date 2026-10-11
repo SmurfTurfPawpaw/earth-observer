@@ -116,12 +116,19 @@ async function handlePanel({ panel, open }) {
   if (!open) { (panel === 'news' ? intelligence : notebook)?.close(); return; }
   if (!panelLoading[panel]) panelLoading[panel] = (async () => {
     if (panel === 'news') {
-      const { createIntelligencePanel } = await import('./core/intelligence.js');
+      const { createPluginDossierPanel } = await import('./core/plugin-dossier.js');
       if (destroyed) return;
-      intelligence = createIntelligencePanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, store,
-        subscribeUpdates: updates.subscribe,
-        onStatus: () => { document.getElementById('news-status').hidden = true; },
-        onNavigate: ({ lat, lon }) => { void activateLocal({ lat, lon, radiusKm: 25 }, { animate: true }); },
+      document.querySelector('#news-panel .panel-note').textContent = 'Investigate retained sources. Reporting periods, publication dates and globe time stay distinct.';
+      document.getElementById('news-status').hidden = true;
+      intelligence = createPluginDossierPanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch,
+        createFeed: async (container) => {
+          const { createIntelligencePanel } = await import('./core/intelligence.js');
+          return createIntelligencePanel({ container, fetchImpl: cachedFetch, store,
+            subscribeUpdates: updates.subscribe,
+            onStatus: () => {},
+            onNavigate: ({ lat, lon }) => { void activateLocal({ lat, lon, radiusKm: 25 }, { animate: true }); },
+          });
+        },
       });
       intelligence.setSceneMode(viewer.earthTime.getState().mode);
     } else {

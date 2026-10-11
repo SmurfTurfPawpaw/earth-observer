@@ -7,6 +7,7 @@ import { publishLocalCollection, heartbeatCollection, readLocalAnalysis, collect
 import { publishCollectionRevision, publishAircraftRevision } from './collection-updates.js';
 import { publishAircraftObservations } from './aircraft-observations.js';
 import { startInvestigationPipeline } from './investigation-pipeline.js';
+import { startSourcePlugins } from './plugins/runner.js';
 
 const json = (payload, status = 200, headers = {}) => Response.json(payload, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers,
@@ -58,6 +59,9 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
   if (!env.EARTH_STORE?.get || !env.EARTH_STORE?.put) return json({ error: 'Durable storage is not configured' }, 503);
   const body = await actionBody(request);
   if (!body) return json({ error: 'Use a bounded collection, publication or heartbeat action' }, 400);
+  // Independently reviewed source scopes keep their own cadence, evidence and
+  // leases. A failure in the original four-source packet cannot starve this work.
+  const sourcePlugins = body.action === 'collect' ? startSourcePlugins(env, ctx, { now, fetchImpl, signal: request.signal }) : null;
   try {
     const result = body.action === 'aircraft' ? await publishAircraftObservations(env, body.packet, { now }) :
       body.action === 'publish' ? await publishLocalCollection(env, body.packet, body.analysis, { now }) :
@@ -89,7 +93,7 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
         ...(advanceDueResearch ? { enqueueCandidates: false } : {}) }, { now, fetchImpl, signal: request.signal }); }
       catch { research = { scheduled: false, status: 'unavailable' }; }
     }
-    return json({ ...result, ...(research ? { research } : {}), stored: accepted, updatesConfigured: Boolean(env.EARTH_DB?.prepare), updatesPublished: Boolean(revision?.stored) },
+    return json({ ...result, ...(research ? { research } : {}), ...(sourcePlugins ? { sourcePlugins } : {}), stored: accepted, updatesConfigured: Boolean(env.EARTH_DB?.prepare), updatesPublished: Boolean(revision?.stored) },
       accepted ? 200 : 503, accepted ? {} : { 'retry-after': '60' });
   } catch (error) {
     if (error instanceof PreparedBaselineConflict) return json({ error: 'Prepared baseline changed; publish the retained full packet' }, 409);

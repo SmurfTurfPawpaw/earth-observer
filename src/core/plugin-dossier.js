@@ -1,0 +1,211 @@
+import { worldTime, isWorldDigest } from './world-model.js';
+
+export const PLUGIN_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, publications: 40, years: 10, origins: 20, refreshMs: 300000 });
+const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', url: '/api/dossiers/belgium-natural-gas-origins', kind: 'dataset-dossier' },
+  publications: { label: 'ECB releases', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' } });
+const time = (value) => { try { return worldTime(value); } catch { return null; } };
+const displayTime = (value) => time(value)?.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') || 'Not supplied';
+const text = (value, bound = 1000) => typeof value === 'string' && value.length > 0 && value.length <= bound;
+const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+const number = new Intl.NumberFormat('en', { maximumFractionDigits: 2 });
+const sourceUrl = (value, view) => {
+  try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password && url.href.length <= 2048 &&
+    (view === 'gas' ? url.hostname === 'ec.europa.eu' : url.hostname === 'www.ecb.europa.eu') ? url.href : null; } catch { return null; }
+};
+
+/** Admit reviewed stored projections; external strings never become markup or map features. */
+export function normalizePluginDossier(value, view) {
+  const spec = VIEWS[view];
+  if (!spec || value?.schemaVersion !== 1 || typeof value.configured !== 'boolean' || typeof value.available !== 'boolean' ||
+    !text(value.plugin?.id, 100) || !text(value.plugin.scopeId, 100) || !sourceUrl(value.plugin.sourceUrl, view)) throw new Error('Stored source context has an incompatible contract');
+  if (!value.available) return value;
+  if (!value.configured) throw new Error('Stored source context is unavailable');
+  const receipt = value.receipt, artifact = value.artifact;
+  if (!receipt || !text(receipt.id, 256) || !time(receipt.capturedAt) || !time(receipt.recordedAt) ||
+    !['factsDigest', 'rawSha256', 'artifactSha256'].every((key) => isWorldDigest(receipt[key])) ||
+    artifact?.schemaVersion !== 1 || artifact.kind !== spec.kind) throw new Error('Stored source context has no compatible evidence receipt');
+  if (view === 'gas') {
+    if (value.plugin.id !== 'eurostat-gas-origins-v1' || value.plugin.scopeId !== 'belgium-natural-gas-origins' || artifact.dossierId !== 'belgium-natural-gas-origins' || artifact.reportingCountry?.code !== 'BE' || artifact.resource?.code !== 'G3000' ||
+      artifact.unit?.code !== 'TJ_GCV' || !text(artifact.unit.label, 160) || !sourceUrl(artifact.source?.url, view) || !sourceUrl(artifact.source?.datasetUrl, view) ||
+      !Array.isArray(artifact.years) || artifact.years.length > PLUGIN_DOSSIER_LIMITS.years || !Array.isArray(artifact.referenceYears) ||
+      !text(artifact.formula, 1000) || !text(artifact.limitations, 4000)) throw new Error('Annual gas context has an incompatible scope');
+    for (const year of artifact.years) {
+      if (!/^\d{4}$/.test(year.year) || !artifact.referenceYears.includes(year.year) || !time(year.period?.from) || !time(year.period?.until) ||
+        year.period.meaning !== 'calendar-year' || !year.total || year.total.value !== null && !finite(year.total.value) ||
+        !Array.isArray(year.shares) || year.shares.length > PLUGIN_DOSSIER_LIMITS.origins || !year.coverage || year.coverage.reconciled !== null && typeof year.coverage.reconciled !== 'boolean') throw new Error('Annual gas period is invalid');
+      for (const row of year.shares) if (!text(row.partner?.code, 40) || !text(row.partner.label, 160) || !finite(row.quantity) || row.sharePercent !== null && !finite(row.sharePercent)) throw new Error('Annual gas origin row is invalid');
+    }
+  } else {
+    if (value.plugin.id !== 'ecb-press-v1' || artifact.pluginId !== 'ecb-press-v1' || !Array.isArray(value.items) || value.items.length > PLUGIN_DOSSIER_LIMITS.publications ||
+      value.counts?.returned !== value.items.length || typeof value.counts?.more !== 'boolean') throw new Error('Institutional publication context is invalid');
+    const ids = new Set();
+    for (const item of value.items) {
+      const url = sourceUrl(item.url, view);
+      if (!text(item.itemId, 256) || ids.has(item.itemId) || !isWorldDigest(item.revision) || item.kind !== 'original-publication' || !text(item.title, 1000) ||
+        !url || !/^\/{1,2}press\/pr\/date\//.test(new URL(url).pathname) || !time(item.publishedAt) || item.publishedPrecision !== 'second' ||
+        !time(item.firstRecordedAt) || !time(item.lastRecordedAt)) throw new Error('Institutional publication record is invalid');
+      const own = item.evidence;
+      if (!own || !/^receipt:[a-f0-9]{64}$/.test(own.id || '') || !time(own.capturedAt) || !time(own.recordedAt) ||
+        !['factsDigest', 'rawSha256', 'artifactSha256'].every((key) => isWorldDigest(own[key])) ||
+        own.sourceUpdatedAt != null && !time(own.sourceUpdatedAt) || own.sourceVersion != null && !text(own.sourceVersion, 100) ||
+        !text(item.sourceRecordId, 2048) || item.sourceRecordId !== item.url || own.locator?.kind !== 'rss-guid' || own.locator.guid !== item.sourceRecordId ||
+        time(own.recordedAt) !== time(item.lastRecordedAt) || time(item.firstRecordedAt) > time(own.recordedAt) || time(own.recordedAt) > time(receipt.recordedAt))
+        throw new Error('Institutional publication has no compatible source receipt');
+      ids.add(item.itemId);
+    }
+  }
+  return value;
+}
+
+async function readStored(response, signal) {
+  if (!response.ok) throw new Error(`Stored context HTTP ${response.status}`);
+  if (Number(response.headers.get('content-length')) > PLUGIN_DOSSIER_LIMITS.bytes) throw new Error('Stored context exceeds its delivery bound');
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Stored context body is unavailable');
+  const chunks = []; let size = 0;
+  const cancel = () => { void reader.cancel().catch(() => {}); }; signal.addEventListener('abort', cancel, { once: true });
+  try {
+    for (;;) { signal.throwIfAborted(); const { done, value } = await reader.read(); signal.throwIfAborted(); if (done) break;
+      size += value.byteLength; if (size > PLUGIN_DOSSIER_LIMITS.bytes) { cancel(); throw new Error('Stored context exceeds its delivery bound'); } chunks.push(value); }
+    const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } finally { signal.removeEventListener('abort', cancel); reader.releaseLock(); }
+}
+
+/** One existing context workspace; only its selected, visible source owns delivery. */
+export function createPluginDossierPanel({ container, createFeed, fetchImpl = (...args) => fetch(...args), documentRef = container?.ownerDocument || globalThis.document,
+  windowRef = documentRef?.defaultView || globalThis.window, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
+  if (!container || !documentRef || typeof createFeed !== 'function') throw new TypeError('Source context needs a container and current-feed delegate');
+  const node = (tag, className, value) => { const el = documentRef.createElement(tag); if (className) el.className = className; if (value !== undefined) el.textContent = value; return el; };
+  const link = (label, url) => { const el = node('a', '', label); el.href = url; el.target = '_blank'; el.rel = 'noopener noreferrer'; return el; };
+  const nav = node('nav', 'context-navigation'); nav.setAttribute('aria-label', 'Source context views');
+  const feedHost = node('section', 'context-feed'), dossierHost = node('section', 'plugin-dossier'); dossierHost.id = 'plugin-context-details'; feedHost.id = 'current-context-feeds';
+  const scope = node('p', 'plugin-note'); scope.hidden = true; scope.textContent = 'Context follows its own reporting and publication dates. It is not a historical globe layer.';
+  const buttons = new Map(), bindings = [], cache = new Map();
+  for (const [id, label] of [['feeds', 'Current feeds'], ...Object.entries(VIEWS).map(([id, spec]) => [id, spec.label])]) {
+    const button = node('button', '', label); button.type = 'button'; button.setAttribute('aria-controls', id === 'feeds' ? feedHost.id : dossierHost.id);
+    const click = () => { void select(id); }; button.addEventListener('click', click); bindings.push([button, click]); buttons.set(id, button); nav.append(button);
+  }
+  const title = node('h3', 'plugin-title'), subtitle = node('p', 'plugin-subtitle'), status = node('p', 'plugin-status'); status.setAttribute('role', 'status');
+  const content = node('div', 'plugin-content'), refresh = node('button', 'plugin-refresh', 'Refresh stored context'); refresh.type = 'button';
+  dossierHost.append(title, subtitle, status, content, refresh); container.replaceChildren(nav, scope, feedHost, dossierHost);
+  let view = 'feeds', opened = false, destroyed = false, generation = 0, request, pending, timer, feed, feedPending, mode = 'live', rendered = null, checkedTime;
+  const stopTimer = () => { if (timer !== undefined) clearTimeoutImpl(timer); timer = undefined; };
+  const cancel = () => { ++generation; request?.abort(); request = null; pending = null; stopTimer(); dossierHost.setAttribute('aria-busy', 'false'); refresh.disabled = false; };
+  function arm() {
+    stopTimer(); if (!opened || destroyed || documentRef.hidden || view === 'feeds') return;
+    timer = setTimeoutImpl(() => { timer = undefined; void load(true); }, PLUGIN_DOSSIER_LIMITS.refreshMs);
+  }
+  function evidence(payload, extra = [], label = 'Source and retained evidence') {
+    const details = node('details', 'plugin-evidence'); details.append(node('summary', '', label));
+    details.append(link(payload.plugin.name || 'Original source', payload.plugin.sourceUrl));
+    const facts = node('dl', 'plugin-facts');
+    for (const [label, value] of [['Source retrieved', displayTime(payload.receipt.capturedAt)], ['Receipt recorded', displayTime(payload.receipt.recordedAt)],
+      ['Source revised', payload.receipt.sourceUpdatedAt ? displayTime(payload.receipt.sourceUpdatedAt) : null],
+      ['Stored source checked', displayTime(payload.check?.checkedAt)], ...extra,
+      ['Raw SHA-256', payload.receipt.rawSha256], ['Facts SHA-256', payload.receipt.factsDigest], ['Artifact SHA-256', payload.receipt.artifactSha256]]) {
+      if (value !== null) { const data = node('dd', '', String(value)); if (label === 'Stored source checked') checkedTime = data; facts.append(node('dt', '', label), data); }
+    }
+    details.append(facts); return details;
+  }
+  function render(payload) {
+    const signature = JSON.stringify([view, payload.available, payload.receipt, payload.items, payload.explanation]);
+    if (rendered === signature) { if (checkedTime) checkedTime.textContent = displayTime(payload.check?.checkedAt); return; }
+    rendered = signature; checkedTime = null; content.replaceChildren();
+    if (!payload.available) { content.append(node('p', 'plugin-note', text(payload.explanation, 2000) ? payload.explanation : 'No retained source artifact is available yet.')); return; }
+    const artifact = payload.artifact;
+    if (view === 'gas') {
+      title.textContent = 'Belgian natural-gas origins'; subtitle.textContent = `Annual reported imports · ${artifact.referenceYears.join(', ')} · ${artifact.unit.code}`;
+      for (const year of artifact.years) {
+        const block = node('section', 'plugin-year'); block.append(node('h4', '', `${year.year} reported imports`));
+        block.append(node('p', 'plugin-total', year.total.value === null ? 'Reported total unavailable' : `${number.format(year.total.value)} ${artifact.unit.code}`));
+        if (year.total.status) block.append(node('p', 'plugin-note', `Reported TOTAL source flag: ${year.total.status}`));
+        const table = node('table', 'plugin-origins'); table.append(node('caption', '', `${year.year} · reported origin quantities and shares of TOTAL`));
+        const head = node('thead'), headings = node('tr'); for (const label of ['Reported origin', artifact.unit.code, 'Share']) { const th = node('th', '', label); th.scope = 'col'; headings.append(th); } head.append(headings);
+        const body = node('tbody');
+        for (const row of year.shares) { const tr = node('tr'), partner = node('th', '', row.partner.label); partner.scope = 'row';
+          if (row.status) partner.append(node('span', 'plugin-source-flag', `Source flag: ${row.status}`));
+          const share = node('td', '', row.sharePercent === null ? 'Unavailable' : `${number.format(row.sharePercent)}%`);
+          if (row.sharePercent === null && row.shareUnavailableReason) share.append(node('span', 'plugin-source-flag', row.shareUnavailableReason));
+          tr.append(partner, node('td', '', number.format(row.quantity)), share); body.append(tr); }
+        table.append(head, body); block.append(table);
+        if (!year.shares.length) block.append(node('p', 'plugin-note', 'No qualifying origin shares are available for this period.'));
+        const c = year.coverage; block.append(node('p', 'plugin-note', `${c.partnerRows ?? 'Unknown'} partner rows · ${c.missingRows ?? 'Unknown'} missing · ${c.flaggedRows ?? 'Unknown'} source-flagged${year.omittedShareRows ? ` · ${year.omittedShareRows} smaller reported origins not listed` : ''}.`));
+        if (c.reconciled === false) block.append(node('p', 'plugin-caution', 'Reported partner quantities do not reconcile with the source TOTAL. Shares retain the reported denominator.'));
+        if (c.reconciled === null) block.append(node('p', 'plugin-note', 'Reconciliation is unavailable for the retained source breakdown. Missing quantities are not treated as zero.'));
+        content.append(block);
+      }
+      content.append(node('p', 'plugin-note', artifact.unit.label), node('p', 'plugin-note', artifact.limitations));
+      content.append(evidence(payload, [['Share formula', artifact.formula]]), link('Open Eurostat dataset', artifact.source.datasetUrl));
+    } else {
+      title.textContent = 'ECB institutional releases'; subtitle.textContent = 'Original publications · European Central Bank';
+      const list = node('div', 'plugin-publications');
+      for (const item of payload.items) {
+        const article = node('article', 'plugin-publication'), heading = node('h4'); heading.append(link(item.title, item.url)); article.append(heading);
+        article.append(node('p', 'plugin-publication-date', `Published ${displayTime(item.publishedAt)}`));
+        const details = node('details', 'plugin-item-evidence'); details.append(node('summary', '', 'Retained publication evidence'),
+          node('p', 'plugin-note', `First retained ${displayTime(item.firstRecordedAt)} · latest retained ${displayTime(item.lastRecordedAt)}`),
+          node('p', 'plugin-hash', `Revision ${item.revision}`));
+        const own = item.evidence, facts = node('dl', 'plugin-facts');
+        for (const [label, value] of [['Source receipt', own.id], ['Source retrieved', displayTime(own.capturedAt)], ['Receipt recorded', displayTime(own.recordedAt)],
+          ['Source revised', own.sourceUpdatedAt ? displayTime(own.sourceUpdatedAt) : null], ['Raw SHA-256', own.rawSha256],
+          ['Facts SHA-256', own.factsDigest], ['Artifact SHA-256', own.artifactSha256], ['RSS GUID locator', own.locator.guid]]) {
+          if (value !== null) facts.append(node('dt', '', label), node('dd', '', value));
+        }
+        details.append(facts); article.append(details); list.append(article);
+      }
+      if (!payload.items.length) list.append(node('p', 'plugin-note', 'No institutional releases are retained in this bounded view.'));
+      content.append(list, node('p', 'plugin-note', `${payload.counts.returned} retained original publications${payload.counts.more ? ' · more retained records exist beyond this view' : ''}. The provider feed is rolling; absence is not withdrawal or a complete historical archive.`),
+        node('p', 'plugin-note', 'Euro-area context reflects the publisher’s institutional remit; it does not identify an incident location.'), evidence(payload, [], 'Latest feed receipt'));
+    }
+  }
+  function presentation() {
+    for (const [id, button] of buttons) button.setAttribute('aria-pressed', String(id === view));
+    feedHost.hidden = view !== 'feeds'; dossierHost.hidden = view === 'feeds'; scope.hidden = mode !== 'history';
+    if (view !== 'feeds') {
+      title.textContent = view === 'gas' ? 'Belgian natural-gas origins' : 'ECB institutional releases';
+      subtitle.textContent = view === 'gas' ? 'Annual reported imports · source-backed dataset' : 'Original publications · European Central Bank';
+      const saved = cache.get(view); rendered = null; if (saved) render(saved.payload); else content.replaceChildren(node('p', 'plugin-note', 'Stored source context loads when selected.'));
+    }
+  }
+  async function openFeed() {
+    if (!feed) {
+      feedPending ||= Promise.resolve().then(() => createFeed(feedHost));
+      try { feed = await feedPending; } catch (error) { feedPending = null; if (opened && view === 'feeds' && !destroyed) feedHost.textContent = error.message || 'Current source context could not load.'; return false; }
+      if (destroyed) { feed?.destroy(); return false; } feed.setSceneMode?.(mode);
+    }
+    if (opened && view === 'feeds' && !documentRef.hidden) return feed.open(); return false;
+  }
+  function load(force = false) {
+    if (!opened || destroyed || documentRef.hidden || view === 'feeds') return Promise.resolve(false);
+    if (pending) return pending;
+    const saved = cache.get(view); if (!force && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? 'Retained source context' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
+    const selected = view, owner = ++generation, controller = new AbortController(), signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
+    request = controller; stopTimer(); refresh.disabled = true; dossierHost.setAttribute('aria-busy', 'true'); status.textContent = saved ? 'Checking stored updates · previous context remains available…' : 'Loading stored source context…';
+    const work = (async () => {
+      try {
+        const response = await fetchImpl(VIEWS[selected].url, { signal, cache: 'no-store', headers: { Accept: 'application/json' } });
+        const payload = normalizePluginDossier(await readStored(response, signal), selected); signal.throwIfAborted();
+        if (destroyed || !opened || documentRef.hidden || selected !== view || owner !== generation) return false;
+        cache.set(selected, { payload, at: now() }); render(payload); status.textContent = payload.available ? 'Retained source context' : 'Source artifact unavailable'; return true;
+      } catch (error) {
+        if (controller.signal.aborted || owner !== generation) return false;
+        status.textContent = `${error.message || 'Stored context could not load.'}${saved ? ' · Previous retained context keeps its original dates.' : ''}`; return false;
+      } finally {
+        if (!destroyed && owner === generation) { pending = null; request = null; refresh.disabled = false; dossierHost.setAttribute('aria-busy', 'false'); arm(); }
+      }
+    })(); pending = work; return work;
+  }
+  async function select(id) { if (destroyed || !buttons.has(id)) return false; if (id !== view) { cancel(); feed?.close(); view = id; presentation(); }
+    return opened ? view === 'feeds' ? openFeed() : load() : false; }
+  const refreshClick = () => { void load(true); }; refresh.addEventListener('click', refreshClick);
+  const visibility = () => { if (documentRef.hidden) { cancel(); feed?.close(); } else if (opened) void (view === 'feeds' ? openFeed() : load()); };
+  const reconnect = () => { if (opened && view !== 'feeds') void load(true); };
+  documentRef.addEventListener?.('visibilitychange', visibility); windowRef?.addEventListener?.('online', reconnect); presentation();
+  return { select, getView: () => view, setSceneMode(value) { mode = value === 'history' ? 'history' : 'live'; scope.hidden = mode !== 'history'; feed?.setSceneMode?.(mode); },
+    open() { if (destroyed) return Promise.resolve(false); opened = true; return view === 'feeds' ? openFeed() : load(); },
+    close() { opened = false; cancel(); feed?.close(); }, refresh: refreshClick,
+    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); feed?.destroy(); cache.clear();
+      for (const [button, fn] of bindings) button.removeEventListener('click', fn); refresh.removeEventListener('click', refreshClick);
+      documentRef.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); container.replaceChildren(); } };
+}

@@ -2,13 +2,14 @@ import { SOURCE_CAPABILITIES, getSourceCapability } from '../src/core/source-cap
 import { getCollectorStatus } from './collector.js';
 import { handleCollection } from './collection-api.js';
 import { readWorldEvents } from './world-model.js';
+import { readPluginEnvelope, readPluginPublications } from './plugins/store.js';
 import { worldTime } from '../src/core/world-model.js';
 import { makeRateLimiter } from '../src/sources/rateLimit.js';
 
 export const SITE_MCP_PATH = '/mcp';
 export const SITE_MCP_PROTOCOL_VERSION = '2026-07-28';
 export const SITE_MCP_LIMITS = Object.freeze({ bodyBytes: 16 * 1024, resultBytes: 256 * 1024,
-  deadlineMs: 45_000, maxEvents: 50, requestWindowMs: 60_000, requestsPerCaller: 60,
+  deadlineMs: 45_000, maxEvents: 50, maxPublications: 40, requestWindowMs: 60_000, requestsPerCaller: 60,
   requestsPerIsolate: 600, collectionIntervalMs: 60_000 });
 
 const VERSION_KEY = 'io.modelcontextprotocol/protocolVersion';
@@ -21,6 +22,7 @@ const bytes = (text) => new TextEncoder().encode(text).byteLength;
 const keys = (value, allowed) => record(value) && Object.keys(value).every((key) => allowed.includes(key));
 const empty = { type: 'object', properties: {}, additionalProperties: false };
 const cutoff = { type: 'string', maxLength: 40, description: 'UTC knowledge cutoff; only evidence recorded by then is included.' };
+const canonicalCutoff = { ...cutoff, maxLength: 24, pattern: '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$' };
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const tools = [
   { name: 'source_capabilities', description: 'Reviewed source semantics, actual coverage/history/cadence and gaps. No acquisition.', inputSchema: {
@@ -30,6 +32,14 @@ const tools = [
     type: 'object', properties: { knownAt: cutoff, limit: { type: 'integer', minimum: 1, maximum: SITE_MCP_LIMITS.maxEvents, default: 20 } }, additionalProperties: false }, annotations: readOnly },
   { name: 'event_detail', description: 'Read one retained event and its evidence references at a knowledge cutoff. No upstream source request.', inputSchema: {
     type: 'object', properties: { id: { type: 'string', pattern: '^event:usgs:[a-f0-9]{64}$', maxLength: 75 }, knownAt: cutoff }, required: ['id'], additionalProperties: false }, annotations: readOnly },
+  { name: 'source_dossier', description: 'Read the retained annual Belgium natural-gas origins dossier and its exact evidence receipt. Reporting years are not current supply or shipment routes. No source acquisition.', inputSchema: {
+    type: 'object', properties: { dossierId: { type: 'string', enum: ['belgium-natural-gas-origins'] }, knownAt: canonicalCutoff },
+    required: ['dossierId'], additionalProperties: false }, annotations: readOnly },
+  { name: 'list_publications', description: 'Read retained original ECB institutional publications and each item’s own evidence receipt. Publication time and hosted knowledge time are independent; a rolling feed is not a complete archive. No source acquisition.', inputSchema: {
+    type: 'object', properties: { pluginId: { type: 'string', enum: ['ecb-press-v1'] }, knownAt: canonicalCutoff,
+      at: { ...canonicalCutoff, description: 'UTC source publication cutoff, independent of the hosted knowledge cutoff.' },
+      limit: { type: 'integer', minimum: 1, maximum: SITE_MCP_LIMITS.maxPublications, default: 20 } },
+    required: ['pluginId'], additionalProperties: false }, annotations: readOnly },
   { name: 'caller_identity', description: 'Return this caller\'s identity state; an optional server-enabled header probe is explicitly unverified and grants no permission. No owner bootstrap or email grants.', inputSchema: empty, annotations: readOnly },
   { name: 'collect_sources', description: 'Owner-only bounded collection of the fixed reviewed registry through the existing authenticated writer. No URL, code or credential inputs.', inputSchema: empty,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
@@ -132,7 +142,8 @@ function protocol(request, call) {
 function argumentsFor(name, input, now) {
   const value = input === undefined ? {} : input;
   const accepted = { source_capabilities: ['sourceId'], collection_status: [], caller_identity: [], collect_sources: [],
-    list_world_events: ['knownAt', 'limit'], event_detail: ['id', 'knownAt'] };
+    list_world_events: ['knownAt', 'limit'], event_detail: ['id', 'knownAt'], source_dossier: ['dossierId', 'knownAt'],
+    list_publications: ['pluginId', 'at', 'knownAt', 'limit'] };
   if (!Object.hasOwn(accepted, name) || !keys(value, accepted[name])) return null;
   if (name === 'source_capabilities' && value.sourceId !== undefined && !getSourceCapability(value.sourceId)) return null;
   if (value.knownAt !== undefined) {
@@ -141,6 +152,13 @@ function argumentsFor(name, input, now) {
   }
   if (name === 'list_world_events' && value.limit !== undefined && (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > SITE_MCP_LIMITS.maxEvents)) return null;
   if (name === 'event_detail' && !/^event:usgs:[a-f0-9]{64}$/.test(value.id || '')) return null;
+  if (name === 'source_dossier' && value.dossierId !== 'belgium-natural-gas-origins' || name === 'list_publications' && value.pluginId !== 'ecb-press-v1') return null;
+  if (name === 'source_dossier' || name === 'list_publications') {
+    for (const field of ['knownAt', ...(name === 'list_publications' ? ['at'] : [])]) if (value[field] !== undefined) {
+      try { if (typeof value[field] !== 'string' || worldTime(value[field]) !== value[field] || Date.parse(value[field]) > now() + 300_000) return null; } catch { return null; }
+    }
+    if (name === 'list_publications' && value.limit !== undefined && (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > SITE_MCP_LIMITS.maxPublications)) return null;
+  }
   return value;
 }
 
@@ -159,6 +177,7 @@ function toolData(value) {
  */
 export function createSiteMcpHandler({ now = Date.now, fetchImpl = (...args) => fetch(...args),
   readCollectionStatus = getCollectorStatus, readEvents = readWorldEvents, collectionHandler = handleCollection,
+  readSourceDossier = readPluginEnvelope, readPublications = readPluginPublications,
   deadlineMs = SITE_MCP_LIMITS.deadlineMs } = {}) {
   if (!Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > SITE_MCP_LIMITS.deadlineMs) throw new TypeError('Use a bounded MCP deadline');
   const admit = makeRateLimiter({ windowMs: SITE_MCP_LIMITS.requestWindowMs, max: SITE_MCP_LIMITS.requestsPerCaller,
@@ -170,6 +189,12 @@ export function createSiteMcpHandler({ now = Date.now, fetchImpl = (...args) => 
     if (name === 'source_capabilities') return toolData(args.sourceId ? getSourceCapability(args.sourceId) : SOURCE_CAPABILITIES);
     if (name === 'caller_identity') return toolData(identity(request, env));
     if (name === 'collection_status') return toolData(await abortable(readCollectionStatus(env, { now }), signal));
+    if (name === 'source_dossier' || name === 'list_publications') {
+      const value = await abortable(name === 'source_dossier'
+        ? readSourceDossier(env, 'eurostat-gas-origins-v1', { knownAt: args.knownAt ?? null, now })
+        : readPublications(env, 'ecb-press-v1', { at: args.at ?? null, knownAt: args.knownAt ?? null, limit: args.limit ?? 20, now }), signal);
+      signal.throwIfAborted(); return toolData(value);
+    }
     if (name === 'list_world_events' || name === 'event_detail') {
       const value = await abortable(readEvents(env, { ...args, limit: name === 'event_detail' ? 1 : args.limit ?? 20 }, { now }), signal);
       signal.throwIfAborted();

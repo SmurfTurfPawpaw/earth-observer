@@ -32,7 +32,7 @@ test('modern discovery and tool calls carry required result identity and bounded
   assert.equal(discovery.result.ttlMs, 0);
   assert.equal(discovery.result.cacheScope, 'private');
   const listed = await (await handle(rpc('tools/list'))).json();
-  assert.deepEqual(listed.result.tools.map(({ name }) => name), ['source_capabilities', 'collection_status', 'list_world_events', 'event_detail', 'caller_identity', 'collect_sources']);
+  assert.deepEqual(listed.result.tools.map(({ name }) => name), ['source_capabilities', 'collection_status', 'list_world_events', 'event_detail', 'source_dossier', 'list_publications', 'caller_identity', 'collect_sources']);
   assert.equal(listed.result.tools.find(({ name }) => name === 'collect_sources').inputSchema.additionalProperties, false);
   const bare = await (await handle(rpc('server/discover', {}, { modern: false }))).json();
   assert.deepEqual(bare.result.supportedVersions, discovery.result.supportedVersions);
@@ -211,4 +211,85 @@ test('deadlines, oversized results and request admission bound resource use', as
   const busy = await admitted(rpc('server/discover'));
   assert.equal(busy.status, 429);
   assert.equal(busy.headers.get('retry-after'), '60');
+});
+
+test('typed evidence tools advertise fixed scopes, strict UTC and read-only annotations without opening arbitrary source inputs', async () => {
+  const handle = createSiteMcpHandler(), listed = await (await handle(rpc('tools/list'))).json();
+  const dossier = listed.result.tools.find(({ name }) => name === 'source_dossier'), publications = listed.result.tools.find(({ name }) => name === 'list_publications');
+  assert.deepEqual(dossier.inputSchema.properties.dossierId.enum, ['belgium-natural-gas-origins']); assert.deepEqual(dossier.inputSchema.required, ['dossierId']);
+  assert.deepEqual(publications.inputSchema.properties.pluginId.enum, ['ecb-press-v1']); assert.deepEqual(publications.inputSchema.required, ['pluginId']);
+  for (const tool of [dossier, publications]) {
+    assert.equal(tool.inputSchema.additionalProperties, false); assert.equal(tool.annotations.readOnlyHint, true); assert.equal(tool.annotations.openWorldHint, false);
+    assert.equal(tool.annotations.destructiveHint, false); assert.ok(new RegExp(tool.inputSchema.properties.knownAt.pattern).test('2026-10-10T12:00:00.000Z'));
+    assert.ok(!new RegExp(tool.inputSchema.properties.knownAt.pattern).test('2026-10-10T12:00:00Z'));
+  }
+  assert.equal(publications.inputSchema.properties.limit.minimum, 1); assert.equal(publications.inputSchema.properties.limit.maximum, 40);
+  assert.match(publications.inputSchema.properties.at.description, /independent/);
+});
+
+test('fixed dossier and publication readers return their exact receipts and independent source/knowledge cutoffs for an anonymous visitor', async () => {
+  const reads = []; let writes = 0, upstream = 0;
+  const receipt = { id: 'receipt:' + 'a'.repeat(64), capturedAt: '2026-10-10T11:59:00.000Z', recordedAt: '2026-10-10T12:00:00.000Z',
+    rawSha256: 'b'.repeat(64), factsDigest: 'c'.repeat(64), artifactSha256: 'd'.repeat(64) };
+  const gas = { schemaVersion: 1, configured: true, available: true, plugin: { id: 'eurostat-gas-origins-v1', scopeId: 'belgium-natural-gas-origins' }, receipt,
+    artifact: { kind: 'dataset-dossier', referenceYears: ['2024'], unit: { code: 'TJ_GCV' } } };
+  const ecb = { schemaVersion: 1, configured: true, available: true, plugin: { id: 'ecb-press-v1', scopeId: 'ecb-institutional-press-en-v1' }, receipt,
+    items: [{ itemId: 'publication:fixture', publishedAt: '2026-10-07T08:00:00.000Z', firstRecordedAt: receipt.recordedAt, lastRecordedAt: receipt.recordedAt,
+      evidence: { ...receipt, locator: { kind: 'rss-guid', guid: 'https://www.ecb.europa.eu//press/pr/date/2026/html/ecb.pr261007~0000000001.en.html' } } }], counts: { returned: 1, more: false } };
+  const env = ownerEnv(), handle = createSiteMcpHandler({ now: () => NOW,
+    readSourceDossier: async (receivedEnv, plugin, options) => { assert.equal(receivedEnv, env); reads.push({ plugin, ...options }); return gas; },
+    readPublications: async (receivedEnv, plugin, options) => { assert.equal(receivedEnv, env); reads.push({ plugin, ...options }); return ecb; },
+    collectionHandler: async () => { writes++; throw Error('unexpected writer'); }, fetchImpl: async () => { upstream++; throw Error('unexpected provider'); } });
+  const cutoff = '2026-10-10T13:00:00.000Z', publicationAt = '2026-10-09T00:00:00.000Z';
+  const dossier = await (await handle(call('source_dossier', { dossierId: 'belgium-natural-gas-origins', knownAt: cutoff }), env)).json();
+  assert.equal(dossier.result.isError, false); assert.deepEqual(dossier.result.structuredContent, gas); assert.deepEqual(toolValue(dossier), gas);
+  const publications = await (await handle(call('list_publications', { pluginId: 'ecb-press-v1', at: publicationAt, knownAt: cutoff, limit: 40 }), env)).json();
+  assert.deepEqual(toolValue(publications), ecb); assert.deepEqual(publications.result.structuredContent.items[0].evidence, ecb.items[0].evidence);
+  await handle(call('list_publications', { pluginId: 'ecb-press-v1' }), env);
+  assert.deepEqual(reads.map(({ now, ...options }) => { assert.equal(now(), NOW); return options; }), [
+    { plugin: 'eurostat-gas-origins-v1', knownAt: cutoff }, { plugin: 'ecb-press-v1', at: publicationAt, knownAt: cutoff, limit: 40 },
+    { plugin: 'ecb-press-v1', at: null, knownAt: null, limit: 20 },
+  ]);
+  assert.equal(upstream, 0); assert.equal(writes, 0);
+});
+
+test('missing, foreign and undeclared evidence-tool inputs fail before reads; only canonical millisecond UTC and integer publication limits are admitted', async () => {
+  let reads = 0, writes = 0, upstream = 0;
+  const handle = createSiteMcpHandler({ now: () => NOW, readSourceDossier: async () => { reads++; return {}; }, readPublications: async () => { reads++; return {}; },
+    collectionHandler: async () => { writes++; }, fetchImpl: async () => { upstream++; } });
+  const scopes = [['source_dossier', { dossierId: 'belgium-natural-gas-origins' }], ['list_publications', { pluginId: 'ecb-press-v1' }]];
+  for (const [name, base] of scopes) {
+    const invalid = [{}, { ...base, [name === 'source_dossier' ? 'dossierId' : 'pluginId']: 'foreign' }, null, [],
+      { ...base, url: 'https://example.test/source' }, { ...base, action: 'collect' }, { ...base, token: TOKEN }, { ...base, code: 'fetch()' },
+      ...['2026-02-30T00:00:00.000Z', '2027-01-01T00:00:00.000Z', '2026-10-10T12:00:00Z', '2026-10-10T14:00:00.000+02:00', '2026-10-10', null, 0].map(knownAt => ({ ...base, knownAt }))];
+    if (name === 'list_publications') invalid.push(...[0, 41, '20', 1.5, null].map(limit => ({ ...base, limit })), { ...base, at: '2026-02-30T00:00:00.000Z' },
+      { ...base, at: '2026-10-10T12:00:00Z' }, { ...base, at: '2027-01-01T00:00:00.000Z' });
+    for (const args of invalid) assert.equal(toolValue(await (await handle(call(name, args))).json()).error, 'invalid_arguments');
+  }
+  assert.equal(reads, 0); assert.equal(writes, 0); assert.equal(upstream, 0);
+});
+
+test('unconfigured source storage returns exact typed unavailability through real readers without acquiring, writing or scheduling work', async () => {
+  let upstream = 0, writes = 0, scheduled = 0;
+  const handle = createSiteMcpHandler({ now: () => NOW, fetchImpl: async () => { upstream++; throw Error('unexpected provider'); }, collectionHandler: async () => { writes++; } });
+  const ctx = { waitUntil() { scheduled++; } }, env = { EARTH_STORE: { get: async () => null, put: async () => { writes++; } } };
+  for (const [name, args, plugin] of [['source_dossier', { dossierId: 'belgium-natural-gas-origins' }, 'eurostat-gas-origins-v1'], ['list_publications', { pluginId: 'ecb-press-v1' }, 'ecb-press-v1']]) {
+    const result = await (await handle(call(name, args), env, ctx)).json(), value = toolValue(result);
+    assert.equal(result.result.isError, false); assert.equal(value.schemaVersion, 1); assert.equal(value.plugin.id, plugin); assert.equal(value.configured, false);
+    assert.equal(value.available, false); assert.equal(value.receipt, null); assert.equal(value.artifact, null); assert.match(value.explanation, /not configured/);
+    if (name === 'list_publications') { assert.deepEqual(value.items, []); assert.deepEqual(value.counts, { returned: 0, more: false }); }
+  }
+  assert.equal(upstream, 0); assert.equal(writes, 0); assert.equal(scheduled, 0);
+});
+
+test('new stored evidence tools preserve delivery budgets, deadline admission and unavailable-history explanations', async () => {
+  const budget = { schemaVersion: 1, configured: true, available: false, receipt: null, artifact: null, items: [], counts: { returned: 0, more: false },
+    errorCode: 'historical-delivery-budget', explanation: 'Knowledge-time query exceeds the retained pilot budget; no incomplete history substituted.' };
+  const budgeted = createSiteMcpHandler({ readPublications: async () => budget });
+  assert.deepEqual(toolValue(await (await budgeted(call('list_publications', { pluginId: 'ecb-press-v1' }))).json()), budget);
+  const large = createSiteMcpHandler({ readSourceDossier: async () => ({ available: true, artifact: { content: 'x'.repeat(SITE_MCP_LIMITS.resultBytes) } }) });
+  const limited = await large(call('source_dossier', { dossierId: 'belgium-natural-gas-origins' })), limitedText = await limited.text();
+  assert.equal(toolValue(JSON.parse(limitedText)).error, 'result_too_large'); assert.ok(new TextEncoder().encode(limitedText).byteLength < SITE_MCP_LIMITS.resultBytes);
+  const stalled = createSiteMcpHandler({ deadlineMs: 15, readPublications: async () => new Promise(() => {}) });
+  assert.equal(toolValue(await (await stalled(call('list_publications', { pluginId: 'ecb-press-v1' }))).json()).error, 'request_deadline');
 });

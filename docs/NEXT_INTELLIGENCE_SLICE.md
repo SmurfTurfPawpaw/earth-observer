@@ -1,11 +1,16 @@
 # Next intelligence slice: from discoveries to investigated mechanisms
 
-Audit and proposal, 12 October 2026. A bounded GDELT missing-batch acquisition
-package was subsequently implemented behind a disabled rollout flag; see
-[its exact contract and release gates](GDELT_CATCHUP.md). Other source/analysis
-modules here remain proposals: no broad crawler, model call, account, job schema or
-original-checkout change was made by this audit. The intended product is a public world-understanding
-lab: observations, attributable stories, relationships and evaluated scenarios.
+Audit and proposal, 12 October 2026. The dated observations below preserve the
+initial audit; they are not the latest operational state. The bounded GDELT repair
+consumer was published in Site version 28, then its producer flag was enabled and
+one real repair run was retained. See [the exact contract and evidence](GDELT_CATCHUP.md).
+The fixed Eurostat and ECB adapters, shared typed evidence store and read-only
+context views are now implemented locally for the next release; see
+[source plugins](SOURCE_PLUGINS.md) for their hosted acceptance gate. Stable stories,
+claim relations, causal analysis and evaluated future scenarios remain proposals.
+No broad crawler or model runtime has been provisioned. The intended product is a
+public world-understanding lab: observations, attributable stories, relationships
+and evaluated scenarios.
 
 ## What the current system actually provides
 
@@ -38,8 +43,9 @@ The current durable investigation implementation is useful but USGS-specific:
 facts. It has persisted attempts, leases/fences, retry, evidence hashes and artifacts.
 It does not investigate journalism, resolve actors, compare claims or run an LLM.
 The pipeline selects at most three recent USGS events and runs one due job. The
-source capability ledger is explicitly a baseline audit, revision 1; it needs
-dataset-specific archive/runtime entries when new capabilities are verified.
+audit began with capability ledger revision 1. Revision 4 now includes the scoped
+archive and typed ECB/Eurostat capabilities, with their distinct history, rights,
+clock and execution limits.
 
 Relevant existing boundaries are `scripts/gdelt-snapshot.mjs`,
 `server/hosted/gdelt-gkg.js`, `src/core/world-model.js`,
@@ -182,7 +188,9 @@ high headline counts alone do not establish independence. Store `independent`,
 `syndicated/shared-origin` or `unknown` with evidence for that classification; do
 not manufacture an independent-source count or confidence percentage.
 
-No general RSS/XML parser was found in current server/Worker dependencies. Reuse
+No general RSS/XML parser was found in current server/Worker dependencies. The ECB
+plugin now implements a narrow, bounded grammar for its fixed institutional feed;
+that is not a general parser or crawler for arbitrary feeds. Reuse
 the bounded HTTP helpers, hashes, JSON handling, Drizzle and existing time/evidence
 primitives first. If RSS becomes the chosen source, review one narrowly configured
 parser dependency and bounded untrusted-input tests; do not reuse the WMS-specific
@@ -198,11 +206,12 @@ writes retain separate owner/visitor authorization and budget gates.
 
 ## GDELT continuity: a separate bounded acquisition package
 
-The independent repair package is now implemented but not enabled or deployed:
+The independent repair package was published and enabled after consumer acceptance:
 latest first, at most two oldest missing quarter-hour slots within the retained
 24-hour span, a shared 45-second/three-archive budget, persisted retry checkpoints
-and explicit unresolved/capped intervals. Its new hosted consumer must be released
-first; see [GDELT_CATCHUP.md](GDELT_CATCHUP.md). Preserve the original checkout's
+and explicit unresolved/capped intervals. The first real enabled run retained eight
+processed batches and 52 explicit gaps, including two repaired historical batches;
+this is not complete daily coverage. See [GDELT_CATCHUP.md](GDELT_CATCHUP.md). Preserve the original checkout's
 cadence/clock WIP for independent review. Admit
 only reviewed timestamp-derived official paths; a missing file is not evidence that
 no event happened. Provider manifest MD5 is verified where supplied; historical

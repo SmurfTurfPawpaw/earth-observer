@@ -50,6 +50,20 @@
       "when": 1791760212860,
       "tag": "0006_investigation_admission",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1791762046420,
+      "tag": "0007_source_plugins",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791762195002,
+      "tag": "0008_plugin_heads",
+      "breakpoints": true
     }
   ]
 }

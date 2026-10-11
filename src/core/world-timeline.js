@@ -57,8 +57,11 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   const status = node('p', 'timeline-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const coverage = node('p', 'timeline-coverage');
   const note = node('p', 'timeline-note');
+  const reportDisclosure = node('details', 'timeline-reports'), reportSummary = node('summary', '', 'Source reports');
+  reportDisclosure.append(reportSummary);
   const records = node('div', 'timeline-records'); records.setAttribute('aria-label', 'Reported historical earthquakes');
-  body.append(controls, lensBar, slider, coverageBand, ruler, status, coverage, note, records); container.replaceChildren(summary, body); dock.replaceChildren(readout, transport, container);
+  reportDisclosure.append(records);
+  body.append(controls, lensBar, slider, coverageBand, ruler, status, coverage, note, reportDisclosure); container.replaceChildren(summary, body); dock.replaceChildren(readout, transport, container);
   let destroyed = false, controller, dragging = false, selecting = false, playIntent = false, seekOwner = 0, renderedCards = '', coverageSignature = '', renderedMarkers = '';
   const fallbackClock = typeof viewer.earthTime.subscribeClock === 'function' ? null : createSceneClock({ documentRef, now, monotonicNow, setTimeoutImpl, clearTimeoutImpl });
   const sceneTime = fallbackClock || viewer.earthTime;
@@ -83,18 +86,42 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
         if (!next || revision !== entry.revision) { if (viewer.selectedEntity === entry.entity) viewer.selectedEntity = undefined; viewer.entities.remove(entry.entity); markers.delete(id); changed = true; }
       }
       for (const [id, item] of wanted) {
-        if (markers.has(id)) continue;
+        const existing = markers.get(id);
+        if (existing) {
+          // Serving editions can change without changing this source revision.
+          // Keep the feature and facts stable, but use the new detail-read edition.
+          if (existing.context.version !== scene.version) {
+            existing.context = { ...existing.context, version: scene.version };
+            const property = existing.entity.properties._worldScene;
+            if (typeof property?.setValue === 'function') property.setValue(existing.context);
+            else existing.entity.properties._worldScene = existing.context;
+          }
+          continue;
+        }
         const recordId = sourceId(item), observedAt = origin(item), revision = item.revision || item.evidence.revision;
+        const context = { schemaVersion: 1, scopeId: scene.scope.id, mode: scene.mode, knownMode: scene.knownMode, window: scene.window, version: scene.version,
+          revision, sourceRecordId: recordId, eventId: id };
         const entity = viewer.entities.add({ id: `history:${id}`, name: item.title || `Magnitude ${magnitude(item)} earthquake`,
           position: Cesium.Cartesian3.fromDegrees(longitude(item), latitude(item), 0),
           point: { pixelSize: 7, color: markerColor, outlineColor: markerOutline, outlineWidth: 1.5 },
           properties: { source: 'USGS', observedAt, url: item.url || item.source.url, usgsId: recordId.slice(5), mag: magnitude(item), time: Date.parse(observedAt),
-            _worldScene: { schemaVersion: 1, scopeId: scene.scope.id, mode: scene.mode, knownMode: scene.knownMode, window: scene.window, version: scene.version,
-              revision, sourceRecordId: recordId, eventId: id }, ...(item.eventTime ? { _worldEvent: item } : {}) } });
-        markers.set(id, { entity, revision }); changed = true;
+            _worldScene: context, ...(item.eventTime ? { _worldEvent: item } : {}) } });
+        markers.set(id, { entity, revision, context }); changed = true;
       }
     } finally { viewer.entities?.resumeEvents?.(); }
     if (changed) viewer.scene.requestRender();
+  }
+  function retainPausedScene(at) {
+    // The last presentation frame and one-second UI tick can both precede the
+    // exact pause instant. Publish one admissible retained scene before close()
+    // emits its selection again. This path cannot request source or scene data.
+    if (controller.advance(at)) return;
+    const selected = controller.getState();
+    if (selected.selection && selected.selection.at !== at) {
+      controller.prepare(at, selected.lens); clearMarkers();
+    }
+    // A pending request with no retained scene remains pending while expanded;
+    // its guarded completion may populate the same frozen UTC without resuming.
   }
   function syncClock() {
     if (destroyed || documentRef.hidden) return;
@@ -109,10 +136,10 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     play.disabled = typeof sceneTime.play !== 'function' || Boolean(selected?.metadata && (!available || available.from === available.to));
     if (available && !dragging) {
       const at = state.mode === 'history' ? state.at : available.to;
-      slider.value = String(Math.max(Number(slider.min), Math.min(Number(slider.max), Date.parse(at) / 1000))); slider.setAttribute('aria-valuetext', utc(at));
+      slider.value = String(Math.max(Number(slider.min), Math.min(Number(slider.max), Math.floor(Date.parse(at) / 1000)))); slider.setAttribute('aria-valuetext', utc(at));
       if (documentRef.activeElement !== date) date.value = at.slice(0, 19);
     }
-    if (playIntent && !selecting && !state.playing && state.mode === 'history') { playIntent = false; if (!container.open) controller?.close(); }
+    if (playIntent && !selecting && !state.playing && state.mode === 'history') { playIntent = false; retainPausedScene(state.at); if (!container.open) controller?.close(); }
     if (!playIntent || selecting || !state.playing || !selected?.opened) return;
     if (controller.advance(state.at)) void controller.prefetch(); else void selectTime(state.at, true);
   }
@@ -148,6 +175,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
       !scene.coverage.complete ? `${n} reported earthquakes · part of this seven-day period has no complete retained coverage.` :
       n ? `${n} reported earthquakes in the preceding seven days.` : 'No qualifying earthquakes in this completed seven-day source window.');
     if (status.textContent !== message) status.textContent = message;
+    reportDisclosure.hidden = !n; reportSummary.textContent = `Source reports · ${n}${n > 40 ? ' · first 40 listed' : ''}`;
     showMarkers(scene);
     const cardKey = members(scene).slice(0, 40).map((item) => `${item.id}:${item.revision || item.evidence.revision}`).join('|');
     if (cardKey !== renderedCards) {
@@ -194,7 +222,11 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   const goLive = (event) => { event?.stopPropagation?.(); ++seekOwner; playIntent = false; selecting = false; dragging = false; controller.live(); clearMarkers(); setTime(null); syncClock(); void onTimeChange({ mode: 'live', at: null }); if (!container.open) controller.close(); };
   const playPause = async (event) => {
     event?.stopPropagation?.();
-    if (sceneTime.getState().playing || selecting && playIntent) { ++seekOwner; playIntent = false; selecting = false; sceneTime.pause?.(); syncClock(); if (!container.open) controller.close(); return; }
+    if (sceneTime.getState().playing || selecting && playIntent) {
+      ++seekOwner; playIntent = false; selecting = false; sceneTime.pause?.();
+      const frozen = sceneTime.getState(); if (frozen.mode === 'history') retainPausedScene(frozen.at);
+      syncClock(); if (!container.open) controller.close(); return;
+    }
     const owner = ++seekOwner; playIntent = true; selecting = true; syncClock();
     await controller.open(); if (destroyed || owner !== seekOwner || !playIntent) return;
     const available = controller.getState().metadata?.coverage.availableRange;

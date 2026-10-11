@@ -18,6 +18,7 @@ import { createCollectorTriggerHandler } from './collector-trigger.js';
 import { createArchiveApiHandler } from './archive-api.js';
 import { createWorldSceneHandler } from './world-scene.js';
 import { createInvestigationApiHandler } from './investigation-api.js';
+import { createPluginApiHandler } from './plugins/api.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -35,6 +36,7 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
   const handleTrigger = createCollectorTriggerHandler({ now, fetchImpl: providerFetch });
   const handleArchive = createArchiveApiHandler({ now });
   const handleInvestigations = createInvestigationApiHandler({ now });
+  const handlePluginApi = createPluginApiHandler({ now });
   let state;
   const admit = makeRateLimiter({ windowMs: 60000, max: 240, globalMax: 4000 });
   const services = (env) => state ||= {
@@ -78,6 +80,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (scene) return secured(scene);
         const investigations = await handleInvestigations(internal, env);
         if (investigations) return secured(investigations);
+        const plugin = await handlePluginApi(internal, env);
+        if (plugin) return secured(plugin);
         const world = await createWorldModelHandler({ env, now })(internal);
         if (world) return secured(world);
         // Aggregate actions own their methods and never enter public provider caches.

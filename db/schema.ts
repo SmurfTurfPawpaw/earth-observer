@@ -3,6 +3,7 @@ import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlit
 export { archiveChunks, archiveMembership, archiveCoverage, archiveHeads } from './world-archive-schema';
 export { investigationJobs, investigationHeads, investigationAttempts } from './investigation-schema';
 export { investigationAdmissions } from './investigation-admission-schema';
+export { pluginState, pluginCaptures, pluginRevisions, pluginMembership, pluginHeads } from './plugin-schema';
 
 // Immutable source observations index private R2 content-addressed snapshots.
 export const observations = sqliteTable('earth_observations', {

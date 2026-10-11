@@ -127,3 +127,13 @@ failure preservation, CRC corruption, restarts, clock-only updates, provider
 backoff, bounded ignored-signal transport, parser deadline, byte limit and legacy
 reader/local compatibility. No provider bulk acquisition, commits or deployment
 were performed by this package's implementation agent.
+## Activation evidence — 2026-10-11 23:40 UTC
+
+The compatible hosted reader was published in Site version 28 before producer
+activation. A real bounded historical 21:30 file passed one HEAD/one If-Match GET,
+size/identity, ZIP CRC and SHA checks. Repository repair flag is now 1. Manual cloud
+run 38185144472 succeeded, preserving latest 23:45 and adding 09:15/09:30 batches
+with their actual 23:40 acquisition times and integrity receipts. Hosted prepared
+readback subsequently admitted eight processed batches and 52 explicit gaps. This is
+bounded progress, not complete 24-hour reporting or proof of reliable cron execution.
+The disabling/rollback instructions above remain applicable.

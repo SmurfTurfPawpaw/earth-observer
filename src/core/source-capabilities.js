@@ -2,10 +2,11 @@
  * Reviewed capability metadata, not live availability or a source enable list.
  * Unknown cadence, geometry and history remain unknown. Runtime manifests and
  * retained evidence must further restrict these capabilities for every query.
- * Existing provider-policy.json remains the source-admission authority.
+ * Map/proxy admission remains in provider-policy.json; typed sources use their
+ * separate reviewed plugin registry. This ledger activates neither.
  */
 export const SOURCE_CAPABILITY_SCHEMA_VERSION = 1;
-export const SOURCE_CAPABILITY_REVISION = 3;
+export const SOURCE_CAPABILITY_REVISION = 4;
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const WEATHER_BASE = 'https://nowcoast.noaa.gov/geoserver/observations/';
@@ -104,6 +105,18 @@ function weather(spec) {
   };
 }
 
+function typedPlugin(spec) {
+  const { paths, upstreamArchive, ...fields } = spec;
+  return { ...fields, incidentLayer: false,
+    implementation: { adapter: 'implemented', collectorRegistry: false, typedPluginRegistry: true,
+      independentTrigger: 'unverified', verification: 'Bounded source access and focused local checks verified; hosted plugin receipts and sustained unattended runtime require separate evidence.',
+      paths: ['worker/plugins/registry.js', 'worker/plugins/store.js', ...paths] },
+    history: { current: 'retained-typed-plugin-receipts', firstAvailableAt: 'Actual completed plugin publication receipt; source dates never backdate hosted knowledge.',
+      asKnownThen: 'Completed retained receipts at a selected knowledge cutoff; not a reconstruction of all publisher knowledge.',
+      upstreamArchive, backfillImplemented: false, future: 'unsupported' },
+    interpolation: { mode: 'step', extrapolation: false, note: 'Keep original dated source facts until a changed revision completes; checks do not invent measurements or publications.' } };
+}
+
 const sources = [
   retainedFeed({
     id: 'usgs', name: 'USGS earthquake summary', kind: 'observation',
@@ -161,6 +174,48 @@ const sources = [
     paths: ['server/hosted/gdelt-snapshot.js', 'server/hosted/gdelt-gkg.js', 'scripts/gdelt-snapshot.mjs'],
     gaps: ['Hosted Worker does not decode bulk GKG ZIP files.', 'No full article text or source-truth verification.', 'Repeated reports may be syndicated copies.', 'Two-year discovery backfill is not implemented. Optional missed-batch recovery requires a verified producer run and completed batch receipts; its mere presence in code does not fill gaps.'],
   }),
+  typedPlugin({
+    id: 'ecb-press-v1', pluginId: 'ecb-press-v1', scopeId: 'ecb-institutional-press-en-v1', sourceId: 'ecb', name: 'ECB institutional press releases', kind: 'publication-feed',
+    access: { type: 'fixed-https-rss', endpoint: 'https://www.ecb.europa.eu/rss/press.html', credentials: [], publicRead: '/api/publications' },
+    geography: { type: 'publisher-jurisdiction-context', completeness: 'bounded-publisher-scope', resolution: 'ECB publisher remit is euro-area jurisdiction context, not incident coordinates or proof of where each publication applies.' },
+    temporal: { validTime: 'Publication metadata, not incident time or a survey observation period.', publicationTime: 'Original RSS pubDate with explicit timezone, raw declaration and second precision.',
+      captureTime: 'Original feed bytes and actual acquisition are separate from source publication.', knowledgeTime: 'First completed database receipt; feed disappearance does not withdraw retained original items.' },
+    cadence: { providerIntervalMs: null, providerMeaning: 'Institutional publications are irregular; no delivery or freshness guarantee.', checkIntervalMs: 5 * MINUTE,
+      checkMeaning: 'Due conditional source checks on authenticated collector wakes; public reads never collect. A due interval does not prove an always-on runner.', sourceLatencyMs: null, guaranteed: false },
+    bounds: { maxRecords: 32, maxFeedItems: 100, maxResponseBytes: 524288, maxArtifactBytes: 65536, deadlineMs: 20000 },
+    upstreamArchive: 'Rolling current RSS sample only. No historical publication crawl/backfill is implemented; retained originals accumulate only after actual acquisition.',
+    rights: { status: 'reviewed-public-display', policyProvider: 'ecb-institutional-publications', attribution: 'European Central Bank',
+      scope: 'Accurately attributed institutional title/link/publication metadata. Named-author speeches, interviews, research papers and images are excluded. Modification must be disclosed; separate rules apply to sold information and framing.',
+      evidence: ['https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html',
+        'https://www.ecb.europa.eu/press/pr/date/2026/html/ecb.pr261007~6447350434.en.html'] },
+    documentation: ['https://www.ecb.europa.eu/home/html/rss.en.html'], paths: ['worker/plugins/ecb-press.js', 'src/core/plugin-evidence.js'],
+    gaps: ['Only institutional /press/pr/date/ English releases are selected; source feed access is not a complete news archive.',
+      'The initial codec retains publication metadata, not article HTML or extracted survey claims.', 'One institutional assertion is not independent corroboration.',
+      'Relative future expectations require their own source reference period; publication dates do not supply that period.'],
+  }),
+  typedPlugin({
+    id: 'eurostat-gas-origins-v1', pluginId: 'eurostat-gas-origins-v1', scopeId: 'belgium-natural-gas-origins', sourceId: 'eurostat', name: 'Belgium natural-gas import origins', kind: 'dataset',
+    access: { type: 'fixed-https-json-stat', endpoint: 'https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/nrg_ti_gas?lang=EN&freq=A&geo=BE&siec=G3000&unit=TJ_GCV&sinceTimePeriod=2024',
+      credentials: [], publicRead: '/api/dossiers/belgium-natural-gas-origins' },
+    geography: { type: 'reporting-country-and-partner-codes', completeness: 'fixed-statistical-scope', resolution: 'Belgium annual import origins by source partner/codelist. Origins, aggregates and unknowns are not shipment routes, ports, pipelines or incident locations.' },
+    temporal: { validTime: 'Annual source observation periods, year precision; this is not present-day gas supply.', publicationTime: 'Exact publication date for each observed value is unknown.',
+      captureTime: 'Untouched JSON-stat bytes and actual collection time.', knowledgeTime: 'Completed hosted receipts preserve revisions; API global updated time is operational and cannot create a statistical revision alone.' },
+    cadence: { providerIntervalMs: null, providerMeaning: 'Annual observations with irregular source revisions; six-hour checking is not six-hour measurement.', checkIntervalMs: 6 * HOUR,
+      checkMeaning: 'Due conditional source checks on authenticated collector wakes; no visitor acquisition or always-on runtime guarantee.', sourceLatencyMs: null, guaranteed: false },
+    bounds: { maxRecords: 1, maxPartners: 256, maxPeriods: 8, maxCells: 2048, maxResponseBytes: 524288, maxArtifactBytes: 65536, deadlineMs: 20000,
+      reportingCountry: 'BE', frequency: 'A', product: 'G3000', unit: 'TJ_GCV', referenceYearsFrom: '2024' },
+    upstreamArchive: 'The fixed query returns reported annual values since 2024 when available. It does not supply the historical knowledge/revision state or continuous observations between years.',
+    rights: { status: 'reviewed-public-display', policyProvider: 'eurostat-statistical-data',
+      scope: 'Source-credited statistical values, codes, labels and flags; identify derived shares and respect individual/third-party exceptions.',
+      attribution: 'Source: Eurostat, nrg_ti_gas. Shares calculated by Earth Observer; source quantities and flags retained.',
+      evidence: ['https://ec.europa.eu/eurostat/about-us/communicating-disseminating-statistics'] },
+    documentation: ['https://ec.europa.eu/eurostat/databrowser/view/nrg_ti_gas/default/table',
+      'https://ec.europa.eu/eurostat/web/user-guides/data-browser/api-data-access/api-detailed-guidelines/api-statistics'],
+    paths: ['server/hosted/eurostat-gas-origins.js', 'src/core/eurostat-gas-origins.js', 'src/core/plugin-evidence.js'],
+    gaps: ['Initial verified query returned 2024 annual data; no invented 2025/2026 observations.',
+      'Missing/suppressed values stay missing rather than zero.', 'Supported origin shares do not establish current dependence, route, disruption probability or causation.',
+      'No live pricing, trade-flow stream or future model is implemented.'],
+  }),
   {
     id: 'astronomy', name: 'Calculated Sun, Moon and day/night lighting', kind: 'calculated',
     access: { type: 'local-calculation', endpoint: null, credentials: [] },
@@ -201,7 +256,7 @@ const sources = [
 export const SOURCE_CAPABILITIES = freeze({
   schemaVersion: SOURCE_CAPABILITY_SCHEMA_VERSION,
   revision: SOURCE_CAPABILITY_REVISION,
-  reviewedAt: '2026-10-11',
+  reviewedAt: '2026-10-12',
   codeBaseline: '822d73a',
   scope: 'Foundation code/source audit; not a deployment or uptime assertion.',
   sources,

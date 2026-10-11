@@ -5,6 +5,7 @@ import { timelineDateUtc } from './world-timeline.js';
 import { createSceneClock } from './scene-clock.js';
 import { worldHash } from './world-model.js';
 import { WORLD_SCENE_SCOPE } from './world-scene-controller.js';
+import { Entity } from 'cesium';
 
 class Element {
   constructor(tag, ownerDocument) { this.tagName = tag; this.ownerDocument = ownerDocument; this.children = []; this.listeners = new Map(); this.attributes = {}; this.dataset = {}; this._text = ''; }
@@ -21,6 +22,13 @@ class Element {
 }
 const elements = (root) => [root, ...root.children.filter((child) => typeof child === 'object').flatMap(elements)];
 const settle = async () => { for (let i = 0; i < 4; i++) await new Promise((resolve) => setImmediate(resolve)); };
+const waitFor = async (condition, label) => {
+  const deadline = performance.now() + 2000;
+  while (!condition()) {
+    if (performance.now() >= deadline) assert.fail(`Timed out waiting for ${label}`);
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+};
 function fixture() {
   let time = 0, id = 0; const timers = new Map(), listeners = new Map(), entities = new Set();
   const timing = { now: () => time, monotonicNow: () => time, setTimeoutImpl(fn, delay) { timers.set(++id, { fn, at: time + delay }); return id; }, clearTimeoutImpl(id) { timers.delete(id); },
@@ -80,6 +88,91 @@ test('calendar uses origin coverage across years, retains UTC through renewal, a
   assert.equal(slider.value, String(Date.parse('2025-06-04T12:00:00.000Z') / 1000)); slider.trigger('change'); await settle(); assert.equal(f.sceneClock.getState().at, '2025-06-04T12:00:00.000Z');
   timeline.live(); assert.equal(f.sceneClock.getState().mode, 'live'); assert.equal(f.entities.size, 0);
   timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0); assert.equal(f.frameCallbacks.size, 0);
+});
+
+test('maximum-rate pause materializes exact origin and expiry boundaries before expanded or collapsed calendar delivery', async () => {
+  for (const expanded of [true, false]) {
+    const f = fixture(), start = '2025-06-08T00:00:00.000Z', requests = [];
+    const range = { from: '2025-06-01T00:00:00.000Z', to: '2025-06-10T00:00:00.000Z' };
+    const expired = await point('expireonpause', '2025-06-01T00:00:00.400Z');
+    const entered = await point('enteronpause', '2025-06-08T00:00:00.400Z');
+    f.container.open = expanded;
+    const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url) => {
+      requests.push(url); const query = new URL(url, 'https://example.test').searchParams;
+      return query.has('metadata') ? response(null, [], range) : response(query.get('at'), [expired, entered], range, { bufferTo: range.to });
+    } });
+    await timeline.seek(start);
+    const all = elements(f.container.parentElement), play = all.find(element => element.id === 'timeline-play');
+    const rate = all.find(element => element.id === 'timeline-rate'), date = all.find(element => element.id === 'timeline-date');
+    const slider = all.find(element => element.type === 'range'), readout = all.find(element => element.className === 'timeline-clock');
+    rate.value = '86400'; rate.trigger('change'); play.trigger('click'); await settle();
+    assert.equal(f.sceneClock.getState().playing, true);
+    const count = requests.length;
+    f.timing.advance(.002); for (const frame of f.frameCallbacks) frame();
+    assert.deepEqual([...f.entities].map(entity => entity.name), ['expireonpause']);
+    assert.equal(timeline.getState().selection.at, start, 'last UI tick still owns the earlier selection');
+    f.timing.advance(.008); play.trigger('click');
+    const frozen = f.sceneClock.getState();
+    assert.equal(frozen.at, '2025-06-08T00:00:00.864Z'); assert.equal(frozen.playing, false);
+    assert.equal(timeline.getState().selection.at, frozen.at, 'publication/evidence selection retains the exact millisecond pause instant');
+    assert.deepEqual([...f.entities].map(entity => entity.name), ['enteronpause'], 'expired pin leaves and new origin enters at frozen UTC, even after close emission');
+    assert.equal(timeline.getState().opened, expanded); assert.equal(requests.length, count, 'pause materialization is entirely retained and local');
+    assert.equal(readout.dateTime, frozen.at); assert.equal(readout.textContent, '2025-06-08 00:00:00 UTC');
+    assert.equal(date.value, '2025-06-08T00:00:00'); assert.equal(slider.value, String(Date.parse(start) / 1000));
+    f.timing.advance(10000); for (const frame of f.frameCallbacks) frame(); await settle();
+    assert.equal(f.sceneClock.getState().at, frozen.at); assert.equal(timeline.getState().selection.at, frozen.at);
+    assert.deepEqual([...f.entities].map(entity => entity.name), ['enteronpause']); assert.equal(requests.length, count);
+    timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0); assert.equal(f.frameCallbacks.size, 0);
+  }
+});
+
+test('pause during a stored selection load keeps UTC fixed and preserves expanded completion or collapsed cancellation without reacquiring', async () => {
+  for (const expanded of [true, false]) {
+    const f = fixture(), start = '2025-06-08T00:00:00.000Z', requests = [];
+    const range = { from: start, to: '2025-06-10T00:00:00.000Z' }, pending = [];
+    const p = await point('pendingpause', start); f.container.open = expanded;
+    const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url, options) => {
+      requests.push(url); const query = new URL(url, 'https://example.test').searchParams;
+      if (query.has('metadata')) return response(null, [], range);
+      return new Promise(resolve => pending.push({ resolve, signal: options.signal, at: query.get('at') }));
+    } });
+    const play = elements(f.container.parentElement).find(element => element.id === 'timeline-play');
+    play.trigger('click'); await waitFor(() => pending.length === 1, 'the stored selection request'); assert.equal(timeline.getState().loading, true);
+    assert.equal(f.sceneClock.getState().at, start); assert.equal(f.entities.size, 0);
+    const count = requests.length; play.trigger('click'); assert.equal(f.sceneClock.getState().playing, false);
+    assert.equal(pending[0].signal.aborted, !expanded);
+    pending[0].resolve(response(pending[0].at, [p], range, { bufferTo: range.to }));
+    // Origin identity hashing may settle after several event-loop turns when
+    // other suites use WebCrypto too. Wait for the real retained publication,
+    // rather than treating a fixed count of microtasks as source completion.
+    if (expanded) await waitFor(() => !timeline.getState().loading, 'the expanded retained selection completion'); else await settle();
+    assert.equal(f.sceneClock.getState().at, start); assert.equal(f.sceneClock.getState().playing, false);
+    assert.equal(f.entities.size, expanded ? 1 : 0); assert.equal(requests.length, count);
+    if (expanded) assert.equal(timeline.getState().selection.at, start);
+    timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0);
+  }
+});
+
+test('pause cannot repaint a stale capped selection when the frozen UTC has no admissible retained buffer', async () => {
+  for (const expanded of [true, false]) {
+    const f = fixture(), start = '2025-06-08T00:00:00.000Z', p = await point('cappedpause', start); let requests = 0;
+    f.container.open = expanded;
+    const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url) => {
+      requests++; const query = new URL(url, 'https://example.test').searchParams;
+      return query.has('metadata') ? response() : response(query.get('at'), [p], baseRange,
+        { membershipComplete: false, truncated: true, complete: false, counts: { returned: 1, eligible: null, omitted: null } });
+    } });
+    await timeline.seek(start); assert.equal(f.entities.size, 1); const count = requests;
+    // Another shared scene-clock control may advance UTC independently of the
+    // archive's playback admission. It cannot make this capped buffer complete.
+    f.sceneClock.setRate(86400); f.sceneClock.play(); f.timing.advance(.01);
+    elements(f.container.parentElement).find(element => element.id === 'timeline-play').trigger('click');
+    assert.equal(f.sceneClock.getState().at, '2025-06-08T00:00:00.864Z'); assert.equal(f.sceneClock.getState().playing, false);
+    assert.equal(timeline.getState().selection, null); assert.equal(timeline.getState().selectedAt, f.sceneClock.getState().at);
+    assert.equal(f.entities.size, 0); assert.equal(requests, count);
+    assert.match(elements(f.container).find(element => element.className === 'timeline-status').textContent, /No stored scene/);
+    timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0);
+  }
 });
 
 test('an incomplete capped point buffer cannot start an automatic reload loop disguised as playback', async () => {
@@ -146,5 +239,42 @@ test('browser minute-only dates with zero seconds leave Live and seek exact UTC;
   assert.equal(timelineDateUtc('2024-02-29T00:00'), '2024-02-29T00:00:00.000Z');
   assert.equal(timelineDateUtc('2025-10-08T14:26:17.125'), '2025-10-08T14:26:17.125Z');
   assert.equal(timelineDateUtc('2025-10-08T14:26:60'), null);
+  timeline.destroy(); f.sceneClock.destroy();
+});
+
+test('an archive edition update keeps equal-revision Cesium pins and facts stable while renewing their detail-read edition', async () => {
+  const f = fixture(), at = '2025-06-01T12:00:00.000Z', p = await point('unchanged', at); let version = 'archive:1', mounts = 0;
+  f.viewer.entities.add = (value) => { mounts++; const entity = new Entity(value); f.entities.add(entity); return entity; };
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url) => {
+    const query = new URL(url, 'https://example.test').searchParams;
+    return response(query.get('at'), query.has('metadata') ? [] : [p], baseRange, { version, currentVersion: version });
+  } });
+  f.container.open = true; f.container.trigger('toggle'); await settle(); await timeline.seek(at);
+  const entity = [...f.entities][0], position = entity.position, facts = ['source', 'observedAt', 'url', 'usgsId', 'mag', 'time'].map((name) => entity.properties[name]);
+  let contextChanges = 0; entity.properties._worldScene.definitionChanged.addEventListener(() => { contextChanges++; });
+  f.viewer.selectedEntity = entity; version = 'archive:2'; f.timing.advance(60000);
+  for (let i = 0; i < 100 && timeline.getState().selection?.version !== version; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.equal(f.entities.size, 1); assert.equal([...f.entities][0], entity); assert.equal(mounts, 1);
+  assert.equal(f.viewer.selectedEntity, entity); assert.equal(entity.position, position);
+  assert.deepEqual(['source', 'observedAt', 'url', 'usgsId', 'mag', 'time'].map((name) => entity.properties[name]), facts);
+  assert.equal(entity.properties._worldScene.getValue().version, 'archive:2'); assert.equal(contextChanges, 1);
+  assert.equal(entity.properties._worldScene.getValue().revision, p.revision);
+  assert.equal(f.sceneClock.getState().at, at);
+  timeline.destroy(); f.sceneClock.destroy();
+});
+
+test('historical reports are behind an independent closed disclosure while calendar coverage and transport stay outside it', async () => {
+  const f = fixture(), at = '2025-06-01T12:00:00.000Z', points = await Promise.all(Array.from({ length: 41 }, (_, i) => point(`report${i}`, at)));
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef,
+    fetchImpl: async (url) => { const query = new URL(url, 'https://example.test').searchParams; return response(query.get('at'), query.has('metadata') ? [] : points); } });
+  await timeline.seek(at);
+  const all = elements(f.container), disclosure = all.find((element) => element.className === 'timeline-reports');
+  assert.ok(!disclosure.open); assert.equal(disclosure.hidden, false);
+  assert.match(disclosure.children[0].textContent, /41 · first 40 listed/);
+  assert.equal(elements(disclosure).filter((element) => element.className === 'timeline-card').length, 40);
+  assert.ok(!elements(disclosure).some((element) => ['timeline-date', 'timeline-play', 'timeline-rate'].includes(element.id) || element.className === 'timeline-coverage-band'));
+  disclosure.open = true; f.timing.advance(1000); assert.equal(disclosure.open, true);
+  assert.equal(f.entities.size, 41, 'Disclosure presentation does not cap scene membership');
+  timeline.live(); assert.equal(disclosure.hidden, true);
   timeline.destroy(); f.sceneClock.destroy();
 });

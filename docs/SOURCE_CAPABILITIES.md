@@ -1,18 +1,23 @@
 # Source capabilities and acquisition choices
 
-Reviewed 11 October 2026 against foundation baseline `822d73a`. This is a source and
+Baseline reviewed 11 October 2026 against `822d73a`, with a typed-plugin update on
+12 October. This is a source and
 code audit, not a deployment, freshness, completeness or uptime assertion. The
 machine-readable ledger is [source-capabilities.js](../src/core/source-capabilities.js),
-schema 1, revision 3. `getSourceCapability(id)` returns a frozen reviewed entry or
+schema 1, revision 4. `getSourceCapability(id)` returns a frozen reviewed entry or
 `null`; it does not enable an adapter. The existing public-hosting provider policy
-still governs admission. Actual manifests, outages and retained evidence restrict
+governs map/proxy admission; the separate reviewed typed-plugin registry admits
+the two institutional/data pilots. The ledger activates neither. Actual manifests, outages and retained evidence restrict
 the ledger further at query time.
 
 Foundation update, 12 October: the separate USGS archive is now hosted with
 completed count-matched M4.5+ coverage from 2024-10-12 to 2026-10-11. Optional GDELT
-missed-batch repair is implemented behind a disabled rollout flag with explicit
-budget and provenance; its production acceptance is a separate gate. Neither
-addition establishes guaranteed unattended collection cadence.
+missed-batch repair is implemented with explicit budget, retries and provenance.
+Hosted evidence at **2026-10-11T23:48Z** showed a temporary minute collector check,
+newest GKG batch 23:45 and historical 09:15/09:30 repairs retrieved at 23:40; **52**
+quarter-hour gaps remained in the retained span. These are dated observations,
+not a guarantee of continued source availability or an always-on cloud runtime.
+EONET checks are collector-driven; public visitors read stored data.
 
 ## Retained intelligence feeds
 
@@ -20,8 +25,8 @@ addition establishes guaranteed unattended collection cadence.
 | --- | --- | --- | --- | --- |
 | USGS | Fixed M4.5+ seven-day summary; at most 100 normalized live records. Separate fixed catalog archive admits independently counted unsliced intervals of at most 500 records | Official summary regenerates every minute; current acquisition policy checks at most once/minute with backoff | Source hypocenter point, origin date and source revision date; no authoritative country code is supplied | Retained snapshots start at actual collection. The isolated archive/import and scene contracts are implemented; completed hosted receipts alone establish actual archive coverage. Current catalog results do not reproduce every past source revision. USGS-produced data are public domain; credit USGS and respect marked third-party content. |
 | GDACS | Seven-day EQ/TC/FL/VO/WF/DR query; at most 100 notices | Episodes/notices have no fixed delivery guarantee; checks use a shared minute policy and backoff | Indicative points/countries and modeled impacts; start/end and modification dates differ from publication/capture | API documents historical date ranges; episode completeness is unverified. Integration is supported with GDACS credit; external resources have separate rights. |
-| NASA EONET | Seven-day, three-category curated sample; at most 60 references | Curation has no guaranteed incident cadence; current live checks are bounded to once/minute | Current adapter excludes coordinates, descriptions and inferred countries. Geometry/end dates can be approximate and older than the query window | API supports date ranges/open/closed status. Our archive retains selected reference metadata only; linked publisher content is not copied. |
-| GDELT | Owned bounded metadata release; at most 240 topic/link records | GKG has 15-minute batches; Worker revalidates the release at most once/minute. Release acquisition is a separate runtime | Index/batch date is not original publication or incident time. A mentioned country is context, not an event point | Released datasets allow redistribution with citation/link. Publisher articles/images have separate rights. Latest-batch processing does not provide archive backfill or missed-batch catch-up. |
+| NASA EONET | Seven-day, three-category curated sample; at most 60 references | Curation has no guaranteed incident cadence; collector checks are bounded to once/minute with backoff. A scheduled copy is outage fallback, not fresh evidence | Current adapter excludes coordinates, descriptions and inferred countries. Geometry/end dates can be approximate and older than the query window | API supports date ranges/open/closed status. Our archive retains selected reference metadata only; linked publisher content is not copied. |
+| GDELT | Owned bounded metadata release; at most 240 topic/link records | GKG has 15-minute batches; collector revalidates the release at most once/minute. Node release acquisition is separate; workflow runs at minutes 2/17/32/47 and can be delayed | Index/batch date is not original publication or incident time. A mentioned country is context, not an event point | Released datasets allow redistribution with citation/link. Publisher articles/images have separate rights. Latest-first acquisition can repair at most two explicit gaps within its retained 24-hour span; it is not a full archive. |
 
 Primary evidence: [USGS summary cadence](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php),
 [USGS catalog API](https://earthquake.usgs.gov/fdsnws/event/1/),
@@ -38,6 +43,41 @@ not follow article, image or EONET reference URLs. A bounded source sample is no
 world event inventory: absence cannot close an event, retract a report or establish
 that nothing happened. Countries, publishers, repeated copies and shared keywords
 do not establish causality or independent confirmation.
+
+## Typed original-publication and statistical plugins
+
+These are separate compiled plugins with D1 leases/completed receipts and immutable
+R2 original bytes, canonical facts and compact artifacts. They do not change the
+four-source hazard/discovery packet, enable a map layer or turn a jurisdiction into
+an incident point. Both source adapters and their storage tests are implemented;
+hosted plugin publication/readback and long-running collector availability remain
+separate release gates. Public `/api/publications` and dossier reads never acquire.
+
+| Plugin | Fixed scope and actual source evidence | Source cadence versus due checks | History, geography and rights |
+| --- | --- | --- | --- |
+| `ecb-press-v1` | English institutional `/press/pr/date/` RSS releases only. Native adapter GET on 11 October at 23:40Z returned 5,790 bytes, 15 feed items, two selected institutional originals and a 2,219-byte overview. A prior conditional request returned 304 | Publications are irregular. Conditional source checks are due every five minutes on authenticated collector wakes; no delivery guarantee. RSS build/check clocks do not create publication revisions | Original title, exact GUID/URL and RSS `pubDate` offset/second precision; publication time differs from survey/reference periods. Retained originals remain when the rolling feed drops them. No older publisher backfill or extracted article claims. ECB jurisdiction is publisher context, never an incident coordinate. Accurate credited reuse applies; named-author speeches/interviews/research and images are excluded |
+| `eurostat-gas-origins-v1` | `nrg_ti_gas`, Belgium, annual `G3000`, `TJ_GCV`, since 2024. Verified small anonymous JSON-stat query supplied 2024 observations; no invented 2025/2026 values | Annual reference periods and irregular source revisions. Conditional checks are due every six hours; that does not create six-hour measurements. API global updated/structure clocks alone do not revise statistical facts | Preserve source units, partner/codelist labels, periods, values and status flags. Missing/suppressed values remain missing. Derived supported shares use reported TOTAL with formula/policy provenance. Origins can include countries, aggregates and unknowns; they do not prove shipment routes, present supply or causal effects. Source-credit Eurostat and mark derived calculations; individual/third-party exceptions remain applicable |
+
+The shared store records first hosted knowledge at actual completed database
+receipts, independently of source publication and annual observation periods.
+Changed/reverted facts retain immutable item revisions; unchanged and 304 checks
+update only operational state. A historical cutoff excludes later acquisitions.
+Known-then delivery has a bounded membership budget and cannot substitute partial
+history when that budget is exceeded. Neither pilot supplies a complete two-year
+publisher knowledge archive, forecasts or independent corroboration.
+
+Primary evidence: [ECB official feed directory](https://www.ecb.europa.eu/home/html/rss.en.html),
+[ECB reuse terms](https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html),
+[example institutional release and credited-reproduction notice](https://www.ecb.europa.eu/press/pr/date/2026/html/ecb.pr261007~6447350434.en.html),
+[Eurostat fixed dataset](https://ec.europa.eu/eurostat/databrowser/view/nrg_ti_gas/default/table),
+[Eurostat Statistics API](https://ec.europa.eu/eurostat/web/user-guides/data-browser/api-data-access/api-detailed-guidelines/api-statistics),
+[Eurostat reuse](https://ec.europa.eu/eurostat/about-us/communicating-disseminating-statistics).
+
+Current operational wording still needs a separate compatibility change: EONET's
+reusable reader says "active demand" although hosted collection supplies the
+demand; GKG schema 2 retains legacy `scheduledIntervalMinutes:30` even though the
+workflow has a 15-minute schedule. This field is compatibility metadata, not a
+current cadence promise. Replacing it must not rewrite retained factual history.
 
 ## Calculated astronomy and timed weather
 
@@ -87,9 +127,9 @@ that was available at the historical time.
 | Candidate | Useful contribution | Verified route/constraints | Current status |
 | --- | --- | --- | --- |
 | USGS/GDACS archives | Scientific and modeled disaster history | Fixed official date-range endpoints; bounded pagination, revision semantics and source limits need an adapter | USGS M4.5+ count-matched archive implemented and hosted 2024-10-12 to 2026-10-11; GDACS archive remains a proposal |
-| GDELT archives | Discovery/index coverage and media context | Official bulk files/codebooks; checkpointed Node ingestion before compact hosted publication. No automatic right to republish publisher content | Opt-in latest-first repair of at most two explicit missed batches/run in a retained 24-hour span is implemented behind a disabled rollout flag; no two-year discovery archive |
+| GDELT archives | Discovery/index coverage and media context | Official bulk files/codebooks; checkpointed Node ingestion before compact hosted publication. No automatic right to republish publisher content | Latest-first repair of at most two explicit missed batches/run in a retained 24-hour span is implemented and a dated hosted repair was observed; 52 gaps remained at the cited check, no two-year discovery archive |
 | ReliefWeb | Humanitarian situation reports, disasters and dated source links | Free read-only API; pre-approved `appname` required since November 2025; 1,000 calls/day and 1,000 results/call. Partner report copyright remains separate | Approval/account eligibility unverified; no adapter |
-| Eurostat | Trade, prices, housing and regional indicators for mechanism investigations | Public statistical API and source-credited reuse; individual notices/third-party exceptions apply. Preserve units, periods, revisions and dataset geography | No adapter; would add periodic series, not breaking-event pins |
+| Eurostat | Trade, prices, housing and regional indicators for mechanism investigations | Public statistical API and source-credited reuse; individual notices/third-party exceptions apply. Preserve units, periods, revisions and dataset geography | The bounded Belgium gas-origins plugin is implemented; other datasets remain proposals. Annual series are not breaking-event pins |
 | Wikidata | Stable place/organization/asset identifiers and attributed relations | Structured data CC0; API/bulk access available. Check each referenced statement and qualifiers; linked text/images are separate | No adapter; not a source of verified real-time event truth |
 
 Primary evidence: [GDELT data access](https://gdeltproject.org/data.html),

@@ -247,7 +247,7 @@ export function createEonetSnapshotReader({ fetchImpl = fetch, now = Date.now, s
     const available = Boolean(applicable && snapshot && !expired);
     const stale = available && (cached.mode !== 'live-eonet' || ageMs >= EONET_LIVE_REFRESH_MS || Boolean(lastFailure));
     const status = !applicable ? 'not-applicable' : available ? stale ? 'stale' : 'ready' : busy ? 'busy' : 'unavailable';
-    const coverage = `Direct NASA EONET metadata is checked on active demand no more often than every 60 seconds, with provider backoff. Scheduled metadata is an outage fallback only. At most 60 selected wildfire, severe-storm and volcano events match a seven-day query. ${NOTE}`;
+    const coverage = `NASA EONET metadata has a minimum 60-second check interval with provider backoff. Retained fallback metadata is used during an upstream outage. At most 60 selected wildfire, severe-storm and volcano events match a seven-day query. ${NOTE}`;
     const records = available ? snapshot.records : [];
     return { records, indexRecords: records, indexSource: { id: 'eonet', generation: applicable ? snapshot?.generation || 'unavailable' : 'not-applicable', status,
       expiresAt: retrieved === null ? null : new Date(retrieved + EONET_MAX_AGE_MS).toISOString(), coverage },
