@@ -5,6 +5,9 @@ const NASA_TILES = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarbl
 
 /** A keyless globe with explicit, attributable imagery and demand-driven rendering. */
 export function createGlobeViewer({ container, creditContainer, onNotice = () => {} }) {
+  // This build uses the Apache-licensed renderer without ion services. Set only
+  // its optional default logo credit; imagery/data credits remain independent.
+  Cesium.CreditDisplay.cesiumCredit = new Cesium.Credit('');
   const viewer = new Cesium.Viewer(container, {
     animation: false,
     timeline: false,
@@ -51,6 +54,60 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
       credit: new Cesium.Credit('<a href="https://earthdata.nasa.gov/">NASA GIBS / Blue Marble</a>', true),
     });
     const imagery = viewer.imageryLayers.addImageryProvider(nasa);
+    imagery.show = false;
+    let mode = 'map', mapStatus = 'loading', mapProvider, mapLayer, mapFlight, mapFailures = 0, mapRetryAt = 0, nasaAvailable = true;
+    const mapLifetime = new AbortController();
+    function applyBasemap() {
+      imagery.show = nasaAvailable && (mode === 'imagery' || mapStatus === 'unavailable');
+      if (mapLayer) mapLayer.show = mode === 'map' && mapStatus === 'ready';
+      mapProvider?.setEnabled(Boolean(mapLayer?.show));
+      viewer.scene.requestRender();
+    }
+    function mapUnavailable(message) {
+      if (viewer.isDestroyed()) return;
+      mapStatus = 'unavailable'; mapRetryAt = Date.now() + 30000;
+      mapProvider?.destroy(); mapProvider = undefined;
+      if (mapLayer) viewer.imageryLayers.remove(mapLayer, true);
+      mapLayer = undefined; applyBasemap();
+      if (mode === 'map') onNotice(message);
+    }
+    function ensureMap() {
+      if (mapFlight) return mapFlight;
+      if (mapStatus === 'ready') return Promise.resolve(true);
+      if (Date.now() < mapRetryAt) return Promise.resolve(false);
+      mapStatus = 'loading';
+      mapFlight = import('../maps/openFreeMapImagery.js').then(async ({ createOpenFreeMapImageryProvider }) => {
+        if (viewer.isDestroyed() || mode !== 'map') { mapStatus = 'idle'; return false; }
+        const provider = await createOpenFreeMapImageryProvider({ signal: mapLifetime.signal, onTile: () => { mapFailures = 0; } });
+        if (viewer.isDestroyed()) { provider.destroy(); return false; }
+        mapProvider = provider; mapFailures = 0;
+        mapLayer = viewer.imageryLayers.addImageryProvider(provider); mapStatus = 'ready';
+        provider.errorEvent.addEventListener(() => {
+          if (mode !== 'map' || mapStatus !== 'ready' || viewer.isDestroyed()) return;
+          if (++mapFailures >= 8) mapUnavailable('Street map tiles are unavailable. Showing coarse imagery; reconnect or choose the map again to retry.');
+        });
+        applyBasemap(); return true;
+      }).catch(() => { mapUnavailable('Street map tiles are unavailable. Showing coarse imagery; reconnect or choose the map again to retry.'); return false; })
+        .finally(() => { mapFlight = undefined; });
+      return mapFlight;
+    }
+    const basemap = {
+      setMode(value) {
+        if (!['map', 'imagery'].includes(value)) throw new TypeError('Choose map or imagery');
+        mode = value;
+        applyBasemap();
+        if (mode === 'map') basemap.ready = ensureMap();
+        return mode;
+      },
+      getState: () => ({ mode, status: mapStatus,
+        active: mode === 'map' && mapStatus === 'ready' ? 'map' : nasaAvailable && (mode === 'imagery' || mapStatus === 'unavailable') ? 'imagery' : 'bundled',
+        nativeMaximumLevel: 14, maximumLevel: 18 }),
+      ready: undefined,
+    };
+    viewer.earthBasemap = basemap;
+    basemap.ready = ensureMap();
+    const destroyViewer = viewer.destroy.bind(viewer);
+    viewer.destroy = () => { mapLifetime.abort(); mapProvider?.destroy(); return destroyViewer(); };
     // Paint inexpensive bundled imagery first; NASA detail fills in without a blank globe.
     const baseReady = Cesium.TileMapServiceImageryProvider.fromUrl(
       Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'),
@@ -74,8 +131,9 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
         if (viewer.isDestroyed()) return;
         if (!available) { onNotice('Imagery is unavailable. The globe remains interactive; reconnect for map detail.'); return; }
         viewer.imageryLayers.remove(imagery, true);
+        nasaAvailable = false;
         viewer.scene.requestRender();
-        onNotice('NASA imagery is unavailable. Showing bundled Natural Earth imagery.');
+        if (mode === 'imagery' || mapStatus === 'unavailable') onNotice('NASA imagery is unavailable. Showing bundled Natural Earth imagery.');
       });
     });
 

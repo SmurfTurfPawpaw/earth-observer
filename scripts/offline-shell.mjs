@@ -6,6 +6,42 @@ export const OFFLINE_MANIFEST = '.offline-manifest.json';
 const validScope = (scope) => /^\/(?:[a-z0-9-]+\/)*$/.test(scope);
 const safeFile = (file) => typeof file === 'string' && /^assets\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$/.test(file) && !file.split('/').some((part) => part === '.' || part === '..');
 
+function mainEntry(manifest) {
+  const startup = [...new Set(manifest['index.html']?.dynamicImports || [])].filter((key) => {
+    const entry = manifest[key];
+    return entry?.name === 'main' && entry.isDynamicEntry === true && /^assets\/main-[A-Za-z0-9_-]+\.js$/.test(entry.file);
+  });
+  if (startup.length !== 1) throw new Error('The document must reference exactly one dynamic main startup chunk');
+  return startup[0];
+}
+
+/** Fetch/compile startup modules alongside Cesium without executing them or optional layers. */
+export function preloadStartupModules({ manifest, html, scope = '/', maxAssets = 96 }) {
+  if (!validScope(scope)) throw new Error('Invalid EARTH_BASE_PATH');
+  const visited = new Set(), files = new Set();
+  const visit = (key) => {
+    if (visited.has(key)) return;
+    const entry = manifest[key];
+    if (!entry || !safeFile(entry.file) || !entry.file.endsWith('.js')) throw new Error(`Missing or unsafe static startup module: ${key}`);
+    visited.add(key); files.add(scope + entry.file);
+    if (files.size > maxAssets) throw new Error('Startup module count exceeded its budget');
+    for (const dependency of entry.imports || []) visit(dependency);
+  };
+  visit(mainEntry(manifest));
+  for (const tag of String(html).matchAll(/<(?:script|link)\b[^>]*>/gi)) {
+    const attributes = new Map([...tag[0].matchAll(/\b([a-z][a-z0-9-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map((match) => [match[1].toLowerCase(), match[2] ?? match[3]]));
+    if (attributes.get('type') !== 'module' && attributes.get('rel') !== 'modulepreload') continue;
+    const value = attributes.get('src') || attributes.get('href');
+    if (value) {
+      const url = new URL(value, `https://earth.invalid${scope}`);
+      if (url.origin === 'https://earth.invalid' && !url.search && !url.hash) files.delete(url.pathname);
+    }
+  }
+  if (!/<\/head\s*>/i.test(html)) throw new Error('Startup document head is missing');
+  const tags = [...files].map((file) => `<link rel="modulepreload" crossorigin href="${file}">`).join('\n');
+  return html.replace(/<\/head\s*>/i, `${tags}\n</head>`);
+}
+
 /** Follow Vite's static imports only. main.js is the single explicit dynamic startup entry. */
 export function collectOfflineShell({ manifest, html, scope = '/', maxAssets = 96 }) {
   if (!validScope(scope)) throw new Error('Invalid EARTH_BASE_PATH');
@@ -25,12 +61,7 @@ export function collectOfflineShell({ manifest, html, scope = '/', maxAssets = 9
     // Deliberately do not follow dynamicImports: optional layers/decoders/data stay on demand.
   };
   visit('index.html');
-  const startup = [...new Set(manifest['index.html'].dynamicImports || [])].filter((key) => {
-    const entry = manifest[key];
-    return entry?.name === 'main' && entry.isDynamicEntry === true && /^assets\/main-[A-Za-z0-9_-]+\.js$/.test(entry.file);
-  });
-  if (startup.length !== 1) throw new Error('The document must reference exactly one dynamic main startup chunk');
-  visit(startup[0]);
+  visit(mainEntry(manifest));
   // Cesium's plugin emits vendor tags outside Vite's module graph. Read only those local tags.
   let engine;
   for (const tag of String(html).matchAll(/<(?:script|link)\b[^>]*>/gi)) {

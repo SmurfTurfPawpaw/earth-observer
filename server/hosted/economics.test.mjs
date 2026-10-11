@@ -14,6 +14,22 @@ function fixture(country = 'BEL') {
 }
 const json = (body) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 
+test('economic diagnostics distinguish request, body and validation failure without logging private exception data', async () => {
+  for (const [fetchImpl, expectedStage, expectedKind] of [
+    [async () => { throw new TypeError('Illegal invocation secret-token caller-address'); }, 'request', 'runtime-invocation'],
+    [async () => new Response('private publisher response', { headers: { 'Content-Type': 'text/html' } }), 'read', 'invalid-json'],
+    [async () => json([{ page: 1, pages: 2, sourceid: '2', total: 0 }, []]), 'validate', 'invalid-observations'],
+  ]) {
+    const diagnostics = [];
+    const proxy = economicsProxy({ now: () => AT, fetchImpl, onProviderError: (value) => diagnostics.push(value) });
+    assert.equal((await proxy.getSnapshot('BE')).status, 'unavailable');
+    await proxy.getSnapshot('BE');
+    assert.equal(diagnostics.length, 1, 'backoff suppresses repeated provider and diagnostic work');
+    assert.equal(diagnostics[0].stage, expectedStage); assert.equal(diagnostics[0].kind, expectedKind);
+    assert.equal(/secret-token|caller-address|private publisher|https:/.test(JSON.stringify(diagnostics)), false);
+  }
+});
+
 test('economic country registry accepts verified economy aliases and rejects aggregates and arbitrary filters', () => {
   assert.equal(ECONOMICS_COUNTRIES.length, 218);
   assert.equal(economicsCountry(' be ').id, 'BEL');

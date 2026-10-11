@@ -1,4 +1,6 @@
 export const UI_STORAGE_KEY = 'earth-observer:ui:v1';
+export const TEXT_SIZES = Object.freeze(['normal', 'large', 'larger']);
+export const normalizeTextSize = (value) => TEXT_SIZES.includes(value) ? value : 'normal';
 export function readUiState(storage, { mobile = false } = {}) {
   let saved;
   try { saved = JSON.parse(storage?.getItem(UI_STORAGE_KEY) || 'null'); } catch { /* Unavailable storage uses usable defaults. */ }
@@ -7,11 +9,12 @@ export function readUiState(storage, { mobile = false } = {}) {
     version: 1,
     sidebarOpen: mobile ? false : typeof saved.sidebarOpen === 'boolean' ? saved.sidebarOpen : true,
     navbarOpen: typeof saved.navbarOpen === 'boolean' ? saved.navbarOpen : false,
+    textSize: normalizeTextSize(saved.textSize),
     openCategories: Array.isArray(saved.openCategories) ? [...new Set(saved.openCategories.filter((value) => typeof value === 'string'))] : null,
   };
 }
 export function writeUiState(storage, state) {
-  try { storage?.setItem(UI_STORAGE_KEY, JSON.stringify({ ...state, version: 1 })); return Boolean(storage); } catch { return false; }
+  try { storage?.setItem(UI_STORAGE_KEY, JSON.stringify({ ...state, version: 1, textSize: normalizeTextSize(state.textSize) })); return Boolean(storage); } catch { return false; }
 }
 
 /** Explanatory placeholders are source-card text, not legal notices. Provider adapters own their real credits. */

@@ -2,7 +2,7 @@ import * as Cesium from 'cesium';
 import { LAYERS } from './catalog.js';
 import { cameraView, serializeViewHash, setCameraView, HOME_VIEW } from './navigation.js';
 import { createIcon } from './icons.js';
-import { readUiState, writeUiState, createCreditLedger, cacheStatus, layerCreditNotices } from './ui-state.js';
+import { readUiState, writeUiState, TEXT_SIZES, normalizeTextSize, createCreditLedger, cacheStatus, layerCreditNotices } from './ui-state.js';
 import { createPlaceStore } from './places.js';
 import { createSavedPlacesUi } from './places-ui.js';
 import { commandCatalog } from './commands.js';
@@ -66,6 +66,19 @@ export function createShell(viewer, manager) {
   const ledger = createCreditLedger(viewer.cesiumWidget.creditDisplay, (html, onScreen) => new Cesium.Credit(html, onScreen));
   let noticeTimer, activePanel = null, destroyed = false, pendingTiles = 0, pendingLayerNames = [];
   const remember = () => writeUiState(storage, uiState);
+  const textSizeControl = el('label', 'text-size-control');
+  const textSizeMark = el('span', '', 'Aa'); textSizeMark.setAttribute('aria-hidden', 'true');
+  const textSize = el('select'); textSize.id = 'text-size'; textSize.title = 'Panel and credit text size';
+  textSizeControl.append(textSizeMark, el('span', 'sr-only', 'Panel and credit text size'), textSize);
+  for (const choice of TEXT_SIZES) { const option = el('option', '', choice[0].toUpperCase() + choice.slice(1)); option.value = choice; textSize.append(option); }
+  textSize.value = uiState.textSize; document.documentElement.dataset.textSize = uiState.textSize;
+  const changeTextSize = () => {
+    uiState.textSize = normalizeTextSize(textSize.value); textSize.value = uiState.textSize;
+    document.documentElement.dataset.textSize = uiState.textSize; remember();
+  };
+  textSize.addEventListener('change', changeTextSize);
+  document.getElementById('header-tools').append(textSizeControl);
+  cleanup.push(() => { textSize.removeEventListener('change', changeTextSize); textSizeControl.remove(); });
   const bind = (id, handler) => {
     const node = document.getElementById(id);
     node.addEventListener('click', handler);

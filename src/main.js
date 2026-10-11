@@ -8,6 +8,7 @@ import { createCachedFetch } from './core/cached-fetch.js';
 import { initialWorkspace, loadSession, saveSession, locateVisitor, safeStorage, SESSION_KEY } from './core/session.js';
 import { validateArea, localCameraView, distanceKm, LOCAL_DEFAULT_LAYERS } from './core/local-area.js';
 import { installScenePreview } from './core/scene-preview.js';
+import { loadBasemapMode, saveBasemapMode } from './core/basemap-state.js';
 
 let viewer;
 let manager;
@@ -118,6 +119,19 @@ export async function start() {
     });
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
     shell = createShell(viewer, manager);
+    const basemapButton = document.getElementById('toggle-basemap');
+    const setBasemap = (mode) => {
+      viewer.earthBasemap?.setMode(mode);
+      saveBasemapMode(mode);
+      basemapButton.setAttribute('aria-pressed', String(mode === 'imagery'));
+      basemapButton.title = mode === 'imagery' ? 'Show roads and place names' : 'Show global satellite imagery';
+      basemapButton.setAttribute('aria-label', basemapButton.title);
+    };
+    setBasemap(loadBasemapMode());
+    basemapButton.disabled = false;
+    const toggleBasemap = () => setBasemap(viewer.earthBasemap?.getState().mode === 'imagery' ? 'map' : 'imagery');
+    basemapButton.addEventListener('click', toggleBasemap);
+    disposers.push(() => basemapButton.removeEventListener('click', toggleBasemap));
     // Set the requested camera before the first render or imagery request.
     const restoration = restoreView(initial);
     disposers.push(installNavigation(viewer, {
@@ -139,6 +153,7 @@ export async function start() {
       ++locationRevision; locateButton.disabled = false;
       const storage = safeStorage(); try { storage?.removeItem(SESSION_KEY); storage?.removeItem(STORAGE_KEY); } catch {}
       area = null; manager.setLocalArea(null); await manager.restore(['earthquakes']);
+      setBasemap('map');
       const global = parseViewHash('', LAYERS.map((layer) => layer.id)); setCameraView(viewer, global.view);
       shell.setLocalStatus('Global view'); shell.notify('View and layer preferences reset. Your evidence notebook stays saved.'); rememberWorkspace();
     };
@@ -160,6 +175,12 @@ export async function start() {
     window.addEventListener('hashchange', hashchange);
     disposers.push(() => window.removeEventListener('hashchange', hashchange));
     document.getElementById('loading').hidden = true;
+    performance.mark('earth-observer:controls-ready');
+    const firstFrame = viewer.scene.postRender.addEventListener(() => {
+      performance.mark('earth-observer:first-frame');
+      firstFrame();
+    });
+    disposers.push(firstFrame);
     visibility();
     if (initial.requestLocation) void locate();
     // Startup must finish before optional code warming or offline-cache installation.

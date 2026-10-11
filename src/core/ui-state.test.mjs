@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { UI_STORAGE_KEY, readUiState, writeUiState, createCreditLedger, cacheStatus, layerCreditNotices } from './ui-state.js';
+import { UI_STORAGE_KEY, TEXT_SIZES, readUiState, writeUiState, createCreditLedger, cacheStatus, layerCreditNotices } from './ui-state.js';
 
 const memoryStorage = () => {
   const values = new Map();
@@ -11,10 +11,25 @@ test('drawer and toolbar preferences survive desktop reload while mobile starts 
   const storage = memoryStorage();
   assert.equal(readUiState(storage).sidebarOpen, true);
   assert.equal(writeUiState(storage, { sidebarOpen: false, navbarOpen: true, openCategories: ['Weather', 'Space'] }), true);
-  assert.deepEqual(readUiState(storage), { version: 1, sidebarOpen: false, navbarOpen: true, openCategories: ['Weather', 'Space'] });
+  assert.deepEqual(readUiState(storage), { version: 1, sidebarOpen: false, navbarOpen: true, textSize: 'normal', openCategories: ['Weather', 'Space'] });
   writeUiState(storage, { sidebarOpen: true, navbarOpen: false });
   assert.equal(readUiState(storage, { mobile: true }).sidebarOpen, false);
   assert.equal(readUiState(storage).sidebarOpen, true);
+});
+
+test('supported text sizes survive reload and mobile use; invalid persisted choices fall back to normal', () => {
+  const storage = memoryStorage();
+  for (const textSize of TEXT_SIZES) {
+    writeUiState(storage, { sidebarOpen: true, textSize });
+    assert.equal(readUiState(storage).textSize, textSize);
+    assert.equal(readUiState(storage, { mobile: true }).textSize, textSize);
+  }
+  for (const textSize of [null, 2, {}, 'huge', 'large unexpected', '__proto__']) {
+    storage.setItem(UI_STORAGE_KEY, JSON.stringify({ version: 1, textSize }));
+    assert.equal(readUiState(storage).textSize, 'normal');
+    writeUiState(storage, { textSize });
+    assert.equal(JSON.parse(storage.getItem(UI_STORAGE_KEY)).textSize, 'normal');
+  }
 });
 
 test('invalid or unavailable browser storage never prevents usable controls', () => {

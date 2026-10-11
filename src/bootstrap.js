@@ -1,4 +1,11 @@
 import { showSavedScene } from './core/scene-preview.js';
+// The worker reports actual network fallback; observations retain their own source times.
+navigator.serviceWorker?.addEventListener('message', (event) => {
+  if (event.data?.type !== 'earth-observer:shell-status' || typeof event.data.message !== 'string') return;
+  const notice = document.getElementById('notification');
+  if (notice) { notice.textContent = event.data.message; notice.hidden = false; }
+});
+navigator.serviceWorker?.controller?.postMessage({ type: 'earth-observer:shell-status' });
 /** Paint saved view and static controls while the essential 3D engine downloads. */
 async function boot() {
   void showSavedScene();

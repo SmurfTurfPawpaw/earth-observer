@@ -62,7 +62,8 @@ export function normalizeEconomics(payload, country, retrievedAt, nowMs = Date.n
 
 /** A fixed WDI series allowlist, bounded cache and shared refresh; no constructor fetch. */
 export function economicsProxy({ fetchImpl = fetch, now = Date.now, ttlMs = DAY, maxKeys = 40,
-  timeoutMs = 15000, maxPending = 4, cooldownMs = 300000 } = {}) {
+  timeoutMs = 15000, maxPending = 4, cooldownMs = 300000,
+  onProviderError = (details) => console.warn('[economics] acquisition unavailable', JSON.stringify(details)) } = {}) {
   const cache = new Map(), pending = new Map();
   let retryAt = 0, failures = 0;
   const touch = (key, entry) => { cache.delete(key); cache.set(key, entry); while (cache.size > maxKeys) cache.delete(cache.keys().next().value); };
@@ -78,21 +79,36 @@ export function economicsProxy({ fetchImpl = fetch, now = Date.now, ttlMs = DAY,
       else {
         const work = (async () => {
           const signal = AbortSignal.timeout(timeoutMs);
+          let stage = 'request', httpStatus = null, responseType = null;
           try {
             const response = await fetchImpl(economicsQueryUrl(country, now()), { signal, redirect: 'error',
               headers: { Accept: 'application/json', 'User-Agent': 'earth-observer/1.0 (+https://github.com/SmurfTurfPawpaw/earth-observer)' } });
+            httpStatus = response.status;
+            const type = response.headers.get('content-type') || '';
+            responseType = /json/i.test(type) ? 'json' : /html/i.test(type) ? 'html' : 'other';
+            stage = 'http-status';
             if (!response.ok) {
               const retry = response.headers.get('retry-after');
               const retryMs = /^\d+$/.test(retry || '') ? Number(retry) * 1000 : Date.parse(retry || '') - now();
               await response.body?.cancel();
               throw Object.assign(new Error(`World Bank HTTP ${response.status}`), { retryMs });
             }
+            stage = 'read';
             const payload = await readResponseJsonCapped(response, 256 * 1024, signal);
             signal.throwIfAborted();
             const at = now();
+            stage = 'validate';
             const data = normalizeEconomics(payload, country, new Date(at).toISOString(), at);
             touch(key, { at, data }); failures = 0; retryAt = 0;
           } catch (error) {
+            const errorName = ['Error', 'TypeError', 'SyntaxError', 'TimeoutError', 'AbortError', 'RangeError'].includes(error.name) ? error.name : 'UnknownError';
+            const kind = errorName === 'TimeoutError' || errorName === 'AbortError' ? 'timeout' :
+              error.code === 'RESPONSE_TOO_LARGE' ? 'body-limit' : stage === 'validate' ? 'invalid-observations' :
+              stage === 'http-status' ? 'upstream-status' : errorName === 'SyntaxError' ? 'invalid-json' :
+              /Illegal invocation|global scope|current request|Cannot perform I\/O/i.test(error.message || '') ? 'runtime-invocation' : 'transport-or-runtime';
+            // Only bounded classifications enter logs; never the upstream body,
+            // request identity, URLs, credentials or exception text.
+            try { onProviderError?.({ provider: 'worldbank-wdi', stage, kind, errorName, httpStatus, responseType }); } catch {}
             failures = Math.min(failures + 1, 6);
             retryAt = now() + Math.max(Math.min(cooldownMs * 2 ** (failures - 1), 3600000),
               Number.isFinite(error.retryMs) ? Math.max(0, Math.min(DAY, error.retryMs)) : 0);

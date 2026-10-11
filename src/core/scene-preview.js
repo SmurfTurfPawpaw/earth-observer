@@ -1,4 +1,5 @@
 import { createBrowserStore } from './browser-store.js';
+import { loadBasemapMode } from './basemap-state.js';
 const fingerprint = (view) => ['lat', 'lon', 'alt', 'heading', 'pitch', 'roll'].map((key) => Number(Number(view[key] || 0).toFixed(key === 'lat' || key === 'lon' ? 3 : 0))).join(':');
 let liveSceneReady = false;
 export async function showSavedScene(store = createBrowserStore()) {
@@ -6,7 +7,7 @@ export async function showSavedScene(store = createBrowserStore()) {
     const target = document.getElementById('scene-preview'), image = document.getElementById('scene-preview-image');
     if (!target || !image) return;
     const record = await store.get('scene-preview');
-    if (liveSceneReady || !record?.blob || Date.now() - record.at > 7 * 86400000) return;
+    if (liveSceneReady || !record?.blob || record.basemap !== loadBasemapMode() || Date.now() - record.at > 7 * 86400000) return;
     const params = new URLSearchParams(location.hash.slice(1));
     let view;
     if (params.has('lat') && params.has('lon')) view = Object.fromEntries(params);
@@ -39,8 +40,9 @@ export function installScenePreview(viewer, { store, cameraView, getState }) {
       const scale = Math.min(1, 960 / source.width); canvas.width = Math.round(source.width * scale); canvas.height = Math.round(source.height * scale);
       canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
       const view = cameraView(viewer), credits = document.getElementById('credits')?.textContent?.slice(0, 2000) || '';
+      const basemap = viewer.earthBasemap?.getState().mode || 'map';
       canvas.toBlob(async (blob) => {
-        try { if (blob && !stopped) await store.put('scene-preview', { blob, at: Date.now(), fingerprint: fingerprint(view), credits }); }
+        try { if (blob && !stopped) await store.put('scene-preview', { blob, at: Date.now(), fingerprint: fingerprint(view), basemap, credits }); }
         catch { /* Storage limits must not interrupt the live scene. */ }
         finally { capturing = false; }
       }, 'image/jpeg', .75);
