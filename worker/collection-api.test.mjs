@@ -143,10 +143,12 @@ test('laptop publication and compact heartbeats retain facts, deduplicate histor
   const heartbeat = { action: 'heartbeat', collectedAt: new Date(at).toISOString(), inputDigest,
     sources: packet.payload.sources.map((source) => source.status === 'ready' ? { ...source, retrievedAt: new Date(at).toISOString() } : source) };
   const accepted = await post(heartbeat); assert.equal(accepted.status, 200); const checked = await accepted.json();
-  for (const row of checked.snapshots) assert.equal(row.id, initial.snapshots.find((previous) => previous.source === row.source).id);
+  assert.deepEqual(checked.snapshots, []); assert.equal(checked.factualPublication, false); assert.equal(checked.updatesPublished, false);
   const current = await (await runtime.fetch(new Request('https://example.com/earth/api/intelligence'), env)).json();
-  assert.equal(current.collectedAt, heartbeat.collectedAt);
-  assert.equal(current.indexRecords.find((record) => record.sourceId === 'usgs').retrievedAt, heartbeat.collectedAt);
+  assert.equal(current.collectedAt, packet.collectedAt); assert.equal(current.checkedAt, heartbeat.collectedAt); assert.equal(current.checkAgeMs, 0);
+  assert.equal(current.indexRecords.find((record) => record.sourceId === 'usgs').retrievedAt, packet.collectedAt);
+  assert.equal(current.sources.find((source) => source.id === 'usgs').retrievedAt, packet.collectedAt);
+  assert.equal(current.sources.find((source) => source.id === 'usgs').lastSuccessfulCheckAt, heartbeat.collectedAt);
   assert.equal(current.indexRecords.find((record) => record.sourceId === 'gdelt').retrievedAt, oldBatchAt);
   assert.equal(current.indexRecords.some((record) => record.labels), false);
   const derived = await (await runtime.fetch(new Request('https://example.com/earth/api/analysis'), env)).json();
@@ -163,6 +165,7 @@ test('laptop publication and compact heartbeats retain facts, deduplicate histor
       compete = false;
       const currentObject = await env.EARTH_STORE.get(key), competing = await currentObject.json();
       competing.collectedAt = new Date(at - 1000).toISOString();
+      delete competing.checkedAt;
       competing.payload.indexRecords = competing.payload.indexRecords.map((record) => record.sourceId === 'usgs' ? { ...record, title: 'Revised by competing publication' } : record);
       await originalPut(key, JSON.stringify(competing));
     }
@@ -172,30 +175,43 @@ test('laptop publication and compact heartbeats retain facts, deduplicate histor
   const retained = await (await runtime.fetch(new Request('https://example.com/earth/api/intelligence'), env)).json();
   assert.equal(retained.indexRecords.find((record) => record.sourceId === 'usgs').title, 'Revised by competing publication');
   const afterConflict = await (await runtime.fetch(new Request('https://example.com/earth/api/history'), env)).json();
-  assert.equal(afterConflict.snapshots.some((row) => row.at === new Date(at).toISOString()), false);
+  assert.equal(afterConflict.snapshots.some((row) => row.at === new Date(at).toISOString()), false,
+    'an operational check never archives a factual source capture, including after a pointer conflict');
   assert.equal(sourceRequests, 0); runtime.close();
 });
 
 test('private publication and heartbeat announce only durable migrated SQLite revisions, with immutable source facts', async (t) => {
   const sqlite = new DatabaseSync(':memory:');
-  for (const filename of ['0000_glossy_overlord.sql', '0001_collection_revision.sql']) {
+  for (const filename of ['0000_glossy_overlord.sql', '0001_collection_revision.sql', '0002_aircraft_observations.sql', '0003_world_evidence.sql']) {
     sqlite.exec(await readFile(new URL(`../drizzle/${filename}`, import.meta.url), 'utf8'));
   }
   const database = {
     withSession(value) { assert.equal(value, 'first-primary'); return this; },
+    async batch(statements) {
+      sqlite.exec('BEGIN');
+      try { const results = statements.map((statement) => statement.execute()); sqlite.exec('COMMIT'); return results; }
+      catch (error) { sqlite.exec('ROLLBACK'); throw error; }
+    },
     prepare(sql) {
       const statement = sqlite.prepare(sql);
-      return { bind(...values) { return {
+      let values = [];
+      const wrapper = { bind(...input) { values = input; return wrapper; },
         async first() { return statement.get(...values) || null; },
         async all() { return { results: statement.all(...values) }; },
         async run() { return statement.run(...values); },
-      }; } };
+        execute() { return statement.reader ? { success: true, results: statement.all(...values) }
+          : { success: true, results: [], meta: { changes: Number(statement.run(...values).changes) } }; },
+      };
+      return wrapper;
     },
   };
   // The public update singleton validates against real UTC, rather than the
   // injected application clock. Stay close to it while advancing acquisition.
   let at = Date.now() - 1000;
   const stamp = (value) => new Date(value).toISOString(), now = () => at;
+  sqlite.function('strftime', { varargs: true }, (format, input) => {
+    assert.equal(format, '%Y-%m-%dT%H:%M:%fZ'); assert.equal(input, 'now'); return stamp(at);
+  });
   const env = { EARTH_STORE: bucket(), EARTH_DB: database, EARTH_COLLECTOR_TOKEN: 'd'.repeat(64) };
   let sourceRequests = 0;
   const runtime = createEarthRuntime({ cache: null, now, fetchImpl: async () => {
@@ -244,7 +260,7 @@ test('private publication and heartbeat announce only durable migrated SQLite re
   }
   const record = canonicalDiscoveryRecord({ id: 'usgs:durable-test', sourceId: 'usgs', source: 'USGS',
     category: 'disasters', title: 'M 5 source earthquake', url: 'https://earthquake.usgs.gov/earthquakes/eventpage/durable-test',
-    observedAt: stamp(at - 300000), updatedAt: stamp(at - 60000), retrievedAt: stamp(at), lat: 50, lon: 4, magnitude: 5 });
+    observedAt: stamp(at - 300000), updatedAt: stamp(at - 60000), retrievedAt: stamp(at), lat: 50, lon: 4, magnitude: 5, eventType: 'EQ' });
   const packet = { schemaVersion: 1, collectedAt: stamp(at), payload: {
     reports: [record], indexRecords: [record], retrievedAt: stamp(at),
     sources: [{ id: 'usgs', name: 'USGS', status: 'ready', retrievedAt: stamp(at) }],
@@ -259,6 +275,10 @@ test('private publication and heartbeat announce only durable migrated SQLite re
   assert.equal(publication.status, 200);
   const accepted = await publication.json();
   assert.equal(accepted.stored, true); assert.equal(accepted.updatesPublished, true);
+  assert.equal(accepted.world.stored, true, 'The same authenticated publication commits its evidence projection before announcing the update');
+  const world = await (await runtime.fetch(new Request('https://example.com/earth/api/world/events'), env)).json();
+  assert.equal(world.events.length, 1); assert.equal(world.events[0].sourceTimes.observedAt, record.observedAt);
+  assert.equal(world.events[0].knowledge.firstRecordedAt, packet.collectedAt);
   const first = durableRevision();
   assert.equal(first.collected_at, packet.collectedAt); assert.equal(first.input_digest, inputDigest); assert.equal(first.record_count, 1);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_collection_revision').get().count, 1);
@@ -273,16 +293,15 @@ test('private publication and heartbeat announce only durable migrated SQLite re
   const heartbeat = { action: 'heartbeat', collectedAt: stamp(at), inputDigest,
     sources: packet.payload.sources.map((source) => ({ ...source, retrievedAt: stamp(at) })) };
   const checked = await post(heartbeat); assert.equal(checked.status, 200);
-  assert.equal((await checked.json()).updatesPublished, true);
-  const second = durableRevision(), laterEvent = await nextCollection(client);
-  assert.notEqual(second.revision, first.revision);
-  assert.equal(second.collected_at, heartbeat.collectedAt); assert.equal(second.input_digest, first.input_digest);
-  assert.equal(laterEvent.revision, second.revision); assert.equal(laterEvent.collectedAt, heartbeat.collectedAt);
+  const heartbeatAck = await checked.json(); assert.equal(heartbeatAck.updatesPublished, false); assert.equal(heartbeatAck.factualPublication, false);
+  const second = durableRevision(); assert.deepEqual(second, first, 'operational checks do not create a factual stream revision');
   const afterHeartbeat = await current();
-  assert.deepEqual(afterHeartbeat.payload.indexRecords, [{ ...record, retrievedAt: heartbeat.collectedAt }]);
+  assert.deepEqual(afterHeartbeat.payload.indexRecords, [record]); assert.equal(afterHeartbeat.collectedAt, packet.collectedAt);
+  assert.equal(afterHeartbeat.checkedAt, heartbeat.collectedAt);
   assert.equal(await collectionFactsDigest(afterHeartbeat.payload.indexRecords), inputDigest);
   assert.deepEqual(packet.payload.indexRecords, [record], 'The uploaded observation itself remains unchanged');
-  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_observations').get().count, 2);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_observations').get().count, 1);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_world_captures').get().count, 1);
   assert.equal(sqlite.prepare('SELECT COUNT(DISTINCT snapshot_id) AS count FROM earth_observations').get().count, 1);
   const archived = await (await runtime.fetch(new Request(`https://example.com/earth/api/history?at=${encodeURIComponent(heartbeat.collectedAt)}`), env)).json();
   assert.equal(archived.reports[0].retrievedAt, packet.collectedAt);
@@ -304,10 +323,99 @@ test('private publication and heartbeat announce only durable migrated SQLite re
   assert.deepEqual(await current(), afterHeartbeat);
   assert.equal((await post({ ...heartbeat, collectedAt: stamp(at), inputDigest: '0'.repeat(64) })).status, 409);
   assert.deepEqual(durableRevision(), second, 'A conflicting baseline cannot advance the durable revision');
-  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_observations').get().count, 2);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM earth_observations').get().count, 2,
+    'completed evidence is preserved when prepared promotion fails');
   const resumed = await connect();
   assert.equal((await nextCollection(resumed)).revision, second.revision, 'Reconnect replays the retained durable revision after failed/conflicting ingestion');
   const served = await (await runtime.fetch(new Request('https://example.com/earth/api/intelligence'), env)).json();
   assert.deepEqual(served.indexRecords, afterHeartbeat.payload.indexRecords);
   assert.equal(sourceRequests, 0);
+});
+
+test('a failed newer packet cannot advance prepared readers or be announced by an older completed writer; retry repairs all views', async (t) => {
+  const sqlite = new DatabaseSync(':memory:'); t.after(() => sqlite.close());
+  for (const file of ['0000_glossy_overlord.sql', '0001_collection_revision.sql', '0002_aircraft_observations.sql', '0003_world_evidence.sql'])
+    sqlite.exec(await readFile(new URL(`../drizzle/${file}`, import.meta.url), 'utf8'));
+  const clock = Date.now() - 1000, stamp = (offset = 0) => new Date(clock + offset).toISOString();
+  let beforeRun;
+  const database = { withSession() { return this; },
+    async batch(statements) { sqlite.exec('BEGIN'); try { const output = statements.map((statement) => statement.execute()); sqlite.exec('COMMIT'); return output; }
+      catch (error) { sqlite.exec('ROLLBACK'); throw error; } },
+    prepare(sql) { const statement = sqlite.prepare(sql); let values = [];
+      const result = { bind(...input) { values = input; return result; }, async first() { return statement.get(...values) || null; },
+        async all() { return { success: true, results: statement.all(...values) }; },
+        async run() { await beforeRun?.(sql, values); return statement.run(...values); },
+        execute() { return statement.reader ? { success: true, results: statement.all(...values) } :
+          { success: true, results: [], meta: { changes: Number(statement.run(...values).changes) } }; } }; return result;
+    },
+  };
+  sqlite.function('strftime', { varargs: true }, (format, value, modifier) => {
+    assert.equal(format, '%Y-%m-%dT%H:%M:%fZ'); assert.equal(value, 'now'); return stamp(modifier ? 305000 : 0);
+  });
+  const env = { EARTH_STORE: bucket(), EARTH_DB: database, EARTH_COLLECTOR_TOKEN: 'f'.repeat(64) };
+  const runtime = createEarthRuntime({ cache: null, now: () => clock, fetchImpl: async () => { throw new Error('Stored publication cannot acquire providers'); } });
+  t.after(() => runtime.close());
+  const make = async (offset, title) => {
+    const record = canonicalDiscoveryRecord({ id: 'usgs:TEST_ONLY_PUBLICATION', sourceId: 'usgs', source: 'USGS', category: 'disasters',
+      title, url: 'https://earthquake.usgs.gov/earthquakes/eventpage/TEST_ONLY_PUBLICATION', eventType: 'EQ', magnitude: 5.1,
+      lat: 50, lon: 4, observedAt: stamp(-300000), updatedAt: stamp(offset - 1000), retrievedAt: stamp(offset) });
+    const packet = { schemaVersion: 1, collectedAt: stamp(offset), payload: { indexRecords: [record], reports: [], sources: [{ id: 'usgs', status: 'ready', retrievedAt: stamp(offset) }],
+      indexCoverage: { schemaVersion: 1, sources: [{ id: 'usgs', status: 'ready', generation: stamp(offset), expiresAt: stamp(86400000) }] } } };
+    const inputDigest = await collectionFactsDigest([record]);
+    return { action: 'publish', packet, analysis: { schemaVersion: 1, method: 'TEST ONLY deterministic metadata', createdAt: packet.collectedAt,
+      inputDigest, changes: { added: 1, revised: 0, withdrawn: 0 }, topics: [], analysis: [] } };
+  };
+  const post = (body, targetEnv = env) => runtime.fetch(new Request('https://owned.example/earth/api/collector', { method: 'POST',
+    headers: { authorization: `Bearer ${env.EARTH_COLLECTOR_TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify(body) }), targetEnv);
+  const current = async () => (await runtime.fetch(new Request('https://owned.example/earth/api/intelligence'), env)).json();
+  const initial = await make(-180000, 'TEST ONLY completed baseline'), a = await make(-120000, 'TEST ONLY completed older A'), b = await make(-60000, 'TEST ONLY interrupted newer B');
+  assert.equal((await post(initial)).status, 200);
+  let arrived, release; const waiting = new Promise((resolve) => { arrived = resolve; }), hold = new Promise((resolve) => { release = resolve; });
+  beforeRun = async (sql, values) => {
+    if (!sql.includes('INSERT INTO earth_observations')) return;
+    if (values[1] === a.packet.collectedAt) { arrived(); await hold; }
+    if (values[1] === b.packet.collectedAt) throw new Error('TEST ONLY failed newer history index');
+  };
+  const pendingA = post(a); await waiting;
+  assert.equal((await post(b)).status, 503);
+  assert.equal((await current()).collectedAt, initial.packet.collectedAt);
+  assert.equal(sqlite.prepare('SELECT collected_at FROM earth_collection_revision WHERE id = 1').get().collected_at, initial.packet.collectedAt);
+  release(); const completedA = await pendingA; assert.equal(completedA.status, 200); assert.equal((await completedA.json()).updatesPublished, true);
+  assert.equal((await current()).collectedAt, a.packet.collectedAt);
+  assert.equal(sqlite.prepare('SELECT input_digest FROM earth_collection_revision WHERE id = 1').get().input_digest, a.analysis.inputDigest);
+  const conflict = await make(-120000, 'TEST ONLY equal-time conflicting facts'), observations = sqlite.prepare('SELECT COUNT(*) AS n FROM earth_observations').get().n;
+  assert.equal((await post(conflict)).status, 409); assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM earth_observations').get().n, observations);
+  assert.equal((await current()).indexRecords[0].title, a.packet.payload.indexRecords[0].title);
+  beforeRun = null; assert.equal((await post(b)).status, 200);
+  assert.equal((await current()).collectedAt, b.packet.collectedAt);
+  assert.equal(sqlite.prepare('SELECT input_digest FROM earth_collection_revision WHERE id = 1').get().input_digest, b.analysis.inputDigest);
+  const world = await (await runtime.fetch(new Request('https://owned.example/earth/api/world/events'), env)).json();
+  assert.equal(world.events[0].title, b.packet.payload.indexRecords[0].title); assert.equal(world.events[0].capture.capturedAt, b.packet.collectedAt);
+
+  // A heartbeat reuses its checked baseline. A later full packet can complete
+  // while that heartbeat waits in storage. Rejecting its prepared pointer after
+  // world publication is insufficient: its greater capture time must not replace
+  // the completed source state. This assertion is a release gate for shared fencing.
+  let heartbeatArrived, releaseHeartbeat;
+  const heartbeatWaiting = new Promise((resolve) => { heartbeatArrived = resolve; });
+  const heartbeatHold = new Promise((resolve) => { releaseHeartbeat = resolve; });
+  const originalPut = env.EARTH_STORE.put.bind(env.EARTH_STORE);
+  // Different binding wrappers model separate Worker isolates sharing one R2
+  // bucket. A local serialization queue must not stand in for ETag correctness.
+  const heartbeatEnv = { ...env, EARTH_STORE: { get: env.EARTH_STORE.get.bind(env.EARTH_STORE),
+    async put(key, body, options) {
+      if (key === 'collection/current-intelligence.json' && JSON.parse(body).checkedAt === stamp()) { heartbeatArrived(); await heartbeatHold; }
+      return originalPut(key, body, options);
+    },
+  } };
+  beforeRun = null;
+  const staleHeartbeat = post({ action: 'heartbeat', collectedAt: stamp(), inputDigest: b.analysis.inputDigest,
+    sources: b.packet.payload.sources.map((source) => ({ ...source, retrievedAt: stamp() })) }, heartbeatEnv);
+  await heartbeatWaiting;
+  const d = await make(-10000, 'TEST ONLY later completed D'); assert.equal((await post(d)).status, 200);
+  releaseHeartbeat(); assert.equal((await staleHeartbeat).status, 409);
+  assert.equal((await current()).indexRecords[0].title, d.packet.payload.indexRecords[0].title);
+  const afterRejectedHeartbeat = await (await runtime.fetch(new Request('https://owned.example/earth/api/world/events'), env)).json();
+  assert.equal(afterRejectedHeartbeat.events[0].title, d.packet.payload.indexRecords[0].title,
+    'Release gate: a rejected obsolete heartbeat must not regress independently published world facts');
 });

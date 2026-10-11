@@ -59,6 +59,26 @@ test('recorded mode supersedes an in-flight enable and restores only the latest 
   await env.manager.destroy();
 });
 
+test('dated weather adapters remain active in history while live-only layers stay suspended', async () => {
+  const calls = [], requested = [], env = environment(async (id, { fetchImpl }) => ({ ...engine(calls),
+    update() { return fetchImpl(`/api/${id}`); },
+  }), { catalog: [{ id: 'weather-radar', defaults: {} }, ...catalog],
+    layerServiceRequirements: () => [], fetchImpl: async (url) => { requested.push(url); return new Response('{}'); } });
+  await env.manager.setEnabled('weather-radar', true); await env.manager.setEnabled('test', true);
+  const saved = env.saved.get(STORAGE_KEY);
+  await env.manager.setTimelineMode('history');
+  assert.equal(env.manager.getState()['weather-radar'].timelinePaused, false);
+  assert.equal(env.manager.getState()['weather-radar'].sceneMode, 'history');
+  assert.equal(env.manager.isEffectivelyEnabled('weather-radar'), true);
+  assert.equal(env.manager.isEffectivelyEnabled('test'), false);
+  const previous = requested.length;
+  assert.equal(await env.manager.refresh('weather-radar'), true); assert.equal(await env.manager.refresh('test'), false);
+  assert.deepEqual(requested.slice(previous), ['/api/weather-radar']);
+  env.document.hidden = true; env.visibility(); assert.equal(env.timers.size, 0);
+  env.document.hidden = false; env.visibility(); await settle(); assert.equal(env.timers.size, 1);
+  assert.equal(env.saved.get(STORAGE_KEY), saved); await env.manager.destroy();
+});
+
 test('history aborts an owned live refresh and rapid return to Live cannot allow stale re-enabling', async () => {
   const calls = [], began = Promise.withResolvers(); let updates = 0;
   const env = environment(async () => ({ ...engine(calls), update(_viewer, { signal }) {

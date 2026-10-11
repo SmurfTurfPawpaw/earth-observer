@@ -96,10 +96,13 @@ test('durable history deduplicates immutable content while indexing actual check
   assert.equal(selected.reports.find((row) => row.sourceId === 'usgs').updatedAt, records[0].updatedAt);
   assert.equal(selected.reports.find((row) => row.sourceId === 'usgs').retrievedAt, records[0].retrievedAt);
   assert.deepEqual(selected.coordinates, coordinates);
+  assert.equal(selected.windowStartAt, stamp(CLOCK + 90000));
+  assert.equal(selected.nextCaptureAt, stamp(CLOCK + 120000), 'playback advances only at the next retained evidence boundary');
   const range = await (await handle(request(`?from=${encodeURIComponent(stamp(CLOCK + 30000))}&to=${encodeURIComponent(stamp(CLOCK + 90000))}&limit=1`))).json();
   assert.equal(range.snapshots.length, 1); assert.equal(range.snapshots[0].at, stamp(CLOCK + 90000));
   const before = await (await handle(request(`?at=${encodeURIComponent(stamp(CLOCK - 1))}`))).json();
   assert.deepEqual(before.reports, []); assert.deepEqual(before.coordinates, []);
+  assert.equal(before.windowStartAt, null); assert.equal(before.nextCaptureAt, stamp(CLOCK));
 });
 
 test('D1 range queries reach archived observations outside the bounded recent R2 manifest and R2 fallback discloses its limit', async (t) => {
@@ -115,6 +118,7 @@ test('D1 range queries reach archived observations outside the bounded recent R2
   const selected = await (await createHistoryHandler({ env, now: () => CLOCK })(request(`?at=${encodeURIComponent(target)}`))).json();
   assert.equal(selected.indexMode, 'd1-full-history'); assert.equal(selected.reports[0].retrievedAt, stamp(oldest));
   assert.equal(selected.sources[0].observations, 1203);
+  assert.equal(selected.nextCaptureAt, stamp(oldest + 3660000), 'an older archive date receives its next boundary beyond the recent manifest');
   const recent = await (await createHistoryHandler({ env: { EARTH_STORE: storage }, now: () => CLOCK })(request(`?at=${encodeURIComponent(target)}`))).json();
   assert.equal(recent.indexMode, 'r2-recent-history'); assert.deepEqual(recent.reports, []);
   assert.match(recent.indexWarning, /full historical range queries require/); assert.equal(recent.sources[0].availableFrom, stamp(CLOCK));

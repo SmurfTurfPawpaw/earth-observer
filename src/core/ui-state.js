@@ -7,7 +7,7 @@ export function readUiState(storage, { mobile = false } = {}) {
   if (saved?.version !== 1) saved = {};
   return {
     version: 1,
-    sidebarOpen: mobile ? false : typeof saved.sidebarOpen === 'boolean' ? saved.sidebarOpen : true,
+    sidebarOpen: mobile ? false : typeof saved.sidebarOpen === 'boolean' ? saved.sidebarOpen : false,
     navbarOpen: typeof saved.navbarOpen === 'boolean' ? saved.navbarOpen : false,
     textSize: normalizeTextSize(saved.textSize),
     openCategories: Array.isArray(saved.openCategories) ? [...new Set(saved.openCategories.filter((value) => typeof value === 'string'))] : null,

@@ -13,6 +13,8 @@ import { createHistoryHandler } from './history.js';
 import { handleCollection, preparedIntelligenceResponse } from './collection-api.js';
 import { handleUpdates } from './collection-updates.js';
 import { handleAircraftObservations } from './aircraft-observations.js';
+import { createWorldModelHandler } from './world-model.js';
+import { createCollectorTriggerHandler } from './collector-trigger.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -27,6 +29,7 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
   cache = globalThis.caches?.default, now = Date.now } = {}) {
   if (!/^\/[a-z0-9/_-]*\/$/i.test(prefix)) throw new TypeError('A directory prefix is required');
   const providerFetch = createWorkerFetch(fetchImpl);
+  const handleTrigger = createCollectorTriggerHandler({ now, fetchImpl: providerFetch });
   let state;
   const admit = makeRateLimiter({ windowMs: 60000, max: 240, globalMax: 4000 });
   const services = (env) => state ||= {
@@ -56,12 +59,16 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
       try {
         const updates = handleUpdates(internal, env);
         if (updates) return secured(updates);
+        const triggered = await handleTrigger(internal, env, ctx);
+        if (triggered) return secured(triggered);
         const collection = await handleCollection(internal, env, ctx, { now, fetchImpl: providerFetch });
         if (collection) return secured(collection);
         const aircraft = await handleAircraftObservations(internal, env, { now });
         if (aircraft) return secured(aircraft);
         const history = await createHistoryHandler({ env, now })(internal);
         if (history) return secured(history);
+        const world = await createWorldModelHandler({ env, now })(internal);
+        if (world) return secured(world);
         // Aggregate actions own their methods and never enter public provider caches.
         const demandResponse = await handleDemand(internal, env, { now });
         if (demandResponse) return secured(demandResponse);

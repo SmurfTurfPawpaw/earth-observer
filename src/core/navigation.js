@@ -39,6 +39,7 @@ export function installNavigation(viewer, { onPlace = () => {}, onViewChange = (
   bind('north', () => setCameraView(viewer, { ...cameraView(viewer), heading: 0, roll: 0 }, true));
   for (const [id, direction] of [['zoom-in', 1], ['zoom-out', -1]]) bind(id, () => {
     viewer.trackedEntity = undefined;
+    viewer.camera.cancelFlight();
     const view = cameraView(viewer);
     const maximum = viewerGlobeAltitude(viewer, .65);
     const distance = direction === 1 ? Math.min(Math.max(100, view.alt * .35), Math.max(0, view.alt - 250)) :

@@ -1,3 +1,5 @@
+import { createSceneWeatherClock } from './scene-weather-clock.js';
+
 let overlayOwner, renderOwner;
 const DEFAULT_LOADERS = {
   surface: () => Promise.all([import('../services/terrainHeights.js'), import('../services/groundFloor.js')]),
@@ -24,7 +26,10 @@ export function createCoreServices(viewer, {
     if (!active()) throw unavailable();
     const modules = await loaders[name]();
     if (!active()) throw unavailable();
-    if (name === 'weatherClock') return modules.createWeatherClock();
+    if (name === 'weatherClock') {
+      const clock = modules.createWeatherClock();
+      return viewer.earthTime?.sceneClock ? createSceneWeatherClock(clock, viewer.earthTime.sceneClock) : clock;
+    }
     if (name === 'render') {
       modules.installRenderGovernor(viewer); renderModule = modules; renderOwner = owner;
       return modules;

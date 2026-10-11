@@ -9,7 +9,7 @@ const memoryStorage = () => {
 
 test('drawer and toolbar preferences survive desktop reload while mobile starts with a closed drawer', () => {
   const storage = memoryStorage();
-  assert.equal(readUiState(storage).sidebarOpen, true);
+  assert.equal(readUiState(storage).sidebarOpen, false);
   assert.equal(writeUiState(storage, { sidebarOpen: false, navbarOpen: true, openCategories: ['Weather', 'Space'] }), true);
   assert.deepEqual(readUiState(storage), { version: 1, sidebarOpen: false, navbarOpen: true, textSize: 'normal', openCategories: ['Weather', 'Space'] });
   writeUiState(storage, { sidebarOpen: true, navbarOpen: false });
@@ -34,13 +34,13 @@ test('supported text sizes survive reload and mobile use; invalid persisted choi
 
 test('invalid or unavailable browser storage never prevents usable controls', () => {
   const blocked = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
-  assert.equal(readUiState(blocked).sidebarOpen, true);
+  assert.equal(readUiState(blocked).sidebarOpen, false);
   assert.equal(writeUiState(blocked, {}), false);
   const storage = memoryStorage();
   storage.setItem(UI_STORAGE_KEY, '{broken');
   assert.equal(readUiState(storage).navbarOpen, false);
   storage.setItem(UI_STORAGE_KEY, JSON.stringify({ version: 99, sidebarOpen: false }));
-  assert.equal(readUiState(storage).sidebarOpen, true);
+  assert.equal(readUiState(storage).sidebarOpen, false);
 });
 
 test('a shared legal credit remains displayed until the last active layer releases it', () => {

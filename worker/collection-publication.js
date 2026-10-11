@@ -1,6 +1,6 @@
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { persistEarthCollection } from './collector.js';
-import { readPreparedIntelligence } from './history.js';
+import { readPreparedIntelligence, writePreparedOperationalCheck, PreparedBaselineConflict } from './history.js';
 
 const encoder = new TextEncoder(), ANALYSIS_LIMIT = 64 * 1024;
 const bytes = (value) => encoder.encode(JSON.stringify(value)).byteLength;
@@ -89,31 +89,40 @@ export async function heartbeatCollection(env, input, { now = Date.now } = {}) {
   if (new Set(input.sources.map((source) => source.id)).size !== input.sources.length || input.sources.length !== existing.size ||
       input.sources.some((source) => !existing.has(source.id) || !['ready', 'stale', 'busy', 'unavailable', 'not-applicable'].includes(source.status)))
     throw new TypeError('Heartbeat source identities do not match the prepared collection');
-  const sources = input.sources.map((incoming) => {
-    const previous = existing.get(incoming.id), source = { ...previous, status: incoming.status, stale: incoming.stale === true };
+  for (const incoming of input.sources) {
     for (const key of ['retrievedAt', 'snapshotRetrievedAt', 'lastAttemptAt', 'lastCheckedAt']) {
       if (incoming[key] == null) continue;
       if (!iso(incoming[key]) || Date.parse(incoming[key]) > Date.parse(input.collectedAt) + 300000) throw new TypeError('Invalid source check date');
-      if (!previous[key] || incoming[key] >= previous[key]) source[key] = incoming[key];
     }
-    if (typeof incoming.reason === 'string') source.reason = incoming.reason.slice(0, 2000);
-    else if (incoming.status === 'ready') delete source.reason;
-    source.retryAt = Number.isFinite(incoming.retryAt) ? incoming.retryAt : null;
-    source.ageMs = source.retrievedAt ? Math.max(0, Date.parse(input.collectedAt) - Date.parse(source.retrievedAt)) : null;
-    return source;
+  }
+  const publication = await writePreparedOperationalCheck(env, { checkedAt: input.collectedAt, inputDigest: input.inputDigest }, async (current) => {
+    const currentSources = new Map(current.sources.map((source) => [source.id, source]));
+    if (currentSources.size !== input.sources.length || input.sources.some((source) => !currentSources.has(source.id)))
+      throw new PreparedBaselineConflict('Prepared source scope changed');
+    const sources = input.sources.map((incoming) => {
+      const previous = currentSources.get(incoming.id), source = { ...previous, status: incoming.status, stale: incoming.stale === true };
+      for (const key of ['lastAttemptAt', 'lastCheckedAt']) if (incoming[key] && (!source[key] || incoming[key] >= source[key])) source[key] = incoming[key];
+      // Incoming successful retrieval/check dates describe a new operational
+      // check, not another retained source body or a factual capture.
+      if (incoming.status === 'ready' && incoming.retrievedAt) {
+        if (!source.lastSuccessfulCheckAt || incoming.retrievedAt >= source.lastSuccessfulCheckAt) source.lastSuccessfulCheckAt = incoming.retrievedAt;
+        if (!source.lastCheckedAt || incoming.retrievedAt >= source.lastCheckedAt) source.lastCheckedAt = incoming.retrievedAt;
+      }
+      if (typeof incoming.reason === 'string') source.reason = incoming.reason.slice(0, 2000);
+      else if (incoming.status === 'ready') delete source.reason;
+      source.retryAt = Number.isFinite(incoming.retryAt) ? incoming.retryAt : null;
+      source.ageMs = source.retrievedAt ? Math.max(0, Date.parse(input.collectedAt) - Date.parse(source.retrievedAt)) : null;
+      source.checkAgeMs = source.lastCheckedAt ? Math.max(0, Date.parse(input.collectedAt) - Date.parse(source.lastCheckedAt)) : null;
+      return source;
+    });
+    const states = new Map(sources.map((source) => [source.id, source]));
+    return { ...current, sources, indexCoverage: { ...current.indexCoverage, sources: current.indexCoverage.sources.map((scope) => {
+      const source = states.get(scope.id), checked = source?.status === 'ready' && source.id !== 'gdelt' && source.lastSuccessfulCheckAt;
+      return { ...scope, status: source?.status || scope.status,
+        ...(checked ? { expiresAt: new Date(Date.parse(source.lastSuccessfulCheckAt) + 86400000).toISOString() } : {}) };
+    }) } };
   });
-  const direct = new Map(sources.filter((source) => source.id !== 'gdelt' && source.status === 'ready' && iso(source.retrievedAt)).map((source) => [source.id, source]));
-  const payload = { ...prepared.payload, sources, retrievedAt: input.collectedAt,
-    indexRecords: prepared.payload.indexRecords.map((record) => direct.has(record.sourceId) ? { ...record, retrievedAt: direct.get(record.sourceId).retrievedAt } : record),
-    indexCoverage: { ...prepared.payload.indexCoverage, sources: prepared.payload.indexCoverage.sources.map((source) => direct.has(source.id) ? {
-      ...source, generation: `${source.id}:${direct.get(source.id).retrievedAt}`, status: direct.get(source.id).status,
-      expiresAt: new Date(Date.parse(direct.get(source.id).retrievedAt) + 86400000).toISOString(),
-    } : { ...source, status: sources.find((row) => row.id === source.id)?.status || source.status }) },
-  };
-  const publication = await persistEarthCollection(env, { schemaVersion: 1, collectedAt: input.collectedAt, payload }, { now,
-    matchesBaseline: async (current) => Boolean(current && await collectionFactsDigest(current.indexRecords) === input.inputDigest),
-  });
-  return { ...publication, stored: Boolean(publication.stored && !publication.failures.length), heartbeat: true, inputDigest: input.inputDigest };
+  return { ...publication, heartbeat: true, snapshots: [], failures: [], status: publication.stored ? 'stored' : 'unavailable' };
 }
 
 export async function readLocalAnalysis(env, { now = Date.now } = {}) {

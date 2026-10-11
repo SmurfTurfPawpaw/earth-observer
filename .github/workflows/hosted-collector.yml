@@ -1,0 +1,32 @@
+name: Collect fixed hosted sources
+
+on:
+  schedule:
+    - cron: '3-58/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-earth-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    # Optional until the owner provisions the narrow signing key and enables it.
+    if: github.repository == 'SmurfTurfPawpaw/earth-observer' && github.ref == 'refs/heads/main' && vars.EARTH_HOSTED_COLLECTOR_ENABLED == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # Official v4 commit references verified through actions' GitHub repositories.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Invoke collect-only hosted capability once
+        env:
+          EARTH_TRIGGER_HMAC_KEY: ${{ secrets.EARTH_TRIGGER_HMAC_KEY }}
+        run: node scripts/trigger-hosted-collector.mjs

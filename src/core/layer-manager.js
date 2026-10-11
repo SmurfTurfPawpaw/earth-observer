@@ -6,6 +6,10 @@ import { validateArea } from './local-area.js';
 export const STORAGE_KEY = 'earth-observer:layers:v1';
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
 const aborted = (error) => error?.name === 'AbortError';
+// These adapters select genuine provider frames against the shared scene
+// time and hide themselves across coverage gaps. Other layers are live-only
+// until a dated source contract exists; current data cannot stand in for it.
+const OBSERVED_FRAME_LAYERS = new Set(['weather-radar', 'weather-satellite', 'weather-lightning']);
 
 /** Own lazy loading, visibility intent, refresh work and persistence. */
 export function createLayerManager(viewer, onStateChange = () => {}, options = {}) {
@@ -29,12 +33,14 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
   const listeners = new Set([onStateChange]);
   let servicesPromise, services, destroyed = false, publishQueued = false, timelinePaused = false;
   let localArea = validateArea(options.localArea);
+  const historySuspends = (entry) => timelinePaused && !OBSERVED_FRAME_LAYERS.has(entry.meta.id);
   const stateEntry = (entry) => {
     let stats = {};
     try { stats = entry.module?.getStats?.() || {}; } catch { /* startup may precede stats */ }
     return {
       enabled: entry.requested, settledEnabled: entry.enabled,
-      timelinePaused,
+      timelinePaused: historySuspends(entry),
+      sceneMode: timelinePaused ? 'history' : 'live',
       status: entry.status === 'ready' && stats.loading ? 'loading' : entry.status,
       count: Number.isFinite(stats.count) ? stats.count : 0,
       lastUpdate: stats.lastUpdate ?? null,
@@ -93,7 +99,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     entry.controller = new AbortController();
   }
   function updateActiveServices() {
-    services?.setActiveServices?.([...new Set([...entries].flatMap(([id, entry]) => !timelinePaused && entry.requested ? requiredServices(id) : []))]);
+    services?.setActiveServices?.([...new Set([...entries].flatMap(([id, entry]) => !historySuspends(entry) && entry.requested ? requiredServices(id) : []))]);
   }
   async function prepareServices(id) {
     const names = requiredServices(id);
@@ -104,8 +110,8 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     return services.ensure ? services.ensure(names) : services;
   }
   async function preload(id) {
-    requireEntry(id);
-    if (destroyed || timelinePaused || documentRef?.hidden || connection?.saveData || ['slow-2g', '2g'].includes(connection?.effectiveType)) return false;
+    const entry = requireEntry(id);
+    if (destroyed || historySuspends(entry) || documentRef?.hidden || connection?.saveData || ['slow-2g', '2g'].includes(connection?.effectiveType)) return false;
     try { await preloadCode(id); return !destroyed; }
     catch { return false; } // Optional warm-up must not turn a checkbox into an error.
   }
@@ -117,7 +123,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       // Engine code and its small, selective scene services load in parallel.
       const [layerServices] = await Promise.all([prepareServices(id), preloadCode(id)]);
       const sourceFetch = async (url, init = {}) => {
-        if (timelinePaused || documentRef?.hidden || !entry.requested) return Promise.reject(new DOMException('Layer is inactive', 'AbortError'));
+        if (historySuspends(entry) || documentRef?.hidden || !entry.requested) return Promise.reject(new DOMException('Layer is inactive', 'AbortError'));
         const signal = AbortSignal.any([entry.controller.signal, init.signal].filter(Boolean));
         signal.throwIfAborted();
         const absolute = new URL(String(url), globalThis.location?.origin || 'http://localhost').href;
@@ -146,7 +152,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
   }
   async function refresh(id) {
     const entry = requireEntry(id);
-    if (timelinePaused || !entry.enabled || !entry.requested || entry.refreshing || documentRef?.hidden || destroyed) return false;
+    if (historySuspends(entry) || !entry.enabled || !entry.requested || entry.refreshing || documentRef?.hidden || destroyed) return false;
     entry.refreshing = true;
     const owner = entry.controller;
     publish();
@@ -167,7 +173,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       entry.refreshing = false;
       if (!owner.signal.aborted) viewer.scene?.requestRender?.();
       publish();
-      if (entry.revalidated && !destroyed && !timelinePaused && entry.requested && !documentRef?.hidden) {
+      if (entry.revalidated && !destroyed && !historySuspends(entry) && entry.requested && !documentRef?.hidden) {
         entry.revalidated = false;
         queueMicrotask(() => { void refresh(id); });
       }
@@ -175,17 +181,17 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
   }
   function armTimer(id, entry) {
     stopTimer(entry);
-    if (timelinePaused || documentRef?.hidden || !entry.requested || !entry.enabled || destroyed) return;
+    if (historySuspends(entry) || documentRef?.hidden || !entry.requested || !entry.enabled || destroyed) return;
     const interval = entry.module?.updateInterval;
     if (Number.isFinite(interval) && interval > 0) entry.timer = schedule(() => { void refresh(id); }, Math.max(1000, interval));
   }
   async function reconcile(id, revision) {
     const entry = requireEntry(id);
     if (destroyed || revision !== entry.revision) return false;
-    if (!entry.requested || timelinePaused) {
+    if (!entry.requested || historySuspends(entry)) {
       entry.status = 'disabling'; publish();
       if (entry.initialized) await entry.module.disable?.(viewer);
-      entry.enabled = false; entry.status = entry.requested && timelinePaused ? 'paused' : 'disabled'; entry.error = null;
+      entry.enabled = false; entry.status = entry.requested && historySuspends(entry) ? 'paused' : 'disabled'; entry.error = null;
       viewer.scene?.requestRender?.(); publish(); return true;
     }
     if (documentRef?.hidden) { entry.status = 'paused'; publish(); return false; }
@@ -286,16 +292,16 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       stopTimer(entry);
       entry.controller.abort();
       if (!documentRef?.hidden) entry.controller = new AbortController();
-      if (!timelinePaused && !documentRef?.hidden && entry.enabled) { armTimer(id, entry); void refresh(id); }
-      else if (!timelinePaused && !documentRef?.hidden && entry.requested) void setEnabled(id, true);
+      if (!historySuspends(entry) && !documentRef?.hidden && entry.enabled) { armTimer(id, entry); void refresh(id); }
+      else if (!historySuspends(entry) && !documentRef?.hidden && entry.requested) void setEnabled(id, true);
     }
     publish();
   }
   documentRef?.addEventListener?.('visibilitychange', visibilityChanged);
   const unsubscribeCache = fetchImpl.subscribe?.((url) => {
-    if (destroyed || timelinePaused || documentRef?.hidden) return;
+    if (destroyed || documentRef?.hidden) return;
     for (const [id, entry] of entries) {
-      if (!entry.requested || !entry.urls.has(url)) continue;
+      if (historySuspends(entry) || !entry.requested || !entry.urls.has(url)) continue;
       if (entry.refreshing) entry.revalidated = true;
       else void refresh(id);
     }
@@ -323,7 +329,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       // Retain one invalidation through lazy loading, hidden/history pauses and
       // disabled layers. The next permitted update must bypass an older HIT.
       entry.preparedDirty = true;
-      if (timelinePaused || documentRef?.hidden || !entry.requested || !entry.enabled) return false;
+      if (historySuspends(entry) || documentRef?.hidden || !entry.requested || !entry.enabled) return false;
       if (entry.refreshing) entry.revalidated = true;
       else void refresh(id);
       return true;
@@ -346,7 +352,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     },
     getLayer: (id) => requireEntry(id).module,
     isEnabled: (id) => Boolean(entries.get(id)?.enabled),
-    isEffectivelyEnabled: (id) => !timelinePaused && Boolean(entries.get(id)?.requested),
+    isEffectivelyEnabled: (id) => Boolean(entries.get(id)?.requested) && !historySuspends(entries.get(id)),
     getLayerParams: (id) => clone(requireEntry(id).module?.getParams?.() || requireEntry(id).params),
     setLayerParams,
     adoptLayerParams(id, values) {
@@ -368,7 +374,7 @@ function mountLayerControls(manager, id, container) {
   const render = () => {
     if (disposed) return;
     const module = manager.getLayer(id);
-    if (manager.isTimelinePaused() && manager.getState()[id]?.enabled) {
+    if (manager.getState()[id]?.timelinePaused && manager.getState()[id]?.enabled) {
       lastSignature = undefined; container.textContent = 'Live layer paused while reviewing recorded metadata.'; return;
     }
     if (!module || !manager.getState()[id]?.enabled) { lastSignature = undefined; container.replaceChildren(); return; }

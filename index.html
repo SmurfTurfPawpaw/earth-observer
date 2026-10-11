@@ -2,53 +2,58 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#10151b" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#080f16" />
     <meta name="description" content="Explore Earth through attributable public data, satellite imagery, and local context." />
     <title>Earth Observer</title>
     <link rel="preconnect" href="https://gibs.earthdata.nasa.gov" crossorigin />
     <link rel="stylesheet" href="/style.css" />
   </head>
-  <body class="sidebar-open">
+  <body>
     <a class="skip-link" href="#search">Skip to controls</a>
     <main id="app" aria-label="Earth Observer">
       <div id="globe" aria-label="Interactive globe. Drag to rotate, scroll to zoom. Use the navigation buttons for keyboard controls."></div>
       <div id="scene-preview" hidden><img id="scene-preview-image" alt="Saved map preview" /><span>Saved view · updating</span></div>
       <header class="map-topbar">
-        <div class="header-primary">
-          <button id="open-sidebar" class="icon-button" type="button" title="Show or hide layers and search" aria-label="Show or hide layers and search" aria-controls="sidebar" aria-expanded="true" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 4h18v16H3Z"/><path d="M8 4v16"/><path d="m14 9-3 3 3 3"/></svg></button>
-          <div class="app-brand"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/><path d="M3 12h18"/><path d="M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg><h1>Earth Observer</h1></div>
-        </div>
+        <div class="header-primary"><div class="app-brand"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/><path d="M3 12h18"/><path d="M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg><h1>Earth Observer</h1></div></div>
+          <form id="search-form" class="global-search" role="search">
+            <label class="sr-only" for="search">Find a place or coordinates</label>
+            <div class="search-row"><input id="search" name="search" type="search" placeholder="Search places or coordinates" autocomplete="off" list="place-suggestions" aria-describedby="search-help" /><kbd class="search-shortcut" aria-hidden="true">/</kbd><button class="icon-button" type="submit" title="Find a place" aria-label="Find a place" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"/><path d="m15 15 6 6"/></svg></button></div>
+            <datalist id="place-suggestions"></datalist>
+            <p id="search-help" class="sr-only">Search supported places or latitude, longitude, for example 50.85, 4.35. Press slash to focus search; Control or Command K opens layers, saved places and actions.</p>
+            <p id="search-status" role="status"></p>
+          </form>
+        <nav class="header-actions" aria-label="Search and location">
+          <button id="locate" class="icon-button" type="button" title="Explore your local area" aria-label="Explore your local area" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M13 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></svg></button>
+          <button id="toggle-command" class="icon-button" type="button" title="Commands (Ctrl/Cmd+K)" aria-label="Commands (Ctrl or Command K)" aria-controls="command-palette" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 8h8v8H8V8Z"/><path d="M8 8H5a3 3 0 1 1 3-3v3Z"/><path d="M16 8V5a3 3 0 1 1 3 3h-3Z"/><path d="M16 16h3a3 3 0 1 1-3 3v-3Z"/><path d="M8 16v3a3 3 0 1 1-3-3h3Z"/></svg></button></nav>
         <div id="local-context" class="local-context" data-active="false">
           <output id="local-status" title="Current local area" aria-live="polite">Global view</output>
           <label class="local-radius-label" hidden><span class="sr-only">Local area radius</span><select id="local-radius" title="Local area radius" aria-label="Local area radius"><option value="10" selected>10 km</option><option value="25">25 km</option><option value="50">50 km</option><option value="100">100 km</option><option value="250">250 km</option></select></label>
         </div>
-        <nav class="header-actions" aria-label="Workspace">
-          <button id="locate" class="icon-button" type="button" title="Explore your local area" aria-label="Explore your local area" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M13 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></svg></button>
-          <button id="toggle-news" class="icon-button" type="button" title="News and intelligence" aria-label="News and intelligence" aria-controls="news-panel" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 3h16v17a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V7h2"/><path d="M5 7v12"/><path d="M9 7h8"/><path d="M9 11h8"/><path d="M9 15h3"/><path d="M15 15h2"/></svg></button>
-          <button id="toggle-notebook" class="icon-button" type="button" title="Local notebook" aria-label="Local notebook" aria-controls="notebook-panel" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 3h14v18H6V3Z"/><path d="M3 7h5"/><path d="M3 12h5"/><path d="M3 17h5"/><path d="M11 8h5"/><path d="M11 12h5"/><path d="M11 16h3"/></svg></button>
-          <div class="toolbar-divider" aria-hidden="true"></div>
+      </header>
+
+      <nav id="workspace-rail" class="workspace-rail" aria-label="Workspace">
+        <button id="home" class="icon-button rail-button" type="button" title="Show the full globe" aria-label="Show the full globe" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/><path d="M3 12h18"/><path d="M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg><span class="rail-label">Explore</span></button>
+        <button id="open-sidebar" class="icon-button rail-button" type="button" title="Show data layers" aria-label="Show data layers" aria-controls="sidebar" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></svg><span class="rail-label">Data</span></button>
+        <button id="open-saved-places" class="icon-button rail-button" type="button" title="Saved places on this device" aria-label="Saved places on this device" aria-controls="sidebar" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg><span class="rail-label">Saved</span></button>
+        <span class="rail-divider" aria-hidden="true"></span>
+        <button id="toggle-news" class="icon-button rail-button" type="button" title="Explore source coverage and context" aria-label="Explore source coverage and context" aria-controls="news-panel" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 3h16v17a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V7h2"/><path d="M5 7v12"/><path d="M9 7h8"/><path d="M9 11h8"/><path d="M9 15h3"/><path d="M15 15h2"/></svg><span class="rail-label">Context</span></button>
+        <button id="toggle-notebook" class="icon-button rail-button" type="button" title="Local notebook" aria-label="Local notebook" aria-controls="notebook-panel" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 3h14v18H6V3Z"/><path d="M3 7h5"/><path d="M3 12h5"/><path d="M3 17h5"/><path d="M11 8h5"/><path d="M11 12h5"/><path d="M11 16h3"/></svg><span class="rail-label">Notes</span></button>
+        <span class="rail-divider" aria-hidden="true"></span>
+        <button id="toggle-navbar" class="icon-button rail-button" type="button" title="Workspace tools" aria-label="Workspace tools" aria-controls="header-tools" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h.01"/><path d="M12 12h.01"/><path d="M19 12h.01"/></svg><span class="rail-label">Tools</span></button>
+      </nav>
           <div id="header-tools" hidden>
             <button id="toggle-basemap" class="icon-button" type="button" title="Show global satellite imagery" aria-label="Show global satellite imagery" aria-pressed="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Z"/><path d="M9 3v15M15 6v15"/></svg></button>
             <a id="sign-in" class="icon-button" href="/signin-with-chatgpt?return_to=%BASE_URL%" target="_top" title="Sign in with ChatGPT to contribute" aria-label="Sign in with ChatGPT to contribute"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg></a>
-            <button id="toggle-command" class="icon-button" type="button" title="Commands (Ctrl/Cmd+K)" aria-label="Commands (Ctrl or Command K)" aria-controls="command-palette" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 8h8v8H8V8Z"/><path d="M8 8H5a3 3 0 1 1 3-3v3Z"/><path d="M16 8V5a3 3 0 1 1 3 3h-3Z"/><path d="M16 16h3a3 3 0 1 1-3 3v-3Z"/><path d="M8 16v3a3 3 0 1 1-3-3h3Z"/></svg></button>
+
             <button id="share-view" class="icon-button" type="button" title="Copy a link to this view" aria-label="Copy a link to this view" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path d="M9 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path d="M21 19a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path d="m9 10 6-4"/><path d="m9 14 6 4"/></svg></button>
             <button id="reset-session" class="icon-button" type="button" title="Reset workspace" aria-label="Reset workspace" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 10a9 9 0 1 1 1 7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/></svg></button>
           </div>
-          <button id="toggle-navbar" class="icon-button" type="button" title="More workspace tools" aria-label="More workspace tools" aria-controls="header-tools" aria-expanded="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h.01"/><path d="M12 12h.01"/><path d="M19 12h.01"/></svg></button>
-        </nav>
-      </header>
-      <aside id="sidebar" class="floating-panel" aria-label="Layers and search">
-        <header class="panel-header"><div class="panel-heading"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></svg><h2 id="layers-heading">Layers</h2><span id="layer-active-count" class="count-badge">0</span></div><button id="close-sidebar" class="icon-button" type="button" title="Close layers and search" aria-label="Close layers and search" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m14 6-6 6 6 6"/></svg></button></header>
+      <aside id="sidebar" class="floating-panel" data-workspace="data" aria-label="Data and saved places" aria-hidden="true" inert>
+        <header class="panel-header"><div class="panel-heading"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></svg><h2 id="layers-heading">Data layers</h2><span id="layer-active-count" class="count-badge">0</span></div><button id="close-sidebar" class="icon-button" type="button" title="Close workspace" aria-label="Close workspace" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m14 6-6 6 6 6"/></svg></button></header>
         <div class="sidebar-content">
-          <form id="search-form" role="search">
-            <label class="sr-only" for="search">Find a place or coordinates</label>
-            <div class="search-row"><input id="search" name="search" type="search" placeholder="Place or coordinates" autocomplete="off" list="place-suggestions" aria-describedby="search-help" /><button class="icon-button" type="submit" title="Find a place" aria-label="Find a place" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"/><path d="m15 15 6 6"/></svg></button></div>
-            <datalist id="place-suggestions"></datalist>
-            <p id="search-help" class="sr-only">Saved places or coordinates, for example 50.85, 4.35.</p>
-            <p id="search-status" role="status"></p>
-          </form>
-          <details id="saved-places" class="saved-places">
+
+          <details id="saved-places" class="saved-places saved-workspace">
             <summary><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg><span>Saved places</span><span id="saved-place-count" class="group-count">0</span><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m10 6 6 6-6 6"/></svg></summary>
             <div class="saved-places-body">
               <form id="save-place-form" class="save-place-form">
@@ -58,11 +63,11 @@
               <ul id="saved-place-list" class="saved-place-list" aria-label="Saved camera views"></ul>
             </div>
           </details>
-          <section class="layer-section" aria-labelledby="layers-heading">
+          <section class="layer-section data-workspace" aria-labelledby="layers-heading">
             <div class="section-heading"><span class="muted">Explore public data</span><span id="layer-loading-count" class="loading-count" hidden></span><button id="clear-layers" class="text-button" type="button" title="Turn off every layer" disabled>Clear</button></div>
             <div id="layers"><div class="layer-list-placeholder" aria-hidden="true"><span></span><span></span><span></span></div><p class="layer-controls-loading">Loading layer controls…</p></div>
           </section>
-          <details id="sources" class="sources">
+          <details id="sources" class="sources data-workspace">
             <summary><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/><path d="M12 11v6"/><path d="M12 7h.01"/></svg><span>Sources &amp; attribution</span><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m10 6 6 6-6 6"/></svg></summary>
             <div id="source-list"></div>
             <p>Street map: <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> · <a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">© OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a>. Detail is from native vector zoom 14; closer views redraw the same geometry.</p>
@@ -75,7 +80,7 @@
       </aside>
       <div id="load-status" class="load-status" role="status" aria-live="polite" hidden><span class="loading-spinner" aria-hidden="true"></span><span id="load-status-text"></span></div>
       <nav id="navigation" aria-label="Globe navigation">
-        <button id="home" class="icon-button" type="button" title="Show the full globe" aria-label="Show the full globe" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/><path d="M3 12h18"/><path d="M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg></button>
+
         <button id="north" class="icon-button" type="button" title="Face north" aria-label="Face north" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 6 17-6-4-6 4 6-17Z"/><path d="M12 3v13"/></svg></button>
         <div class="navigation-divider" aria-hidden="true"></div>
         <button id="zoom-in" class="icon-button" type="button" title="Zoom in" aria-label="Zoom in" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button>
@@ -84,13 +89,13 @@
         <button id="tilt" class="icon-button" type="button" title="Toggle overhead and tilted views" aria-label="Toggle overhead and tilted views" aria-pressed="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m4 16 5-10 11 10-5 5-11-5Z"/><path d="m9 6 6 15"/></svg></button>
       </nav>
       <div id="view-position" class="view-position" aria-label="Camera position"></div>
-      <details id="earth-timeline" class="earth-timeline" aria-label="UTC time and recorded coverage"><summary class="timeline-summary"><span aria-hidden="true">◷</span><span>Live</span><time>UTC</time></summary></details>
+      <div class="earth-time-dock"><div class="timeline-readout"><span class="timeline-clock-icon" aria-hidden="true">◷</span><span class="timeline-mode">Time</span><time class="timeline-clock">Loading UTC…</time></div><details id="earth-timeline" class="earth-timeline" aria-label="UTC time and recorded coverage"><summary class="timeline-summary" aria-label="Calendar and recorded coverage"><span class="timeline-chevron" aria-hidden="true">⌃</span></summary></details></div>
       <section id="selection" class="floating-panel side-panel" hidden aria-labelledby="selection-title">
         <header class="panel-header"><div class="panel-heading"><span class="panel-eyebrow">Feature</span><h2 id="selection-title">Selected feature</h2></div><button id="clear-selection" class="icon-button" type="button" title="Close feature details" aria-label="Close feature details"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12"/><path d="M18 6 6 18"/></svg></button></header>
         <div id="selection-details" class="panel-content"></div>
       </section>
       <section id="news-panel" class="floating-panel side-panel" hidden aria-labelledby="news-heading">
-        <header class="panel-header"><div class="panel-heading"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 3h16v17a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V7h2"/><path d="M5 7v12"/><path d="M9 7h8"/><path d="M9 11h8"/><path d="M9 15h3"/><path d="M15 15h2"/></svg><h2 id="news-heading">News &amp; intelligence</h2></div><button id="close-news" class="icon-button" type="button" title="Close news and intelligence" aria-label="Close news and intelligence"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12"/><path d="M18 6 6 18"/></svg></button></header>
+        <header class="panel-header"><div class="panel-heading"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 3h16v17a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V7h2"/><path d="M5 7v12"/><path d="M9 7h8"/><path d="M9 11h8"/><path d="M9 15h3"/><path d="M15 15h2"/></svg><h2 id="news-heading">Source context</h2></div><button id="close-news" class="icon-button" type="button" title="Close news and intelligence" aria-label="Close news and intelligence"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12"/><path d="M18 6 6 18"/></svg></button></header>
         <div class="panel-content"><p class="panel-note">Related coverage is indicative; multiple links are not independent confirmation.</p><p id="news-status" class="muted" role="status"></p><div id="news-content"><p class="empty-state">Source coverage loads when this panel opens.</p></div></div>
       </section>
       <section id="notebook-panel" class="floating-panel side-panel" hidden aria-labelledby="notebook-heading">

@@ -1,8 +1,9 @@
 import * as Cesium from 'cesium';
-import { createLiveClock } from './live-clock.js';
+import { createSceneClock } from './scene-clock.js';
 
 const MAX_SNAPSHOTS = 5000, MAX_REPORTS = 1000, MAX_BYTES = 1024 * 1024;
 export const HISTORY_REFRESH_MS = 60000;
+const HISTORY_CACHE_LIMIT = 3;
 const stamp = (value) => {
   if (typeof value !== 'string' || value.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return null;
   const time = Date.parse(value);
@@ -15,7 +16,7 @@ function linkUrl(value) {
   catch { return null; }
 }
 
-/** The selectable range is exclusively the snapshots the server actually lists. */
+/** Durable coverage may exceed the bounded catalog; recent-index coverage may not. */
 export function normalizeHistory(value) {
   if (!value || typeof value.configured !== 'boolean' || !Array.isArray(value.snapshots) || value.snapshots.length > MAX_SNAPSHOTS) throw new Error('Recorded coverage is invalid');
   const seen = new Set();
@@ -34,12 +35,21 @@ export function normalizeHistory(value) {
       Number.isFinite(item.lat) && Math.abs(item.lat) <= 90 && Number.isFinite(item.lon) && Math.abs(item.lon) <= 180;
     return [{ id: text(item.id), title, url, source: text(item.source || item.sourceId, 80), sourceId: text(item.sourceId, 80), kind: text(item.kind, 40),
       ...(point ? { lat: item.lat, lon: item.lon } : {}),
+      ...(Number.isFinite(item.magnitude) ? { magnitude: item.magnitude } : {}),
       observedAt: stamp(item.observedAt), publishedAt: stamp(item.publishedAt), sourceGeometryAt: stamp(item.sourceGeometryAt),
       indexedAt: stamp(item.indexedAt), updatedAt: stamp(item.updatedAt), retrievedAt: stamp(item.retrievedAt),
       closedAt: stamp(item.closedAt) }];
   }) : [];
-  return { configured: value.configured, at: stamp(value.at), snapshots, reports,
-    firstAt: snapshots[0]?.at || null, lastAt: snapshots.at(-1)?.at || null };
+  const indexMode = ['d1-full-history', 'r2-recent-history'].includes(value.indexMode) ? value.indexMode : null;
+  const durableFirst = stamp(value.firstAt), durableLast = stamp(value.lastAt);
+  const fullRange = value.configured && indexMode === 'd1-full-history' && snapshots.length &&
+    durableFirst && durableLast && durableFirst <= snapshots[0].at && durableLast >= snapshots.at(-1).at;
+  const hasNextCapture = indexMode === 'd1-full-history' && Object.hasOwn(value, 'nextCaptureAt');
+  const nextCaptureAt = stamp(value.nextCaptureAt);
+  if (hasNextCapture && value.nextCaptureAt !== null && !nextCaptureAt) throw new Error('Recorded capture boundary is invalid');
+  return { configured: value.configured, at: stamp(value.at), selectedAt: stamp(value.selectedAt), snapshots, reports, indexMode,
+    firstAt: fullRange ? durableFirst : snapshots[0]?.at || null, lastAt: fullRange ? durableLast : snapshots.at(-1)?.at || null,
+    ...(hasNextCapture ? { nextCaptureAt } : {}) };
 }
 
 async function readJson(response, signal) {
@@ -74,6 +84,29 @@ export function createHistoryController({ fetchImpl = (...args) => fetch(...args
   let opened = false, destroyed = false, owner = 0, request, pending, manifest = null, selection = null, error = null, loading = false;
   let manifestOwner = 0, manifestRequest, manifestPending, manifestLoading = false, manifestError = null, checkedAt = null, timer;
   let delivery = 'unsupported', revision = null, manifestDirty = true, queuedInvalidation = false;
+  const cache = new Map();
+  const captureKey = (items) => JSON.stringify([...items].sort((a, b) => a.source.localeCompare(b.source))
+    .map(({ source, at, id }) => [source, at, id]));
+  const windowAt = (at) => {
+    const canonical = stamp(at);
+    if (!canonical || !manifest?.firstAt || canonical < manifest.firstAt || canonical > manifest.lastAt) return null;
+    // The newest catalog is a contiguous, bounded tail. Before it begins,
+    // only an as-of response with a proven next boundary can define a window.
+    if (canonical < manifest.snapshots[0].at) {
+      for (const [key, entry] of cache) {
+        if (entry.complete && canonical >= entry.firstAt && (entry.nextAt ? canonical < entry.nextAt : canonical <= entry.lastAt)) {
+          return { key, firstAt: entry.firstAt, nextAt: entry.nextAt, complete: true };
+        }
+      }
+      return { key: `exact:${canonical}`, firstAt: canonical, nextAt: null, complete: false };
+    }
+    const latest = new Map(); let nextAt = null;
+    for (const snapshot of manifest.snapshots) {
+      if (snapshot.at <= canonical) latest.set(snapshot.source, snapshot);
+      else { nextAt = snapshot.at; break; }
+    }
+    return { key: `catalog:${captureKey(latest.values())}`, firstAt: [...latest.values()].map((item) => item.at).sort().at(-1), nextAt, complete: true };
+  };
   const state = () => ({ opened, loading: loading || manifestLoading, manifest, selection, error: error || manifestError,
     mode: selection ? 'history' : 'live', delivery, revision });
   const emit = () => { if (!destroyed) onChange(state()); };
@@ -121,6 +154,7 @@ export function createHistoryController({ fetchImpl = (...args) => fetch(...args
   function collectionRevision(value) {
     if (typeof value !== 'string' || !value || value.length > 160 || value === revision) return;
     revision = value; manifestDirty = true;
+    cache.clear();
     if (!opened || destroyed || documentRef?.hidden) return;
     if (manifestPending) queuedInvalidation = true; else void acquireManifest(Boolean(manifest));
   }
@@ -130,17 +164,30 @@ export function createHistoryController({ fetchImpl = (...args) => fetch(...args
       delivery = event.status; collectionRevision(event.revision); emit(); arm();
     } else if (event.type === 'collection' && event.schemaVersion === 1) collectionRevision(event.revision);
   };
-  function acquire(at) {
+  function acquire(at, window) {
     if (destroyed || !opened || documentRef?.hidden) return Promise.resolve(false);
     cancel(); const generation = owner, controller = new AbortController(); request = controller; loading = true; error = null; emit();
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
     const work = (async () => {
       try {
-        const response = await fetchImpl(`/api/history?${new URLSearchParams({ at })}`, { signal, headers: { Accept: 'application/json' }, cache: 'no-cache' });
-        const result = normalizeHistory(await readJson(response, signal)); signal.throwIfAborted();
+        let result = selection?.at !== at ? cache.get(window.key)?.result : null;
+        const cached = Boolean(result);
+        if (!result) {
+          const response = await fetchImpl(`/api/history?${new URLSearchParams({ at })}`, { signal, headers: { Accept: 'application/json' }, cache: 'no-cache' });
+          result = normalizeHistory(await readJson(response, signal)); signal.throwIfAborted();
+        }
         if (destroyed || !opened || documentRef?.hidden || generation !== owner) return false;
-        if (!result.configured || !result.snapshots.length || result.snapshots.some((snapshot) => snapshot.at > at)) throw new Error('No recorded coverage is available at this time');
-        selection = { ...result, at };
+        if (!result.configured || !result.snapshots.length || result.snapshots.some((snapshot) => snapshot.at > at) ||
+            !cached && result.selectedAt && result.selectedAt !== at) throw new Error('No recorded coverage is available at this time');
+        let resolved = window;
+        if (!window.complete && Object.hasOwn(result, 'nextCaptureAt')) {
+          if (result.nextCaptureAt !== null && result.nextCaptureAt <= at) throw new Error('Recorded capture boundary is invalid');
+          resolved = { key: `archive:${captureKey(result.snapshots)}`, firstAt: result.snapshots.at(-1).at,
+            nextAt: result.nextCaptureAt, complete: true };
+        }
+        cache.delete(resolved.key); cache.set(resolved.key, { result, ...resolved, lastAt: manifest.lastAt });
+        while (cache.size > HISTORY_CACHE_LIMIT) cache.delete(cache.keys().next().value);
+        selection = { ...result, at, windowKey: resolved.key, windowKnown: resolved.complete };
         await onTimeChange({ mode: 'history', at, reports: selection.reports, snapshots: selection.snapshots });
         if (destroyed || !opened || documentRef?.hidden || generation !== owner) return false;
         return true;
@@ -168,78 +215,129 @@ export function createHistoryController({ fetchImpl = (...args) => fetch(...args
     close() { opened = false; cancel(); cancelManifest(); emit(); },
     refresh() { return acquireManifest(Boolean(manifest)); },
     select(at) {
-      const canonical = stamp(at);
-      if (!canonical || !manifest?.snapshots.some((snapshot) => snapshot.at === canonical)) return Promise.resolve(false);
-      return acquire(canonical);
+      const canonical = stamp(at), window = windowAt(canonical);
+      if (!window) return Promise.resolve(false);
+      return acquire(canonical, window);
     },
+    getWindow: windowAt,
     live() { if (destroyed) return; cancel(); selection = null; error = null; onTimeChange({ mode: 'live', at: null, reports: [], snapshots: [] }); emit(); },
-    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); cancelManifest(); if (typeof unsubscribeUpdates === 'function') unsubscribeUpdates(); documentRef?.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); },
+    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); cancelManifest(); cache.clear(); if (typeof unsubscribeUpdates === 'function') unsubscribeUpdates(); documentRef?.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); },
   };
 }
 
-/** A compact UTC control with an expanded, dated archive independent of live layers. */
+/** Calendar playback shares scene time; evidence requests occur at capture boundaries. */
 export function createTimeline({ container, viewer, fetchImpl, onTimeChange = () => {}, onNavigate,
   documentRef = container?.ownerDocument || globalThis.document, setTimeoutImpl = globalThis.setTimeout,
-  clearTimeoutImpl = globalThis.clearTimeout, now = Date.now, windowRef = documentRef?.defaultView || globalThis.window, subscribeUpdates } = {}) {
+  clearTimeoutImpl = globalThis.clearTimeout, now = Date.now, monotonicNow,
+  windowRef = documentRef?.defaultView || globalThis.window, subscribeUpdates } = {}) {
   if (!container || !viewer?.earthTime || !documentRef) throw new TypeError('Timeline needs a container and astronomical clock');
   const node = (tag, className, value) => { const item = documentRef.createElement(tag); if (className) item.className = className; if (value !== undefined) item.textContent = value; return item; };
+  const existingDock = container.parentElement?.className?.split(/\s+/).includes('earth-time-dock');
+  const dock = existingDock ? container.parentElement : node('div', 'earth-time-dock');
+  if (!existingDock) { container.replaceWith?.(dock); dock.append(container); }
   const summary = node('summary', 'timeline-summary');
+  summary.setAttribute('aria-label', 'Calendar and recorded coverage');
+  summary.setAttribute('aria-controls', 'timeline-calendar');
   const icon = node('span', 'timeline-clock-icon', '◷'); icon.setAttribute('aria-hidden', 'true');
   const mode = node('span', 'timeline-mode', 'Live'), clock = node('time', 'timeline-clock');
-  summary.append(icon, mode, clock, node('span', 'timeline-chevron', '⌃'));
-  const body = node('div', 'timeline-body');
+  const readout = node('div', 'timeline-readout'); readout.setAttribute('role', 'group'); readout.setAttribute('aria-label', 'Scene UTC time'); readout.append(icon, mode, clock);
+  const transport = node('span', 'timeline-transport');
+  transport.setAttribute('role', 'group'); transport.setAttribute('aria-label', 'World time controls');
+  const play = node('button', 'icon-button timeline-play', '▶'); play.type = 'button'; play.id = 'timeline-play'; play.dataset.action = 'play';
+  const live = node('button', 'timeline-live', 'Live'); live.type = 'button'; live.dataset.action = 'live'; live.setAttribute('aria-label', 'Return to current UTC and live layers');
+  const rate = node('select', 'timeline-rate'); rate.id = 'timeline-rate'; rate.setAttribute('aria-label', 'History playback speed'); rate.title = 'Elapsed world time per second';
+  for (const [value, label] of [[1, '1 s / s'], [60, '1 min / s'], [3600, '1 h / s'], [86400, '1 day / s']]) {
+    const option = node('option', '', label); option.value = String(value); rate.append(option);
+  }
+  transport.append(play, rate, live); summary.append(node('span', 'timeline-chevron', '⌃'));
+  const body = node('div', 'timeline-body'); body.id = 'timeline-calendar';
   const controls = node('div', 'timeline-controls');
-  const live = node('button', 'timeline-live', 'Live'); live.type = 'button'; live.setAttribute('aria-label', 'Return to current UTC and live layers');
-  const back = node('button', 'icon-button', '‹'); back.type = 'button'; back.setAttribute('aria-label', 'Previous recorded snapshot');
-  const forward = node('button', 'icon-button', '›'); forward.type = 'button'; forward.setAttribute('aria-label', 'Next recorded snapshot');
-  const slider = node('input', 'timeline-range'); slider.type = 'range'; slider.min = '0'; slider.max = '0'; slider.step = '1'; slider.value = '0'; slider.disabled = true; slider.setAttribute('aria-label', 'Choose recorded UTC snapshot');
+  const back = node('button', 'icon-button', '‹'); back.type = 'button'; back.setAttribute('aria-label', 'Step backward in recorded time');
+  const forward = node('button', 'icon-button', '›'); forward.type = 'button'; forward.setAttribute('aria-label', 'Step forward in recorded time');
+  const slider = node('input', 'timeline-range'); slider.type = 'range'; slider.min = '0'; slider.max = '0'; slider.step = '1'; slider.value = '0'; slider.disabled = true; slider.setAttribute('aria-label', 'Choose historical UTC time');
+  const date = node('input', 'timeline-date'); date.id = 'timeline-date'; date.type = 'datetime-local'; date.step = '1'; date.setAttribute('aria-label', 'Historical date and time in UTC'); date.title = 'UTC, within recorded coverage';
   const sunlight = node('button', 'timeline-sunlight', '☀'); sunlight.type = 'button'; sunlight.setAttribute('aria-label', 'Show or hide calculated UTC day and night'); sunlight.setAttribute('aria-pressed', 'true');
   const reload = node('button', 'icon-button', '↻'); reload.type = 'button'; reload.setAttribute('aria-label', 'Refresh recorded coverage');
-  controls.append(live, back, slider, forward, sunlight, reload);
+  controls.append(back, date, forward, sunlight, reload);
+  const ruler = node('div', 'timeline-ruler'), firstLabel = node('time'), lastLabel = node('time'); ruler.append(firstLabel, node('span', '', 'UTC'), lastLabel);
   const coverage = node('p', 'timeline-coverage'), captures = node('p', 'timeline-coverage'), status = node('p', 'timeline-status'); status.setAttribute('role', 'status');
-  const note = node('p', 'timeline-note', 'Sun and Moon are calculated for UTC. Reviewing recorded metadata pauses live layers. Map imagery is not historical imagery. Satellite positions and orbit paths in Live mode are predictions from orbital elements.');
+  const note = node('p', 'timeline-note', 'Playback follows recorded coverage. Source evidence changes at its captured times; sunlight follows the selected UTC. Layers without historical support are unavailable in history. Base map imagery is not historical imagery.');
   const records = node('div', 'timeline-records'); records.setAttribute('aria-label', 'Recorded source metadata');
-  body.append(controls, coverage, captures, status, note, records); container.replaceChildren(summary, body);
-  let times = [], destroyed = false, renderedSelection, fallbackClock;
+  body.append(controls, slider, ruler, status, coverage, captures, note, records); container.replaceChildren(summary, body);
+  dock.replaceChildren(readout, transport, container);
+  let destroyed = false, renderedSelection, controller, pendingAt = null, dragging = false, selecting = false, playIntent = false, seekOwner = 0;
+  const fallbackClock = typeof viewer.earthTime.subscribeClock === 'function' ? null : createSceneClock({ documentRef, now, monotonicNow, setTimeoutImpl, clearTimeoutImpl });
+  const sceneTime = fallbackClock || viewer.earthTime;
+  if (fallbackClock && viewer.earthTime.getState().mode === 'history') fallbackClock.seek(viewer.earthTime.getState().at);
+  const setTime = (at) => { viewer.earthTime.setTime(at); fallbackClock?.setTime(at); };
   const markers = [];
   const clearMarkers = () => { for (const entity of markers.splice(0)) viewer.entities?.remove(entity); };
   function showMarkers(state) {
     clearMarkers();
     for (const report of state.reports.filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lon)).slice(0, 200)) {
-      markers.push(viewer.entities.add({ name: `${report.title} · recorded metadata`,
-        position: Cesium.Cartesian3.fromDegrees(report.lon, report.lat, 1500),
-        point: { pixelSize: 7, color: Cesium.Color.fromCssColorString('#ebcb90'), outlineColor: Cesium.Color.fromCssColorString('#17212c'), outlineWidth: 1.5 },
-        properties: { source: report.source, observedAt: report.observedAt, retrievedAt: report.retrievedAt, recordedAt: state.at, url: report.url },
+      const usgsId = report.sourceId === 'usgs' && report.id.startsWith('usgs:') ? report.id.slice(5) : null;
+      const observed = Date.parse(report.observedAt);
+      markers.push(viewer.entities.add({ name: report.title,
+        position: Cesium.Cartesian3.fromDegrees(report.lon, report.lat, 0),
+        point: { pixelSize: 7, color: Cesium.Color.fromCssColorString('#9ddcc9'), outlineColor: Cesium.Color.fromCssColorString('#17212c'), outlineWidth: 1.5 },
+        properties: { source: report.source, observedAt: report.observedAt, retrievedAt: report.retrievedAt, recordedAt: state.at, url: report.url,
+          ...(usgsId ? { usgsId, ...(Number.isFinite(report.magnitude) ? { mag: report.magnitude } : {}), ...(Number.isFinite(observed) ? { time: observed } : {}) } : {}) },
       }));
     }
     viewer.scene.requestRender();
   }
   const syncClock = () => {
     if (destroyed || documentRef.hidden) return;
-    const state = fallbackClock?.getState() || viewer.earthTime.getState();
-    clock.dateTime = state.at; clock.textContent = utc(state.at); mode.textContent = state.mode === 'live' ? 'Live' : 'Recorded';
-    container.dataset.mode = state.mode;
+    const state = sceneTime.getState();
+    clock.dateTime = state.at; clock.textContent = utc(state.at); mode.textContent = state.mode === 'live' ? 'Live' : state.playing ? 'Playing' : 'History';
+    container.dataset.mode = dock.dataset.mode = state.mode; container.dataset.playing = dock.dataset.playing = String(Boolean(state.playing));
+    summary.setAttribute('aria-expanded', String(Boolean(container.open))); summary.title = container.open ? 'Hide calendar and recorded coverage' : 'Show calendar and recorded coverage';
+    play.textContent = state.playing || selecting && playIntent ? 'Ⅱ' : '▶';
+    const playLabel = state.playing || selecting && playIntent ? 'Pause historical playback' : 'Play recorded history';
+    play.setAttribute('aria-label', playLabel); play.title = playLabel;
+    play.setAttribute('aria-pressed', String(Boolean(state.playing)));
+    rate.value = String(state.rate || 3600); live.setAttribute('aria-pressed', String(state.mode === 'live'));
+    const manifest = controller?.getState().manifest;
+    play.disabled = typeof sceneTime.play !== 'function' || Boolean(manifest && (!manifest.firstAt || manifest.firstAt === manifest.lastAt));
+    if (manifest?.firstAt && !dragging) {
+      const at = pendingAt || (state.mode === 'history' ? state.at : manifest.lastAt);
+      slider.value = String(Math.max(Number(slider.min), Math.min(Number(slider.max), Date.parse(at) / 1000)));
+      slider.setAttribute('aria-valuetext', utc(at));
+      if (documentRef.activeElement !== date) date.value = at.slice(0, 19);
+    }
+    if (playIntent && !selecting && !state.playing && state.mode === 'history') {
+      playIntent = false; if (!container.open) controller?.close();
+    }
+    if (!playIntent || selecting || !state.playing || !controller?.getState().opened) return;
+    const window = controller.getWindow(state.at);
+    if (window && window.key !== controller.getState().selection?.windowKey) void selectTime(state.at, true);
   };
   function render(state) {
-    const cursorAt = times[Number(slider.value)];
-    times = [...new Set(state.manifest?.snapshots.map((snapshot) => snapshot.at) || [])];
-    const selectionChanged = state.selection !== renderedSelection;
-    const wantedAt = selectionChanged ? state.selection?.at : cursorAt || state.selection?.at;
-    const wantedIndex = times.indexOf(wantedAt);
-    slider.max = String(Math.max(0, times.length - 1));
-    slider.value = String(wantedIndex >= 0 ? wantedIndex : Math.max(0, times.length - 1));
-    slider.disabled = !times.length || state.loading;
-    const index = Number(slider.value); back.disabled = !times.length || state.loading || index === 0;
-    forward.disabled = !times.length || state.loading || index >= times.length - 1;
-    reload.disabled = state.loading; live.setAttribute('aria-pressed', String(!state.selection));
-    coverage.textContent = state.manifest?.configured === false ? 'Recording is not configured on this host.' : times.length ?
-      `Recorded coverage: ${utc(times[0])} — ${utc(times.at(-1))} · ${times.length} capture times.` : state.manifest ? 'No snapshots have been recorded yet.' : 'Recorded coverage loads when this control opens.';
+    const manifest = state.manifest, available = Boolean(manifest?.firstAt);
+    const selectionChanged = state.selection?.windowKey !== renderedSelection?.windowKey || !state.selection !== !renderedSelection;
+    if (available) {
+      slider.min = String(Date.parse(manifest.firstAt) / 1000); slider.max = String(Date.parse(manifest.lastAt) / 1000);
+      date.min = manifest.firstAt.slice(0, 19); date.max = manifest.lastAt.slice(0, 19);
+      firstLabel.dateTime = manifest.firstAt; firstLabel.textContent = utc(manifest.firstAt).slice(0, 16);
+      lastLabel.dateTime = manifest.lastAt; lastLabel.textContent = utc(manifest.lastAt).slice(0, 16);
+      const selected = sceneTime.getState();
+      if (selected.mode === 'live' || selected.at >= manifest.firstAt && selected.at <= manifest.lastAt) {
+        sceneTime.setCoverage?.({ firstAt: manifest.firstAt, lastAt: manifest.lastAt });
+      } else if (selected.playing) { playIntent = false; sceneTime.pause?.(); }
+    }
+    slider.disabled = !available || state.loading; date.disabled = !available || state.loading;
+    back.disabled = forward.disabled = !available || state.loading;
+    reload.disabled = state.loading;
+    coverage.textContent = manifest?.configured === false ? 'Recording is not configured on this host.' : available ?
+      `Recorded coverage: ${utc(manifest.firstAt)} — ${utc(manifest.lastAt)}.` : manifest ? 'No snapshots have been recorded yet.' : 'Open the timeline or press Play to load recorded coverage.';
     captures.hidden = !state.selection;
     captures.textContent = state.selection ? state.selection.snapshots.slice(0, 12).map((snapshot) => `${snapshot.source}: captured ${utc(snapshot.at)} · ${snapshot.recordCount} records`).join(' · ') : '';
     const located = state.selection?.reports.filter((report) => Number.isFinite(report.lat) && Number.isFinite(report.lon)).length || 0;
     status.dataset.delivery = state.delivery;
     status.title = state.delivery === 'connected' ? 'Recorded coverage follows committed collection updates.' : 'Recorded coverage checks every minute while open; source dates remain unchanged.';
-    status.textContent = state.loading ? 'Loading recorded metadata…' : state.error || (state.selection ? `${state.selection.reports.length} recorded records${located ? ` · ${Math.min(200, located)} of ${located} reported locations mapped` : ''} · source dates remain unchanged.` : 'Current UTC · live layers keep their own source update times.');
+    status.textContent = state.loading ? 'Loading recorded metadata…' : state.error || (state.selection ?
+      `${state.selection.reports.length} recorded records${located ? ` · ${Math.min(200, located)} of ${located} reported locations mapped` : ''} · source dates remain unchanged.${state.selection.windowKnown === false ? ' Playback pauses here until the next capture boundary is available; calendar seeks remain available.' : ''}` :
+      'Current UTC · live layers keep their own source update times.');
     if (!selectionChanged) { syncClock(); return; }
     renderedSelection = state.selection;
     if (!state.selection) { records.replaceChildren(); syncClock(); return; }
@@ -256,35 +354,68 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     if (state.selection.reports.length > cards.length) records.append(node('p', 'timeline-note', `Showing ${cards.length} of ${state.selection.reports.length} recorded metadata records.`));
     syncClock();
   }
-  const controller = createHistoryController({ fetchImpl, documentRef, windowRef, now, setTimeoutImpl, clearTimeoutImpl, subscribeUpdates, onChange: render,
+  controller = createHistoryController({ fetchImpl, documentRef, windowRef, now, setTimeoutImpl, clearTimeoutImpl, subscribeUpdates, onChange: render,
     async onTimeChange(state) {
-      if (state.mode === 'live') { clearMarkers(); viewer.earthTime.setTime(null); fallbackClock?.setTime(null); syncClock(); await onTimeChange(state); return; }
+      if (state.mode === 'live') { clearMarkers(); setTime(null); syncClock(); await onTimeChange(state); return; }
       await onTimeChange(state);
       if (destroyed || controller.getState().selection?.at !== state.at) return;
-      viewer.earthTime.setTime(state.at); fallbackClock?.setTime(state.at); showMarkers(state); syncClock();
+      setTime(state.at); showMarkers(state); syncClock();
     } });
-  const toggle = () => { if (container.open) void controller.open(); else controller.close(); };
-  const choose = () => { const at = times[Number(slider.value)]; if (at) void controller.select(at); };
-  const previous = () => { slider.value = String(Math.max(0, Number(slider.value) - 1)); choose(); };
-  const next = () => { slider.value = String(Math.min(times.length - 1, Number(slider.value) + 1)); choose(); };
-  const goLive = () => controller.live();
+  async function selectTime(at, resume = false) {
+    const canonical = stamp(at); if (!canonical || destroyed) return false;
+    const owner = ++seekOwner; playIntent = resume; selecting = true; pendingAt = canonical; sceneTime.pause?.(); syncClock();
+    try {
+      if (!controller.getState().opened) await controller.open();
+      if (destroyed || owner !== seekOwner) return false;
+      const accepted = await controller.select(canonical);
+      if (destroyed || owner !== seekOwner) return false;
+      selecting = false; pendingAt = null;
+      if (accepted && playIntent && controller.getState().selection?.windowKnown) playIntent = sceneTime.play?.() === true; else playIntent = false;
+      if (!container.open && !playIntent) controller.close();
+      syncClock(); return accepted;
+    } finally { if (owner === seekOwner) { selecting = false; pendingAt = null; syncClock(); } }
+  }
+  const toggle = () => { syncClock(); if (container.open || playIntent) void controller.open(); else controller.close(); };
+  const drag = () => { dragging = true; playIntent = false; sceneTime.pause?.(); slider.setAttribute('aria-valuetext', utc(new Date(Number(slider.value) * 1000).toISOString())); };
+  const choose = () => { dragging = false; void selectTime(new Date(Number(slider.value) * 1000).toISOString()); };
+  const step = (direction) => {
+    const manifest = controller.getState().manifest; if (!manifest?.firstAt) return;
+    const start = Date.parse(manifest.firstAt), end = Date.parse(manifest.lastAt), span = end - start;
+    const distance = span <= 7200000 ? 60000 : span <= 172800000 ? 3600000 : 86400000;
+    const current = sceneTime.getState().mode === 'history' ? Date.parse(sceneTime.getState().at) : end;
+    void selectTime(new Date(Math.max(start, Math.min(end, current + direction * distance))).toISOString());
+  };
+  const previous = () => step(-1), next = () => step(1);
+  const goLive = (event) => { event?.stopPropagation?.(); ++seekOwner; playIntent = false; selecting = false; pendingAt = null; dragging = false; controller.live(); if (!container.open) controller.close(); };
+  const playPause = async (event) => {
+    event?.stopPropagation?.();
+    if (sceneTime.getState().playing || selecting && playIntent) {
+      ++seekOwner; playIntent = false; selecting = false; pendingAt = null; sceneTime.pause?.(); syncClock();
+      if (!container.open) controller.close(); return;
+    }
+    const owner = ++seekOwner; playIntent = true; selecting = true; syncClock();
+    await controller.open(); if (destroyed || owner !== seekOwner || !playIntent) return;
+    const manifest = controller.getState().manifest;
+    if (!manifest?.firstAt || manifest.firstAt === manifest.lastAt) { selecting = false; playIntent = false; syncClock(); return; }
+    const state = sceneTime.getState(), at = state.mode === 'history' && state.at < manifest.lastAt ? state.at : manifest.firstAt;
+    void selectTime(at, true);
+  };
+  const changeRate = (event) => { event?.stopPropagation?.(); sceneTime.setRate?.(Number(rate.value)); };
+  const chooseDate = () => { const at = stamp(`${date.value}Z`); if (at) void selectTime(at); };
   const light = () => { const enabled = !viewer.earthTime.getState().lighting; viewer.earthTime.setLighting(enabled); sunlight.setAttribute('aria-pressed', String(enabled)); };
   const refresh = () => { void controller.refresh(); };
-  for (const [element, name, callback] of [[container, 'toggle', toggle], [slider, 'change', choose], [back, 'click', previous], [forward, 'click', next], [live, 'click', goLive], [sunlight, 'click', light], [reload, 'click', refresh]]) element.addEventListener(name, callback);
-  let unsubscribeClock;
-  if (typeof viewer.earthTime.subscribeClock === 'function') unsubscribeClock = viewer.earthTime.subscribeClock(syncClock);
-  else {
-    fallbackClock = createLiveClock({ documentRef, now, setTimeoutImpl, clearTimeoutImpl });
-    const current = viewer.earthTime.getState(); if (current.mode === 'history') fallbackClock.setTime(current.at);
-    unsubscribeClock = fallbackClock.subscribe(syncClock);
-  }
+  const bindings = [[container, 'toggle', toggle], [slider, 'input', drag], [slider, 'change', choose], [date, 'change', chooseDate], [back, 'click', previous], [forward, 'click', next], [play, 'click', playPause], [rate, 'change', changeRate], [live, 'click', goLive], [sunlight, 'click', light], [reload, 'click', refresh]];
+  for (const [element, name, callback] of bindings) element.addEventListener(name, callback);
+  const unsubscribeClock = fallbackClock ? fallbackClock.subscribe(syncClock) : viewer.earthTime.subscribeClock(syncClock);
   render(controller.getState()); syncClock(); if (container.open) void controller.open();
   return {
-    getState: controller.getState, live: goLive,
+    getState: controller.getState, live: goLive, seek: (at) => selectTime(at),
     destroy() {
       if (destroyed) return;
-      destroyed = true; controller.destroy(); clearMarkers(); unsubscribeClock?.(); fallbackClock?.destroy();
-      for (const [element, name, callback] of [[container, 'toggle', toggle], [slider, 'change', choose], [back, 'click', previous], [forward, 'click', next], [live, 'click', goLive], [sunlight, 'click', light], [reload, 'click', refresh]]) element.removeEventListener(name, callback);
+      destroyed = true; ++seekOwner; sceneTime.pause?.(); controller.destroy(); clearMarkers(); unsubscribeClock?.(); fallbackClock?.destroy();
+      for (const [element, name, callback] of bindings) element.removeEventListener(name, callback);
+      readout.remove?.(); transport.remove?.();
+      if (!existingDock) dock.replaceWith?.(container);
     },
   };
 }

@@ -5,7 +5,8 @@ import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { createProviderStore } from './storage.js';
 import { createWorkerFetch } from './fetch.js';
 import { createWorkerMiddleware } from './middleware.js';
-import { appendHistorySnapshot, readPreparedIntelligence, writePreparedIntelligence, PreparedBaselineConflict } from './history.js';
+import { appendHistorySnapshot, readPreparedIntelligence, checkPreparedIntelligence, writePreparedIntelligence, PreparedBaselineConflict } from './history.js';
+import { projectWorldCollection } from './world-model.js';
 
 export const COLLECTOR_PLUGINS = Object.freeze([
   Object.freeze({ id: 'usgs', name: 'USGS earthquakes', endpoint: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson',
@@ -42,7 +43,9 @@ function collectionPacket(packet, now) {
       packet.payload.indexRecords.length > 500 || !Array.isArray(packet.payload?.sources) || packet.payload.sources.length > 20 || bytes(packet) > 1200000)
     throw new TypeError('Invalid bounded collection packet');
   const records = packet.payload.indexRecords.map(canonicalDiscoveryRecord);
+  const declaredSources = new Set(packet.payload.sources.map((source) => source?.id));
   if (records.some((record) => !record || !pluginIds.has(record.sourceId)) ||
+      records.some((record) => !declaredSources.has(record.sourceId)) ||
       packet.payload.sources.some((source) => !pluginIds.has(source?.id) || !['ready', 'stale', 'busy', 'unavailable', 'not-applicable'].includes(source.status)) ||
       new Set(packet.payload.sources.map((source) => source.id)).size !== packet.payload.sources.length)
     throw new TypeError('Unregistered collection source or invalid metadata');
@@ -55,13 +58,14 @@ export async function persistEarthCollection(env, input, { now = Date.now, match
   if (!env.EARTH_STORE?.get || !env.EARTH_STORE?.put) return { configured: false, stored: false, collectedAt: packet.collectedAt };
   const capturedNow = () => Date.parse(packet.collectedAt), snapshots = [], failures = [];
   let prepared;
-  try { prepared = await writePreparedIntelligence(env, packet.payload, { now: capturedNow, matchesBaseline }); }
+  try { await checkPreparedIntelligence(env, packet.payload, { now: capturedNow, matchesBaseline }); }
   catch (error) {
     if (error instanceof PreparedBaselineConflict) throw error;
     return { configured: true, stored: false, collectedAt: packet.collectedAt, snapshots,
       failures: ['Prepared current intelligence publication was unavailable; the previous publication was retained'], status: 'partial' };
   }
-  const work = packet.payload.sources.filter((source) => ['ready', 'stale'].includes(source.status)).map(async (source) => {
+  const recordSources = new Set(packet.payload.indexRecords.map((record) => record.sourceId));
+  const work = packet.payload.sources.filter((source) => ['ready', 'stale'].includes(source.status) || recordSources.has(source.id)).map(async (source) => {
     const records = packet.payload.indexRecords.filter((record) => record.sourceId === source.id);
     const coordinates = source.id === 'usgs' ? records.filter((record) => Number.isFinite(record.lat) && Number.isFinite(record.lon))
       .map((record) => ({ id: record.id, lat: record.lat, lon: record.lon })) : [];
@@ -72,8 +76,20 @@ export async function persistEarthCollection(env, input, { now = Date.now, match
     if (result.status === 'fulfilled') snapshots.push(result.value);
     else failures.push('A source history or durable observation index write was unavailable; existing history was retained');
   }
-  return { configured: true, stored: Boolean(prepared?.stored), collectedAt: packet.collectedAt, snapshots, failures,
-    indexConfigured: Boolean(env.EARTH_DB?.prepare), prepared: prepared || null, status: failures.length ? 'partial' : 'stored' };
+  let world = { configured: false, stored: false, reason: 'World evidence requires the durable database batch interface' };
+  if (env.EARTH_DB?.batch && !failures.length) {
+    world = await projectWorldCollection(env, { packet, snapshots: snapshots.filter((capture) => capture.stored && capture.indexed) }, { now });
+    if (!world.stored) failures.push('The world evidence projection is incomplete; accepted source snapshots are retained for retry');
+  }
+  if (!failures.length) {
+    try { prepared = await writePreparedIntelligence(env, packet.payload, { now: capturedNow, matchesBaseline }); }
+    catch (error) {
+      if (error instanceof PreparedBaselineConflict) throw error;
+      failures.push('Prepared current intelligence promotion was unavailable; completed evidence was retained for retry');
+    }
+  }
+  return { configured: true, stored: Boolean(prepared?.stored && !failures.length), collectedAt: packet.collectedAt, snapshots, failures,
+    indexConfigured: Boolean(env.EARTH_DB?.prepare), world, prepared: prepared || null, status: failures.length ? 'partial' : 'stored' };
 }
 
 /** Fixed adapters run independently of all visitor map/layer toggles. Trigger provisioning belongs to the host. */
@@ -98,6 +114,7 @@ export async function getCollectorStatus(env = {}, { now = Date.now } = {}) {
   return { configured: Boolean(env.EARTH_STORE?.get && env.EARTH_STORE?.put), indexConfigured: Boolean(env.EARTH_DB?.prepare),
     runtimeAvailable: true, declaredTrigger: typeof env.EARTH_COLLECTION_TRIGGER === 'string' ? env.EARTH_COLLECTION_TRIGGER.slice(0, 80) : null,
     unattendedVerified: false, collectedAt: prepared?.collectedAt || null, ageMs: prepared?.ageMs ?? null,
+    checkedAt: prepared?.checkedAt || null, checkAgeMs: prepared?.checkAgeMs ?? null,
     stale: prepared?.stale ?? true, plugins: COLLECTOR_PLUGINS,
     sources: prepared?.payload.sources || [],
     note: 'Fixed reviewed adapters and durable storage are implemented. Actual authenticated scheduled invocation must be provisioned and verified separately; display toggles never control collection.' };

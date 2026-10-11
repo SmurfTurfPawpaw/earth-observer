@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as Cesium from 'cesium';
 import { createHistoryController, createTimeline, normalizeHistory, HISTORY_REFRESH_MS } from './timeline.js';
-import { installAstronomy, ASTRONOMY_REFRESH_MS } from './astronomy.js';
+import { installAstronomy, ASTRONOMY_REFRESH_MS, CARTOGRAPHIC_NIGHT_OPACITY } from './astronomy.js';
 import { createLiveClock } from './live-clock.js';
+import { createSceneClock } from './scene-clock.js';
 
 const first = '2026-10-11T09:00:00.000Z', last = '2026-10-11T09:15:00.000Z';
 const snapshots = [{ at: first, id: 'one', source: 'usgs', recordCount: 1 }, { at: last, id: 'two', source: 'usgs', recordCount: 1 }];
@@ -145,8 +146,10 @@ class Element {
   constructor(tag, ownerDocument) { this.tagName = tag; this.ownerDocument = ownerDocument; this.children = []; this.listeners = new Map(); this.attributes = {}; this.dataset = {}; this._text = ''; }
   get textContent() { return this._text + this.children.map((child) => typeof child === 'string' ? child : child.textContent).join(''); }
   set textContent(value) { this.replaceChildren(); this._text = String(value); }
-  append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.children = nodes; this._text = ''; }
+  append(...nodes) { for (const node of nodes) { if (typeof node === 'object') { node.remove(); node.parentElement = this; } this.children.push(node); } }
+  replaceChildren(...nodes) { for (const node of [...this.children]) if (typeof node === 'object') node.remove(); this.children = []; this._text = ''; this.append(...nodes); }
+  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((node) => node !== this); this.parentElement = null; }
+  replaceWith(node) { const parent = this.parentElement; if (!parent) return; const index = parent.children.indexOf(this); node.remove(); parent.children.splice(index, 1, node); node.parentElement = parent; this.parentElement = null; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
   removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
@@ -161,7 +164,7 @@ test('the visible UTC label subscribes independently of scene rendering and arch
     setTime: wallClock.setTime }, entities: { remove() {} }, scene: { requestRender() { frames++; } } };
   const container = documentRef.createElement('details');
   const timeline = createTimeline({ ...timing, container, viewer, documentRef, fetchImpl() { requests++; throw new Error('A clock cannot fetch'); } });
-  const label = elements(container).find((element) => element.className === 'timeline-clock');
+  const label = elements(container.parentElement).find((element) => element.className === 'timeline-clock');
   assert.equal(timing.timers.size, 1); assert.equal(label.dateTime, '1970-01-01T00:00:00.000Z');
   timing.advance(3000); assert.equal(label.dateTime, '1970-01-01T00:00:03.000Z'); assert.equal(requests, 0); assert.equal(frames, 0);
   documentRef.hidden = true; documentRef.visibility(); assert.equal(timing.timers.size, 0); timing.advance(65000);
@@ -172,27 +175,59 @@ test('the visible UTC label subscribes independently of scene rendering and arch
   timeline.destroy(); wallClock.destroy(); assert.equal(timing.timers.size, 0); assert.equal(requests, 0); assert.equal(frames, 0);
 });
 
-test('actual UTC control keeps its cursor by capture identity and preserves card DOM as manifests append and insert earlier times', async () => {
+test('UTC calendar seeks and playback cross midnight, preserve dates during full-range refresh, and keep evidence unchanged within capture windows', async () => {
   const timing = scheduler(), documentRef = documentFixture(); documentRef.createElement = (tag) => new Element(tag, documentRef);
-  const container = documentRef.createElement('details'), entities = new Set(), changes = []; let mode = 'live', at = last, manifests = 0;
-  const older = { at: '2026-10-11T08:45:00.000Z', id: 'older', source: 'usgs', recordCount: 1 }, newer = { at: '2026-10-11T09:30:00.000Z', id: 'newer', source: 'usgs', recordCount: 1 };
-  const viewer = { earthTime: { getState: () => ({ mode, at, lighting: true }), setTime(value) { mode = value ? 'history' : 'live'; at = value || last; } },
+  const container = documentRef.createElement('details'), entities = new Set(), changes = [], requests = []; let manifests = 0;
+  const oldest = { at: '2026-10-09T23:55:00.000Z', id: 'oldest', source: 'usgs', recordCount: 1 };
+  const middle = { at: '2026-10-10T00:15:00.000Z', id: 'middle', source: 'usgs', recordCount: 1 };
+  const older = { at: '2026-10-08T23:00:00.000Z', id: 'older', source: 'usgs', recordCount: 1 };
+  const newer = { at: '2026-10-12T09:30:00.000Z', id: 'newer', source: 'usgs', recordCount: 1 };
+  const sceneClock = createSceneClock({ ...timing, documentRef, monotonicNow: timing.now, now: () => Date.parse(newer.at) + timing.now() });
+  const viewer = { earthTime: { ...sceneClock, getState: () => ({ ...sceneClock.getState(), lighting: true }), subscribeClock: sceneClock.subscribe },
     entities: { add(value) { entities.add(value); return value; }, remove(value) { entities.delete(value); } }, scene: { requestRender() {} } };
   const timeline = createTimeline({ ...timing, container, viewer, documentRef, onTimeChange: (state) => changes.push(state), fetchImpl: async (url) => {
-    if (url === '/api/history') return Response.json({ configured: true, snapshots: ++manifests === 1 ? snapshots : [older, ...snapshots, newer] });
-    return Response.json({ configured: true, snapshots: [snapshots[0]], reports: [{ ...report, retrievedAt: first }] });
+    requests.push(url);
+    if (url === '/api/history') return Response.json({ configured: true, indexMode: 'd1-full-history',
+      firstAt: ++manifests === 1 ? oldest.at : older.at, lastAt: manifests === 1 ? last : newer.at,
+      snapshots: manifests === 1 ? snapshots : [...snapshots, newer] });
+    const at = new URL(url, 'https://example.test').searchParams.get('at');
+    const allCaptures = [older, oldest, middle, ...snapshots, newer], snapshot = allCaptures.filter((item) => item.at <= at).at(-1);
+    return Response.json({ configured: true, indexMode: 'd1-full-history', selectedAt: at,
+      firstAt: older.at, lastAt: newer.at, nextCaptureAt: allCaptures.find((item) => item.at > at)?.at || null,
+      snapshots: [snapshot], reports: [{ ...report, id: 'usgs:fixture', magnitude: 3.4, observedAt: snapshot.at, retrievedAt: snapshot.at }] });
   } });
   assert.equal(manifests, 0); container.open = true; container.trigger('toggle'); await settle();
+  const dock = container.parentElement, summary = elements(container).find((element) => element.tagName === 'summary');
   const slider = elements(container).find((element) => element.type === 'range'), records = elements(container).find((element) => element.className === 'timeline-records');
-  slider.value = '0'; slider.trigger('change'); await settle(); const card = records.children[0];
-  assert.equal(mode, 'history'); assert.equal(at, first); assert.equal(entities.size, 1);
+  const date = elements(container).find((element) => element.className === 'timeline-date');
+  const play = elements(dock).find((element) => element.className?.includes('timeline-play'));
+  const rate = elements(dock).find((element) => element.className === 'timeline-rate');
+  assert.equal(summary.attributes['aria-label'], 'Calendar and recorded coverage');
+  assert.equal(summary.attributes['aria-expanded'], 'true');
+  assert.ok(!elements(summary).some((element) => ['button', 'select', 'input'].includes(element.tagName)), 'Disclosure has one action; transport controls are siblings');
+  assert.equal(play.parentElement.parentElement, dock);
+  const beforeMidnight = '2026-10-09T23:59:50.000Z';
+  assert.equal(slider.min, String(Date.parse(oldest.at) / 1000), 'Stored coverage, not the newest bounded catalog, defines the calendar');
+  slider.value = String(Date.parse(beforeMidnight) / 1000); slider.trigger('change'); await settle(); const card = records.children[0];
+  assert.equal(sceneClock.getState().mode, 'history'); assert.equal(sceneClock.getState().at, beforeMidnight); assert.equal(entities.size, 1);
+  assert.equal([...entities][0].properties.usgsId, 'fixture'); assert.equal([...entities][0].properties.mag, 3.4);
+  assert.equal([...entities][0].properties.time, Date.parse(oldest.at), 'Historical pin source time is not retimed to the playback cursor');
+  rate.value = '60'; rate.trigger('change'); play.trigger('click'); await settle(); const playbackRequests = requests.length;
+  timing.advance(1000); await settle();
+  assert.equal(sceneClock.getState().at, '2026-10-10T00:00:50.000Z'); assert.equal(requests.length, playbackRequests, 'Crossing midnight does not fetch unchanged evidence');
+  assert.equal(date.value, '2026-10-10T00:00:50'); play.trigger('click');
+  const chosen = '2026-10-10T00:05:20.000Z'; date.value = chosen.slice(0, 19); date.trigger('change'); await settle();
+  assert.equal(sceneClock.getState().at, chosen); assert.equal(changes.at(-1).reports[0].retrievedAt, oldest.at);
   timing.advance(60000); await settle();
-  assert.equal(slider.value, '1', 'Inserting an earlier capture moves the index, while the selected UTC identity stays fixed');
-  assert.equal(slider.max, '3'); assert.equal(records.children[0], card); assert.equal(changes.length, 1); assert.equal(at, first); assert.equal(entities.size, 1);
-  slider.value = '2'; timing.advance(60000); await settle();
-  assert.equal(slider.value, '2', 'Background renewal cannot reset a thumb the visitor has moved before committing a capture');
-  assert.equal(records.children[0], card); assert.equal(at, first);
-  timeline.destroy(); assert.equal(timing.timers.size, 0); assert.equal(entities.size, 0);
+  assert.equal(slider.value, String(Date.parse(chosen) / 1000)); assert.equal(slider.min, String(Date.parse(older.at) / 1000));
+  assert.equal(slider.max, String(Date.parse(newer.at) / 1000)); assert.equal(date.value, chosen.slice(0, 19));
+  assert.equal(records.children[0], card); assert.equal(sceneClock.getState().at, chosen); assert.equal(entities.size, 1);
+  const multiDay = '2026-10-11T18:11:02.000Z'; slider.value = String(Date.parse(multiDay) / 1000); slider.trigger('input'); timing.advance(60000); await settle();
+  assert.equal(slider.value, String(Date.parse(multiDay) / 1000), 'A renewal cannot reset a thumb while the visitor drags');
+  assert.equal(sceneClock.getState().at, chosen); slider.trigger('change'); await settle();
+  assert.equal(sceneClock.getState().at, multiDay); assert.equal(date.value, multiDay.slice(0, 19)); assert.equal(changes.at(-1).snapshots[0].at, last);
+  timeline.live(); assert.equal(sceneClock.getState().mode, 'live'); assert.equal(entities.size, 0);
+  timeline.destroy(); sceneClock.destroy(); assert.equal(timing.timers.size, 0);
 });
 
 test('recorded range comes only from actual listed captures and topic/curated metadata cannot invent incident coordinates', () => {
@@ -248,7 +283,7 @@ test('an unavailable or future archive never replaces the last accepted recorded
   controller.destroy();
 });
 
-test('astronomical UTC freezes for history, restores system time in Live, and refreshes only visible Live frames', (t) => {
+test('cartographic night appearance preserves real astronomical UTC, toggles without native darkening, and restores owned resources', (t) => {
   // Cesium's native Moon material performs browser-type checks during creation;
   // no texture or graphics context is acquired in this CPU-only lifecycle test.
   for (const key of ['HTMLCanvasElement', 'HTMLImageElement', 'ImageBitmap', 'OffscreenCanvas']) {
@@ -257,10 +292,13 @@ test('astronomical UTC freezes for history, restores system time in Live, and re
     t.after(() => { if (previous) Object.defineProperty(globalThis, key, previous); else delete globalThis[key]; });
   }
   const documentRef = documentFixture(), timing = scheduler(); let frames = 0;
-  const viewer = { clock: new Cesium.Clock(), scene: { requestRenderMode: true, globe: {}, requestRender() { frames++; } }, isDestroyed: () => false };
+  const previousMaterial = {}, previousLight = {}, viewer = { clock: new Cesium.Clock(),
+    scene: { light: previousLight, requestRenderMode: true, globe: { material: previousMaterial, enableLighting: true, showGroundAtmosphere: true }, requestRender() { frames++; } }, isDestroyed: () => false };
   const astronomy = installAstronomy(viewer, { ...timing, documentRef });
-  assert.equal(viewer.scene.globe.enableLighting, true); assert.equal(viewer.scene.globe.showGroundAtmosphere, false);
-  assert.notEqual(viewer.scene.globe.lightingFadeOutDistance, viewer.scene.globe.lightingFadeInDistance);
+  const material = viewer.scene.globe.material;
+  assert.ok(material instanceof Cesium.Material); assert.equal(material.uniforms.nightOpacity, CARTOGRAPHIC_NIGHT_OPACITY);
+  assert.equal(astronomy.getState().lighting, true); assert.equal(viewer.scene.globe.enableLighting, false, 'Native ellipsoid darkening cannot multiply the cartographic tint again');
+  assert.equal(viewer.scene.globe.showGroundAtmosphere, false);
   assert.ok(viewer.scene.sun instanceof Cesium.Sun); assert.ok(viewer.scene.moon instanceof Cesium.Moon); assert.equal(viewer.scene.sunBloom, false);
   assert.equal(viewer.clock.clockStep, Cesium.ClockStep.SYSTEM_CLOCK); assert.equal([...timing.timers.values()][0].at, ASTRONOMY_REFRESH_MS);
   const beforeTick = frames; timing.advance(1000); assert.equal(frames, beforeTick + 1); assert.equal(astronomy.getState().at, '1970-01-01T00:00:01.000Z');
@@ -271,8 +309,11 @@ test('astronomical UTC freezes for history, restores system time in Live, and re
   assert.equal(Cesium.JulianDate.toIso8601(viewer.clock.tick(), 3), exact); assert.equal(astronomy.getState().at, exact); assert.equal(viewer.clock.shouldAnimate, false);
   astronomy.setTime(); assert.equal(viewer.clock.clockStep, Cesium.ClockStep.SYSTEM_CLOCK); assert.equal(viewer.clock.shouldAnimate, true);
   documentRef.hidden = true; documentRef.visibility(); assert.equal(timing.timers.size, 0); const hiddenFrames = frames;
-  astronomy.setLighting(false); assert.equal(frames, hiddenFrames);
+  astronomy.setLighting(false); assert.equal(frames, hiddenFrames); assert.equal(material.uniforms.nightOpacity, 0); assert.equal(astronomy.getState().lighting, false);
+  astronomy.setLighting(true); assert.equal(material.uniforms.nightOpacity, CARTOGRAPHIC_NIGHT_OPACITY); assert.equal(viewer.scene.globe.enableLighting, false);
   timing.advance(60000); documentRef.hidden = false; documentRef.visibility(); assert.equal(timing.timers.size, 1); assert.ok(frames > hiddenFrames);
   assert.equal(astronomy.getState().at, '1970-01-01T00:01:02.000Z');
   astronomy.destroy(); assert.equal(timing.timers.size, 0); assert.equal(viewer.scene.sun, undefined); assert.equal(viewer.scene.moon, undefined);
+  assert.equal(viewer.scene.globe.material, previousMaterial); assert.equal(material.isDestroyed(), true);
+  assert.equal(viewer.scene.globe.enableLighting, true); assert.equal(viewer.scene.globe.showGroundAtmosphere, true); assert.equal(viewer.scene.light, previousLight);
 });

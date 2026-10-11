@@ -14,6 +14,8 @@ import { recoverInitialCameraView } from './core/globe-framing.js';
 import { installContextRecovery } from './core/context-recovery.js';
 import { createTimeline } from './core/timeline.js';
 import { createLiveUpdates } from './core/live-updates.js';
+import { installWorldDossierBridge } from './core/world-dossier-bridge.js';
+import { Cartographic, Math as CesiumMath } from 'cesium';
 
 let viewer;
 let manager;
@@ -21,7 +23,7 @@ let shell;
 let destroyed = false;
 let describeBasemap = () => {};
 let contextRecovery;
-let area = null, intelligence, notebook, timeline, updates, panelLoading = {}, locationRevision = 0, warmTimer;
+let area = null, intelligence, notebook, timeline, updates, worldDossiers, panelLoading = {}, locationRevision = 0, warmTimer;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -58,19 +60,28 @@ async function activateLocal(value, { animate = false } = {}) {
   await manager.restore([...new Set([...LOCAL_DEFAULT_LAYERS, ...LAYERS.filter((layer) => state[layer.id]?.enabled).map((layer) => layer.id)])]);
   rememberWorkspace();
 }
-async function locate() {
+async function locate({ automatic = false } = {}) {
   const revision = ++locationRevision;
   const button = document.getElementById('locate'); button.disabled = true;
   shell.setLocalStatus('Location permission…');
   try {
+    if (automatic && navigator.permissions?.query) {
+      const permission = await navigator.permissions.query({ name: 'geolocation' }).catch(() => null);
+      if (permission?.state === 'denied') return;
+    }
     const found = await locateVisitor();
     if (destroyed || revision !== locationRevision) return;
     await activateLocal(found);
-    shell.notify('Local data is loading within the selected radius. Coverage depends on each source.');
+    if (!automatic) shell.notify('Local data is loading within the selected radius. Coverage depends on each source.');
   } catch (error) {
     if (destroyed || revision !== locationRevision) return;
-    shell.setLocalStatus(area ? 'Local area' : 'Choose a place', { active: Boolean(area), radiusKm: area?.radiusKm }); shell.notify(error.message);
-  } finally { if (!destroyed && revision === locationRevision) button.disabled = false; }
+    if (!automatic) shell.notify(error.message);
+  } finally {
+    if (!destroyed && revision === locationRevision) {
+      shell.setLocalStatus(area ? 'Local area' : 'Choose a place', { active: Boolean(area), radiusKm: area?.radiusKm });
+      button.disabled = false;
+    }
+  }
 }
 async function restoreView(state) {
   setArea(state.area);
@@ -84,7 +95,9 @@ async function restoreView(state) {
 }
 
 function warmTools() {
-  const queue = LAYERS.map((layer) => layer.id);
+  // Warm the common lightweight view; other engines warm on hover/focus.
+  // Importing every optional engine also loads large terrain/space assets.
+  const queue = ['earthquakes', 'weather-satellite'];
   async function worker() {
     while (queue.length && !destroyed && !contextRecovery?.isLost()) {
       if (document.hidden || navigator.connection?.saveData || ['slow-2g', '2g'].includes(navigator.connection?.effectiveType)) return;
@@ -100,7 +113,6 @@ function warmTools() {
 
 async function handlePanel({ panel, open }) {
   if (!['news', 'notebook'].includes(panel)) return;
-  if (panel === 'news' && open && manager?.isTimelinePaused()) timeline?.live();
   if (!open) { (panel === 'news' ? intelligence : notebook)?.close(); return; }
   if (!panelLoading[panel]) panelLoading[panel] = (async () => {
     if (panel === 'news') {
@@ -111,6 +123,7 @@ async function handlePanel({ panel, open }) {
         onStatus: () => { document.getElementById('news-status').hidden = true; },
         onNavigate: ({ lat, lon }) => { void activateLocal({ lat, lon, radiusKm: 25 }, { animate: true }); },
       });
+      intelligence.setSceneMode(viewer.earthTime.getState().mode);
     } else {
       const { createEvidenceNotebook } = await import('./core/evidence.js');
       if (destroyed) return;
@@ -139,6 +152,16 @@ export async function start() {
     shell = createShell(viewer, manager);
     updates = createLiveUpdates();
     disposers.push(() => updates.destroy());
+    worldDossiers = installWorldDossierBridge({ viewer, subscribeUpdates: updates.subscribe,
+      readSelection(entity) {
+        const values = entity?.properties?.getValue?.(viewer.clock.currentTime);
+        const position = entity?.position?.getValue?.(viewer.clock.currentTime);
+        if (!values?.usgsId || !position) return null;
+        const point = Cartographic.fromCartesian(position);
+        return { ...values, lat: CesiumMath.toDegrees(point.latitude), lon: CesiumMath.toDegrees(point.longitude) };
+      },
+    });
+    disposers.push(() => worldDossiers.destroy());
     const basemapButton = document.getElementById('toggle-basemap');
     describeBasemap = () => {
       const state = viewer.earthBasemap?.getState();
@@ -180,6 +203,8 @@ export async function start() {
       async onTimeChange(state) {
         if (state.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
         await manager.setTimelineMode(state.mode);
+        intelligence?.setSceneMode(state.mode);
+        void worldDossiers.refresh();
         window.dispatchEvent(new CustomEvent('earth-observer:timechange', { detail: state }));
       },
       onNavigate(report) { setCameraView(viewer, { ...cameraView(viewer), lat: report.lat, lon: report.lon, alt: 200000, pitch: -90 }, true); },
@@ -229,7 +254,7 @@ export async function start() {
     });
     disposers.push(firstFrame);
     visibility();
-    if (initial.requestLocation) void locate();
+    if (initial.requestLocation) void locate({ automatic: true });
     // Startup must finish before optional code warming or offline-cache installation.
     warmTimer = setTimeout(() => {
       if (destroyed || contextRecovery.isLost()) return;

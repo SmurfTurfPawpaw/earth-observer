@@ -184,6 +184,8 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
     const element = node('a', '', title); element.href = url; element.target = '_blank'; element.rel = 'noopener noreferrer'; return element;
   };
   const form = node('form', 'intelligence-filters');
+  const timeScope = node('p', 'intelligence-meta'); timeScope.hidden = true;
+  timeScope.textContent = 'This context panel shows the latest retained metadata. Use the timeline for recorded historical reports.';
   const category = node('select'); category.setAttribute('aria-label', 'Intelligence topic');
   for (const [value, label] of CATEGORIES) { const option = node('option', '', label); option.value = value; category.append(option); }
   const country = node('select'); country.setAttribute('aria-label', 'Country mentioned or reported');
@@ -207,7 +209,7 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
   const researchContainer = node('section', 'intelligence-research');
   const footer = node('p', 'intelligence-meta'); footer.append('News discovery: ', link('The GDELT Project', 'https://www.gdeltproject.org/'), '. Original publishers retain their rights. No article text or images are copied. ',
     link('Research and coverage notes', 'https://github.com/SmurfTurfPawpaw/earth-observer/blob/main/docs/MAXINOMICS_RESEARCH.md'));
-  container.replaceChildren(form, note, economicFacts, status, coverage, actions, demandContainer, researchContainer, list, footer);
+  container.replaceChildren(timeScope, form, note, economicFacts, status, coverage, actions, demandContainer, researchContainer, list, footer);
   const economics = createEconomicsPanel({ container: economicFacts, fetchImpl, documentRef });
   const demand = createDemandTracker({ container: demandContainer, fetchImpl, documentRef });
   const research = createPrimaryContextPanel(researchContainer, { fetchImpl, store, documentRef,
@@ -264,6 +266,8 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
       row.append(link(String(source.name || source.id), source.url), ` · ${source.status || 'unknown'}${source.stale ? ' · older cached data' : ''}`);
       const retrieved = intelligenceTime(source.retrievedAt);
       if (retrieved) row.append(` · retrieved ${retrieved}`);
+      const checked = intelligenceTime(source.lastCheckedAt);
+      if (checked && checked !== retrieved) row.append(` · checked ${checked}`);
       if (source.reason) row.append(` · ${String(source.reason)}`);
       if (source.retryAt) row.append(` · retry after ${intelligenceTime(source.retryAt)}`);
       return row;
@@ -297,6 +301,7 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
   country.addEventListener('change', apply);
   render(feed.getState());
   return {
+    setSceneMode(mode) { timeScope.hidden = mode !== 'history'; },
     open() { void research.open(); if (category.value === 'economy') void economics.open(country.value || 'WLD'); return feed.open(); },
     close() { research.close(); economics.close(); feed.close(); },
     refresh: refreshClick,

@@ -5,9 +5,10 @@ import { createIcon } from './icons.js';
 import { readUiState, writeUiState, TEXT_SIZES, normalizeTextSize, createCreditLedger, cacheStatus, layerCreditNotices } from './ui-state.js';
 import { createPlaceStore } from './places.js';
 import { createSavedPlacesUi } from './places-ui.js';
-import { commandCatalog } from './commands.js';
+import { commandCatalog, editableTarget } from './commands.js';
 import { createCommandPalette } from './commands-ui.js';
 import { chatGPTSignInPath } from './community-policy.js';
+import { createWorldDossier } from './world-dossier.js';
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -62,9 +63,10 @@ export function createShell(viewer, manager) {
   refreshSignIn(); signIn.addEventListener('click', refreshSignIn);
   cleanup.push(() => signIn.removeEventListener('click', refreshSignIn));
   const mobile = window.matchMedia('(max-width: 760px)');
-  const uiState = readUiState(storage, { mobile: mobile.matches });
+  // Keep the desktop preference intact when a narrow screen temporarily closes it.
+  const uiState = readUiState(storage);
   const ledger = createCreditLedger(viewer.cesiumWidget.creditDisplay, (html, onScreen) => new Cesium.Credit(html, onScreen));
-  let noticeTimer, activePanel = null, destroyed = false, pendingTiles = 0, pendingLayerNames = [];
+  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, pendingLayerNames = [];
   const remember = () => writeUiState(storage, uiState);
   const textSizeControl = el('label', 'text-size-control');
   const textSizeMark = el('span', '', 'Aa'); textSizeMark.setAttribute('aria-hidden', 'true');
@@ -85,20 +87,28 @@ export function createShell(viewer, manager) {
     cleanup.push(() => node.removeEventListener('click', handler));
   };
   const setSidebar = (open, { focus = false, persist = true } = {}) => {
-    if (open && window.innerWidth <= 1000 && activePanel) openPanel(null);
+    if (open && activePanel) openPanel(null);
     document.body.classList.toggle('sidebar-open', open);
-    document.getElementById('open-sidebar').setAttribute('aria-expanded', String(open));
+    document.getElementById('open-sidebar').setAttribute('aria-expanded', String(open && workspace === 'data'));
+    document.getElementById('open-saved-places').setAttribute('aria-expanded', String(open && workspace === 'saved'));
     const sidebar = document.getElementById('sidebar');
     sidebar.inert = !open;
     sidebar.setAttribute('aria-hidden', String(!open));
     if (persist && !mobile.matches) { uiState.sidebarOpen = open; remember(); }
-    if (focus) document.getElementById(open ? 'search' : 'open-sidebar').focus();
+    if (focus) document.getElementById(open ? 'close-sidebar' : workspace === 'saved' ? 'open-saved-places' : 'open-sidebar').focus();
+  };
+  const setWorkspace = (name) => {
+    workspace = name === 'saved' ? 'saved' : 'data';
+    document.getElementById('sidebar').dataset.workspace = workspace;
+    document.getElementById('layers-heading').textContent = workspace === 'saved' ? 'Saved places' : 'Data layers';
+    document.getElementById('layer-active-count').hidden = workspace === 'saved';
+    document.querySelector('#sidebar .panel-heading > .ui-icon')?.replaceWith(createIcon(workspace === 'saved' ? 'bookmark' : 'layers'));
   };
   const setNavbar = (open, { focus = false } = {}) => {
     document.getElementById('header-tools').hidden = !open;
     document.getElementById('toggle-navbar').setAttribute('aria-expanded', String(open));
     uiState.navbarOpen = open; remember();
-    if (focus) document.getElementById(open ? 'share-view' : 'toggle-navbar').focus();
+    if (focus) document.getElementById(open ? 'toggle-basemap' : 'toggle-navbar').focus();
   };
   const emitPanel = (panel, open) => {
     if (panel === 'notebook') { if (open && communitySection.open) void openCommunity(); else community?.close(); }
@@ -136,7 +146,7 @@ export function createShell(viewer, manager) {
       panelButtons[key]?.setAttribute('aria-expanded', String(key === name));
     }
     document.body.classList.toggle('side-panel-open', Boolean(name));
-    if (name && window.innerWidth <= 1000) setSidebar(false, { persist: false });
+    if (name) setSidebar(false, { persist: false });
     if (previous) emitPanel(previous, false);
     if (name) emitPanel(name, true);
     if (focus && name) panels[name].querySelector('button')?.focus();
@@ -148,10 +158,15 @@ export function createShell(viewer, manager) {
     if (focus) panelButtons[name]?.focus();
   };
   bind('open-sidebar', () => {
-    const open = !document.body.classList.contains('sidebar-open');
-    if (open && window.innerWidth <= 1000) openPanel(null);
+    const open = !document.body.classList.contains('sidebar-open') || workspace !== 'data';
+    setWorkspace('data');
     setSidebar(open, { focus: true });
   });
+  bind('open-saved-places', () => {
+    if (document.body.classList.contains('sidebar-open') && workspace === 'saved') setSidebar(false, { focus: true });
+    else openSavedPlaces({ draft: false });
+  });
+  bind('home', () => { openPanel(null); setSidebar(false); });
   bind('close-sidebar', () => setSidebar(false, { focus: true }));
   bind('toggle-navbar', () => setNavbar(!uiState.navbarOpen));
   bind('toggle-news', () => activePanel === 'news' ? closePanel('news', { focus: true }) : openPanel('news', { focus: true }));
@@ -165,14 +180,21 @@ export function createShell(viewer, manager) {
     if (activePanel === 'selection') { viewer.selectedEntity = undefined; closePanel('selection', { restoreSelection: false }); }
     else if (activePanel) closePanel(activePanel, { focus: true });
     else if (uiState.navbarOpen) setNavbar(false, { focus: true });
-    else setSidebar(false, { focus: true });
+    else if (document.body.classList.contains('sidebar-open')) setSidebar(false, { focus: true });
+    else if (event.target === document.getElementById('search')) { event.target.blur(); document.getElementById('search-status').textContent = ''; }
   };
   document.addEventListener('keydown', escape);
   cleanup.push(() => document.removeEventListener('keydown', escape));
+  const searchShortcut = (event) => {
+    if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey || editableTarget(event.target) || document.getElementById('command-palette').open) return;
+    event.preventDefault(); document.getElementById('search').focus();
+  };
+  document.addEventListener('keydown', searchShortcut);
+  cleanup.push(() => document.removeEventListener('keydown', searchShortcut));
   const onMobileChange = () => setSidebar(mobile.matches ? false : uiState.sidebarOpen, { persist: false });
   mobile.addEventListener('change', onMobileChange);
   cleanup.push(() => mobile.removeEventListener('change', onMobileChange));
-  setSidebar(uiState.sidebarOpen, { persist: false });
+  setSidebar(mobile.matches ? false : uiState.sidebarOpen, { persist: false });
   setNavbar(uiState.navbarOpen);
   document.body.classList.add('ui-ready');
 
@@ -336,6 +358,8 @@ export function createShell(viewer, manager) {
     const details = document.getElementById('selection-details'); details.replaceChildren(detailFields);
     const repaint = () => {
       document.getElementById('selection-title').textContent = entity.name || String(entity.id || 'Selected feature');
+      const dossier = createWorldDossier(entity, viewer.clock.currentTime);
+      if (dossier) { detailFields.replaceChildren(dossier); return; }
       const fields = selectionFields(entity, viewer.clock.currentTime), list = el('dl');
       for (const [label, value] of fields) list.append(el('dt', '', label), el('dd', '', value));
       detailFields.replaceChildren(fields.length ? list : el('p', '', 'No additional details are available for this feature.'));
@@ -401,7 +425,7 @@ export function createShell(viewer, manager) {
     setCameraView(viewer, place.view, true);
     if (mobile.matches) setSidebar(false);
   };
-  const openSavedPlaces = () => { setSidebar(true); savedPlaces.open({ draft: true }); };
+  const openSavedPlaces = ({ draft = true } = {}) => { setWorkspace('saved'); setSidebar(true); savedPlaces.open({ draft }); if (!draft) document.getElementById('saved-place-name').focus(); };
   savedPlaces = createSavedPlacesUi({ store: placeStore, getView: currentPlaceView, onRecall: goToSavedPlace, onChange: () => commandPalette?.refresh() });
   cleanup.push(() => savedPlaces.destroy());
   commandPalette = createCommandPalette({
@@ -409,7 +433,7 @@ export function createShell(viewer, manager) {
     getCatalog: () => commandCatalog({ layers: LAYERS, places: placeStore.list(), state: manager.getState() }), onError: notify,
     async execute(action) {
       switch (action.type) {
-        case 'show-layers': setSidebar(true, { focus: true }); break;
+        case 'show-layers': setWorkspace('data'); setSidebar(true, { focus: true }); break;
         case 'home': setCameraView(viewer, HOME_VIEW, true); break;
         case 'news': openPanel('news', { focus: true }); break;
         case 'notebook': openPanel('notebook', { focus: true }); break;
@@ -429,11 +453,11 @@ export function createShell(viewer, manager) {
   cleanup.push(() => commandPalette.destroy());
   bind('toggle-command', () => commandPalette.open());
   document.querySelector('.boot-attribution')?.remove();
-  for (const button of document.querySelectorAll('#search-form button, #navigation button, #share-view, #open-sidebar, #close-sidebar, #toggle-navbar, #toggle-news, #toggle-notebook, #toggle-command, #save-place, #locate, #reset-session')) button.disabled = false;
+  for (const button of document.querySelectorAll('#search-form button, #navigation button, #home, #share-view, #open-sidebar, #open-saved-places, #close-sidebar, #toggle-navbar, #toggle-news, #toggle-notebook, #toggle-command, #save-place, #locate, #reset-session')) button.disabled = false;
   return {
     notify, update,
     closeSidebar: () => setSidebar(false),
-    openSidebar: () => setSidebar(true),
+    openSidebar: () => { setWorkspace('data'); setSidebar(true); },
     openNews: () => openPanel('news'), closeNews: () => closePanel('news'),
     openNotebook: () => openPanel('notebook'), closeNotebook: () => closePanel('notebook'),
     openSavedPlaces, goToSavedPlace,

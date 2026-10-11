@@ -69,13 +69,15 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
       // Repeating a durable packet also repairs a failed prior notification.
       // The retained factual capture/date and monotonic row keep retries quiet.
       revision = await publishAircraftRevision(env, result);
-    } else if (accepted && env.EARTH_DB?.prepare) {
-      // Announce the actual retained current pointer, including when an older
-      // writer was superseded. Durable facts/history precede notification.
+    } else if (accepted && env.EARTH_DB?.prepare && result.prepared?.promoted) {
+      // Announce only the exact completed packet while it still matches current
+      // prepared data. A superseded writer cannot announce an unrelated pointer.
       const current = await readPreparedIntelligence(env, { now });
       if (!current) throw new Error('Prepared collection is unavailable');
-      revision = await publishCollectionRevision(env, { at: current.collectedAt,
-        digest: await collectionFactsDigest(current.payload.indexRecords), recordCount: current.payload.indexRecords.length });
+      const inputDigest = await collectionFactsDigest(current.payload.indexRecords);
+      if (current.collectedAt === result.prepared.collectedAt && inputDigest === result.prepared.inputDigest)
+        revision = await publishCollectionRevision(env, { at: result.prepared.collectedAt,
+          digest: result.prepared.inputDigest, recordCount: result.prepared.recordCount });
     }
     return json({ ...result, stored: accepted, updatesConfigured: Boolean(env.EARTH_DB?.prepare), updatesPublished: Boolean(revision?.stored) },
       accepted ? 200 : 503, accepted ? {} : { 'retry-after': '60' });
@@ -99,10 +101,12 @@ export async function preparedIntelligenceResponse(request, env, { now = Date.no
   const payload = prepared.payload, index = createDiscoveryIndex({ now }); index.replacePayload(payload);
   const reports = groupReports(index.search({ ...filters, limit: 500 }).reports, 80, { preserveOrder: Boolean(filters.q) });
   const sources = payload.sources.map((source) => ({ ...source,
-    ...(prepared.stale && source.status === 'ready' ? { status: 'stale', stale: true, reason: 'Collector heartbeat is older than one minute; original source dates are retained' } : {}),
+    ...(prepared.stale && source.status === 'ready' ? { status: 'stale', stale: true, reason: 'Collector operational check is older than one minute; original source dates are retained' } : {}),
     ageMs: source.retrievedAt ? Math.max(0, now() - Date.parse(source.retrievedAt)) : source.ageMs,
+    checkAgeMs: source.lastCheckedAt ? Math.max(0, now() - Date.parse(source.lastCheckedAt)) : source.checkAgeMs,
   }));
   return json({ ...payload, reports, sources, filters, collectedAt: prepared.collectedAt,
+    checkedAt: prepared.checkedAt, checkAgeMs: prepared.checkAgeMs,
     collectionAgeMs: prepared.ageMs, delivery: 'prepared-hosted-data', nextRefreshMs: 60000 }, 200,
     { 'cache-control': 'public, max-age=15', 'x-earth-collection-at': prepared.collectedAt });
 }

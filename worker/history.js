@@ -190,7 +190,16 @@ async function historyRows(env, { at, from, to, limit }) {
         'SELECT o.source, o.at, o.snapshot_id, o.record_count FROM earth_observations o JOIN (SELECT source, MAX(at) AS at FROM earth_observations WHERE at <= ? GROUP BY source) latest ON o.source = latest.source AND o.at = latest.at ORDER BY o.source LIMIT 21', [at]) :
         await databaseRows(env.EARTH_DB, 'SELECT source, at, snapshot_id, record_count FROM earth_observations WHERE at >= ? AND at <= ? ORDER BY at DESC, source ASC LIMIT ?', [from || '0000-01-01T00:00:00.000Z', to || '9999-12-31T23:59:59.999Z', limit]);
       if (rows.length > (at ? HISTORY_MAX_SOURCES : limit)) throw new Error('History query exceeds its bound');
-      return { sources, snapshots: rows.map((row) => observation({ source: row.source, at: row.at, id: row.snapshot_id, recordCount: row.record_count })), indexMode: 'd1-full-history' };
+      const snapshots = rows.map((row) => observation({ source: row.source, at: row.at, id: row.snapshot_id, recordCount: row.record_count }));
+      // A full index proves the next evidence boundary even when the selected
+      // date falls before the small chronology sent to the browser. Playback
+      // can reuse this interval instead of requesting an as-of view each tick.
+      let nextCaptureAt;
+      if (at) {
+        const next = await databaseRows(env.EARTH_DB, 'SELECT MIN(at) AS at FROM earth_observations WHERE at > ?', [at]);
+        nextCaptureAt = next[0]?.at ? iso(next[0].at) : null;
+      }
+      return { sources, snapshots, ...(at ? { nextCaptureAt, windowStartAt: snapshots.map((entry) => entry.at).sort().at(-1) || null } : {}), indexMode: 'd1-full-history' };
     } catch { /* The durable recent R2 index remains explicitly limited during a database outage. */ }
   }
   const sources = catalog((await objectJson(env.EARTH_STORE, CATALOG_KEY))?.value).sources;
@@ -200,7 +209,10 @@ async function historyRows(env, { at, from, to, limit }) {
       .sort((a, b) => b.at.localeCompare(a.at) || a.source.localeCompare(b.source)).slice(0, limit);
   return { sources: sources.map((entry, i) => ({ ...entry, firstAt: manifests[i].firstAt || entry.firstAt, lastAt: manifests[i].lastAt || entry.lastAt,
     availableFrom: manifests[i].snapshots[0]?.at || null, retainedObservations: manifests[i].snapshots.length })),
-    snapshots, indexMode: 'r2-recent-history', indexWarning: 'Recent index retains at most 1200 observations per source; full historical range queries require the durable database index.' };
+    snapshots, ...(at ? {
+      nextCaptureAt: manifests.flatMap((value) => value.snapshots).map((entry) => entry.at).filter((time) => time > at).sort()[0] || null,
+      windowStartAt: snapshots.map((entry) => entry.at).sort().at(-1) || null,
+    } : {}), indexMode: 'r2-recent-history', indexWarning: 'Recent index retains at most 1200 observations per source; full historical range queries require the durable database index.' };
 }
 
 /** Read-only endpoint. A selected time means what had actually been collected by then. */
@@ -257,14 +269,58 @@ function preparedPayload(payload) {
 
 export class PreparedBaselineConflict extends Error {}
 
+async function preparedFactsDigest(payload) {
+  const records = preparedPayload(payload).indexRecords;
+  records.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return hash(records.map(({ retrievedAt: _retrievedAt, ...facts }) => facts));
+}
+async function assertPreparedCandidate(previous, value, inputDigest, matchesBaseline) {
+  if (matchesBaseline && !await matchesBaseline(previous?.payload)) throw new PreparedBaselineConflict('Prepared baseline changed');
+  if (previous?.schemaVersion === 1 && iso(previous.collectedAt) === value.collectedAt &&
+      await preparedFactsDigest(previous.payload) !== inputDigest)
+    throw new PreparedBaselineConflict('The same collection capture already contains different source facts');
+}
+
+/** Preflight only; final promotion repeats these checks under the conditional pointer write. */
+export async function checkPreparedIntelligence(env, payload, { now = Date.now, matchesBaseline } = {}) {
+  if (!configured(env)) return { configured: false };
+  const value = { schemaVersion: 1, collectedAt: new Date(now()).toISOString(), payload: preparedPayload(payload) };
+  const inputDigest = await preparedFactsDigest(value.payload);
+  const previous = (await objectJson(env.EARTH_STORE, PREPARED_INTELLIGENCE_KEY))?.value;
+  await assertPreparedCandidate(previous, value, inputDigest, matchesBaseline);
+  return { configured: true, collectedAt: value.collectedAt, inputDigest, recordCount: value.payload.indexRecords.length };
+}
+
 export async function writePreparedIntelligence(env, payload, { now = Date.now, matchesBaseline } = {}) {
   if (!configured(env)) return { configured: false, stored: false };
   const value = { schemaVersion: 1, collectedAt: new Date(now()).toISOString(), payload: preparedPayload(payload) };
+  const inputDigest = await preparedFactsDigest(value.payload);
   const stored = await conditionalUpdate(env.EARTH_STORE, PREPARED_INTELLIGENCE_KEY, async (previous) => {
-    if (matchesBaseline && !await matchesBaseline(previous?.payload)) throw new PreparedBaselineConflict('Prepared baseline changed');
-    return previous?.schemaVersion === 1 && iso(previous.collectedAt) > value.collectedAt ? previous : value;
+    await assertPreparedCandidate(previous, value, inputDigest, matchesBaseline);
+    return previous?.schemaVersion === 1 && iso(previous.collectedAt) >= value.collectedAt ? previous : value;
   });
-  return { configured: true, stored: true, collectedAt: stored.collectedAt };
+  const promoted = stored.collectedAt === value.collectedAt && await preparedFactsDigest(stored.payload) === inputDigest;
+  return { configured: true, stored: true, collectedAt: stored.collectedAt, inputDigest: promoted ? inputDigest : await preparedFactsDigest(stored.payload),
+    recordCount: stored.payload.indexRecords.length, promoted, superseded: !promoted };
+}
+
+/** Compact operational checks preserve all factual records/capture dates and never publish history/world. */
+export async function writePreparedOperationalCheck(env, { checkedAt, inputDigest }, updatePayload) {
+  if (!configured(env)) return { configured: false, stored: false };
+  checkedAt = iso(checkedAt);
+  if (!digestId(inputDigest) || typeof updatePayload !== 'function') throw new TypeError('Use a checked factual baseline');
+  const stored = await conditionalUpdate(env.EARTH_STORE, PREPARED_INTELLIGENCE_KEY, async (previous) => {
+    if (previous?.schemaVersion !== 1 || await preparedFactsDigest(previous.payload) !== inputDigest)
+      throw new PreparedBaselineConflict('Prepared factual baseline changed');
+    const previousCheck = iso(previous.checkedAt || previous.collectedAt);
+    if (checkedAt < previousCheck) return previous;
+    const payload = preparedPayload(await updatePayload(previous.payload));
+    if (await hash(payload.indexRecords) !== await hash(preparedPayload(previous.payload).indexRecords))
+      throw new TypeError('Operational checks cannot revise or retime source records');
+    return { ...previous, checkedAt, payload };
+  });
+  return { configured: true, stored: true, collectedAt: stored.collectedAt, checkedAt: stored.checkedAt || stored.collectedAt,
+    inputDigest, recordCount: stored.payload.indexRecords.length, factualPublication: false };
 }
 
 export async function readPreparedIntelligence(env, { now = Date.now } = {}) {
@@ -272,9 +328,10 @@ export async function readPreparedIntelligence(env, { now = Date.now } = {}) {
   try {
     const saved = (await objectJson(env.EARTH_STORE, PREPARED_INTELLIGENCE_KEY))?.value;
     if (saved?.schemaVersion !== 1) return null;
-    const collectedAt = iso(saved.collectedAt), ageMs = now() - Date.parse(collectedAt);
-    if (ageMs < -300000 || ageMs > MAX_AGE_MS) return null;
-    return { payload: preparedPayload(saved.payload), collectedAt, ageMs: Math.max(0, ageMs), stale: ageMs >= 60000,
-      expiresAt: new Date(Date.parse(collectedAt) + MAX_AGE_MS).toISOString() };
+    const collectedAt = iso(saved.collectedAt), checkedAt = iso(saved.checkedAt || collectedAt), ageMs = now() - Date.parse(collectedAt),
+      checkAgeMs = now() - Date.parse(checkedAt);
+    if (ageMs < -300000 || checkAgeMs < -300000 || checkAgeMs > MAX_AGE_MS || checkedAt < collectedAt) return null;
+    return { payload: preparedPayload(saved.payload), collectedAt, checkedAt, ageMs: Math.max(0, ageMs), checkAgeMs: Math.max(0, checkAgeMs), stale: checkAgeMs >= 60000,
+      expiresAt: new Date(Date.parse(checkedAt) + MAX_AGE_MS).toISOString() };
   } catch { return null; }
 }
