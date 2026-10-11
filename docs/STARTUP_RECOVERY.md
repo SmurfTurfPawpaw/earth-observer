@@ -1,0 +1,9 @@
+# Engine startup recovery
+
+The production bootstrap waits at most 15 seconds for its owned Cesium script to emit `load`. A timeout or download failure hides the loading panel, displays the existing error panel with a connection/reload message, and enables its reload button. Startup stops before importing the application entry. Successful downloads may use the full deadline; the worker's shorter network-fallback timeout does not replace this first-visit safeguard.
+
+Success, timeout, download failure and script-insertion failure clear the deadline and both event listeners. Failure also removes the owned script element. A settled guard ignores callbacks that were already queued before cleanup, so a late load cannot import the application after timeout. Removing a script does not guarantee cancellation of bytes already in browser transport; this safeguard controls startup and removes its owned DOM work.
+
+The existing engine preload, static startup module preloads, saved scene read, and service-worker status handshake/messages remain in place. An already available engine starts normally without another script or timer. The repair is prepared for the next release; the reported user black screen has not been attributed to an engine timeout.
+
+Six tests in `src/bootstrap.test.mjs` cover near-deadline success, stalled downloads, late events, download/insertion failures, visible reload behavior, one application import, offline messages and an already available engine. Integration fixtures execute the actual production bootstrap bundled in memory, replacing only the optional saved-image read and downstream application entry. All 19 targeted bootstrap, saved-preview and offline-shell tests pass. These are lifecycle and contract checks; they do not establish a new production browser timing or induced network-stall result.

@@ -4,7 +4,11 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
-import { collectOfflineShell, prepareOfflineShell, preloadStartupModules, OFFLINE_MANIFEST } from '../scripts/offline-shell.mjs';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { collectOfflineShell, prepareOfflineShell, preloadStartupModules, publicShellAsset, PUBLIC_SHELL_MAX_BYTES, OFFLINE_MANIFEST } from '../scripts/offline-shell.mjs';
 import { renderServiceWorker } from '../scripts/service-worker-runtime.mjs';
 const manifest = () => ({
   'index.html': { file: 'assets/bootstrap-one.js', imports: ['_shared.js', '_preview.js'], dynamicImports: ['src/main.js', 'src/optional.js'], css: ['assets/app-one.css'] },
@@ -74,11 +78,52 @@ test('a temporary mounted build resolves plugin vendor folders, checks missing f
     }
     await writeFile(path.join(folder, OFFLINE_MANIFEST), JSON.stringify(manifest()));
     const first = await prepareOfflineShell({ outDir: folder, scope }); assert.deepEqual(first.critical, critical);
+    assert.equal(first.shell.descriptor.url, scope + first.shell.filename);
+    assert.deepEqual(JSON.parse(first.shell.body), { schema: 1, release: first.version, scope, html: html(scope) });
+    const markerBytes = Buffer.byteLength(JSON.stringify({ schema: 1, release: first.version, critical, htmlDigest: first.shell.descriptor.htmlDigest }));
+    assert.equal(first.bytes, Buffer.byteLength(first.shell.body) + (critical.length - 1) * Buffer.byteLength('fixture') + markerBytes);
+    await assert.rejects(prepareOfflineShell({ outDir: folder, scope, maxAssets: critical.length }), /budget/); // One reserved completion-marker entry.
     await writeFile(path.join(folder, 'assets/shared-one.js'), 'changed shared module');
     const second = await prepareOfflineShell({ outDir: folder, scope }); assert.notEqual(second.version, first.version);
+    assert.notEqual(second.shell.filename, first.shell.filename); // Different dependencies cannot share an immutable shell descriptor.
     await assert.rejects(prepareOfflineShell({ outDir: folder, scope, maxBytes: 2 }), /budget/);
     await rm(path.join(folder, 'assets/navigation-one.js'));
     await assert.rejects(prepareOfflineShell({ outDir: folder, scope }), /Missing essential/);
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});
+
+test('the public shell is content-addressed across HTML, asset release and mount, and has a fixed decoded byte budget', () => {
+  const input = { html: '<!doctype html><html>Public build</html>', version: 'fixture', scope: '/earth/' };
+  const asset = publicShellAsset(input), hash = createHash('sha256').update(asset.body).digest('hex');
+  assert.equal(asset.descriptor.url, `/earth/assets/public-shell-${hash}.json`);
+  assert.equal(asset.descriptor.htmlDigest, createHash('sha256').update(input.html).digest('hex'));
+  for (const change of [{ html: input.html + 'updated' }, { version: 'next' }, { scope: '/' }]) assert.notEqual(publicShellAsset({ ...input, ...change }).filename, asset.filename);
+  assert.throws(() => publicShellAsset({ ...input, html: 'x'.repeat(PUBLIC_SHELL_MAX_BYTES) }), /byte budget/);
+  assert.throws(() => publicShellAsset({ ...input, scope: '/earth/../' }), /Invalid/);
+  assert.throws(() => publicShellAsset({ ...input, version: 'private/unsafe' }), /Invalid/);
+});
+
+test('the actual generator emits scoped universal JSON after startup preloads without acquiring optional files', async () => {
+  const parent = path.resolve(tmpdir()), folder = await mkdtemp(path.join(parent, 'earth-shell-generator-'));
+  assert.equal(path.resolve(folder).startsWith(parent + path.sep), true); assert.match(path.basename(folder), /^earth-shell-generator-/);
+  try {
+    const scope = '/earth/', original = '<!doctype html><html><head>' + html(scope) + '</head><body>Universal public document</body></html>';
+    const critical = collectOfflineShell({ manifest: manifest(), html: original, scope });
+    for (const route of critical) {
+      const relative = route === scope ? 'index.html' : route.includes('/cesium/') ? route.slice(1) : route.slice(scope.length);
+      const filename = path.join(folder, 'dist', relative); await mkdir(path.dirname(filename), { recursive: true }); await writeFile(filename, route === scope ? original : 'fixture');
+    }
+    await writeFile(path.join(folder, 'dist', OFFLINE_MANIFEST), JSON.stringify(manifest()));
+    const script = fileURLToPath(new URL('../scripts/service-worker.mjs', import.meta.url));
+    await promisify(execFile)(process.execPath, [script], { cwd: folder, env: { ...process.env, EARTH_BASE_PATH: scope } });
+    const builtHtml = await readFile(path.join(folder, 'dist/index.html'), 'utf8'), sw = await readFile(path.join(folder, 'dist/sw.js'), 'utf8');
+    assert.match(builtHtml, /modulepreload[^>]+main-one\.js/);
+    const descriptor = JSON.parse(/const SHELL = (\{[^;]+\}), SHELL_RELEASE/.exec(sw)[1]);
+    const body = await readFile(path.join(folder, 'dist', descriptor.url.slice(scope.length)), 'utf8');
+    assert.equal(createHash('sha256').update(body).digest('hex'), descriptor.digest); assert.equal(JSON.parse(body).html, builtHtml);
+    assert.match(sw, /earth-observer-shell-v3-/); assert.equal(sw.includes('optional-heavy.js'), false); assert.equal(sw.includes('optional-data.bin'), false);
+    assert.match(sw, /x-earth-shell-release/); assert.match(sw, /frame-ancestors 'none'/);
+    await assert.rejects(readFile(path.join(folder, 'dist', OFFLINE_MANIFEST)), { code: 'ENOENT' });
   } finally { await rm(folder, { recursive: true, force: true }); }
 });
 test('generated service-worker code excludes mounted APIs and authorization requests before navigation or asset caching', () => {

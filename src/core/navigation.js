@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { HOME_VIEW, PLACES, resolvePlace } from './navigation-state.js';
-import { viewerGlobeAltitude } from './globe-framing.js';
+import { viewerGlobeAltitude, visibleTiltCameraView } from './globe-framing.js';
 export { HOME_VIEW, PLACES, resolvePlace, parseViewHash, serializeViewHash } from './navigation-state.js';
 
 export function cameraView(viewer) {
@@ -50,7 +50,7 @@ export function installNavigation(viewer, { onPlace = () => {}, onViewChange = (
   });
   bind('tilt', () => {
     const view = cameraView(viewer);
-    setCameraView(viewer, { ...view, pitch: view.pitch < -65 ? -45 : -90 }, true);
+    setCameraView(viewer, visibleTiltCameraView(viewer, { ...view, pitch: view.pitch <= -89.5 ? -45 : -90 }), true);
   });
   const search = document.getElementById('search');
   const form = document.getElementById('search-form');
@@ -71,7 +71,7 @@ export function installNavigation(viewer, { onPlace = () => {}, onViewChange = (
   const updateReadout = () => {
     const view = cameraView(viewer);
     document.getElementById('view-position').textContent = `${Math.abs(view.lat).toFixed(3)}° ${view.lat >= 0 ? 'N' : 'S'}  ·  ${Math.abs(view.lon).toFixed(3)}° ${view.lon >= 0 ? 'E' : 'W'}  ·  ${view.alt >= 1000 ? `${(view.alt / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} km` : `${Math.round(view.alt)} m`} altitude`;
-    document.getElementById('tilt').setAttribute('aria-pressed', String(view.pitch > -65));
+    document.getElementById('tilt').setAttribute('aria-pressed', String(view.pitch > -89.5));
     onViewChange(view);
   };
   cleanup.push(viewer.camera.moveEnd.addEventListener(updateReadout));

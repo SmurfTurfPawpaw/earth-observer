@@ -8,6 +8,10 @@ export const OPEN_FREE_MAP_CREDIT = '<a href="https://openfreemap.org/">OpenFree
 const SIZE = 256, MAX_BYTES = 4 * 1024 * 1024, MAX_FEATURES = 30000, MAX_POINTS = 200000;
 const LAYERS = ['landcover', 'landuse', 'park', 'water', 'waterway', 'building', 'boundary', 'transportation', 'place', 'transportation_name'];
 const abortError = () => new DOMException('Map tile request cancelled', 'AbortError');
+const cachedAt = (response) => {
+  const value = Number(response.headers.get('x-earth-map-cached-at'));
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+};
 const nameOf = (properties) => String(properties['name:en'] || properties.name_en || properties.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 64);
 
 export function validateOpenFreeMapMetadata(value) {
@@ -174,13 +178,14 @@ export async function createOpenFreeMapImageryProvider({ fetchImpl = (...args) =
   const parentAbort = () => lifetime.abort(signal.reason);
   signal?.throwIfAborted(); signal?.addEventListener('abort', parentAbort, { once: true });
   const combined = AbortSignal.any([lifetime.signal, AbortSignal.timeout(12000)]);
-  let meta;
+  let meta, savedMetadataAt = null, savedTileReads = 0, latestCachedAt = null;
   try {
     if (metadata) meta = validateOpenFreeMapMetadata(metadata);
     else {
       const response = await fetchImpl(OPEN_FREE_MAP_TILEJSON, { signal: combined, redirect: 'error', credentials: 'omit' });
       if (!response.ok) { await response.body?.cancel(); throw new Error(`OpenFreeMap metadata HTTP ${response.status}`); }
       meta = validateOpenFreeMapMetadata(await readResponseJsonCapped(response, 256 * 1024, combined));
+      savedMetadataAt = cachedAt(response);
     }
     combined.throwIfAborted();
   } catch (error) { signal?.removeEventListener('abort', parentAbort); lifetime.abort(); throw error; }
@@ -202,6 +207,11 @@ export async function createOpenFreeMapImageryProvider({ fetchImpl = (...args) =
         // Yield between network completion and bounded CPU work during navigation.
         await new Promise((resolve) => setTimeout(resolve, 0)); ownedSignal.throwIfAborted();
         const decoded = decodeBasemapTile(bytes); ownedSignal.throwIfAborted();
+        const restoredAt = cachedAt(response);
+        if (restoredAt) {
+          savedTileReads = Math.min(1000000, savedTileReads + 1);
+          latestCachedAt = Math.max(latestCachedAt || 0, restoredAt);
+        }
         if (decoded.bytesEstimate <= maxNativeBytes && !destroyed) {
           nativeCache.set(key, decoded); nativeBytes += decoded.bytesEstimate;
           while (nativeBytes > maxNativeBytes) { const oldest = nativeCache.keys().next().value; nativeBytes -= nativeCache.get(oldest).bytesEstimate; nativeCache.delete(oldest); }
@@ -246,7 +256,8 @@ export async function createOpenFreeMapImageryProvider({ fetchImpl = (...args) =
     },
     getTileCredits() { return undefined; },
     pickFeatures() { return undefined; },
-    getStats: () => ({ nativeEntries: nativeCache.size, nativeBytes, rasterEntries: rasterCache.size, rasterBytes: rasterCache.size * SIZE * SIZE * 4, activeRequests: jobs.size }),
+    getStats: () => ({ nativeEntries: nativeCache.size, nativeBytes, rasterEntries: rasterCache.size, rasterBytes: rasterCache.size * SIZE * SIZE * 4, activeRequests: jobs.size,
+      savedMetadataAt, savedTileReads, latestCachedAt }),
     setEnabled(value) {
       enabled = Boolean(value);
       if (!enabled) {

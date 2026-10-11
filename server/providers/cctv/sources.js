@@ -19,7 +19,7 @@ import {
 import { directionToHeading } from '../../../src/data/directionText.js';
 import { readResponseJsonCapped } from '../common/http.js';
 
-export async function loadTflSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+export async function loadTflSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch, retainAll = false } = {}) {
   const appKey = String(env.TFL_APP_KEY || '').trim();
   if (!appKey || env.CCTV_TFL_TERMS_ACCEPTED !== '1') return [];
   try {
@@ -89,7 +89,7 @@ export async function loadTflSourcesFromOpenData({ env = globalThis.process?.env
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(600, Math.floor(maxRaw)))
       : DEFAULT_TFL_MAX_SOURCES;
-    const prioritized = prioritizeSources(cameras, maxCount, [LONDON_CENTER]);
+    const prioritized = prioritizeSources(cameras, maxCount, [LONDON_CENTER], { retainAll });
     console.log(
       `[CCTV] Loaded TfL JamCam sources: ${cameras.length} available (using nearest ${prioritized.length})`,
     );
@@ -171,7 +171,7 @@ function pickOntarioCctvView(views) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadOntarioSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+export async function loadOntarioSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch, retainAll = false } = {}) {
   const apiKey = String(env.ONTARIO_511_API_KEY || '').trim();
   if (!apiKey || env.CCTV_ONTARIO_TERMS_ACCEPTED !== '1') return [];
   try {
@@ -252,7 +252,7 @@ export async function loadOntarioSourcesFromOpenData({ env = globalThis.process?
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(1000, Math.floor(maxRaw)))
       : DEFAULT_ONTARIO_MAX_SOURCES;
-    const prioritized = prioritizeSources(unique, maxCount, ONTARIO_ANCHORS);
+    const prioritized = prioritizeSources(unique, maxCount, ONTARIO_ANCHORS, { retainAll });
     console.log(
       `[CCTV] Loaded Ontario 511 camera sources: ${unique.length} enabled (using nearest ${prioritized.length})`,
     );
@@ -293,7 +293,7 @@ export async function loadOntarioSourcesFromOpenData({ env = globalThis.process?
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadFintrafficSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+export async function loadFintrafficSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch, retainAll = false } = {}) {
   try {
     const resp = await fetchImpl(FINTRAFFIC_STATIONS_URL, {
       headers: {
@@ -316,8 +316,8 @@ export async function loadFintrafficSourcesFromOpenData({ env = globalThis.proce
       return [];
     }
     const payload = await readResponseJsonCapped(resp, 8 * 1024 * 1024);
-    const features = Array.isArray(payload?.features) ? payload.features : [];
-    if (!features.length) return [];
+    if (!Array.isArray(payload?.features)) return [];
+    const features = payload.features;
 
     const cameras = [];
     let stationsSeen = 0;
@@ -387,7 +387,7 @@ export async function loadFintrafficSourcesFromOpenData({ env = globalThis.proce
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(600, Math.floor(maxRaw)))
       : DEFAULT_FINTRAFFIC_MAX_SOURCES;
-    const prioritized = prioritizeSources(cameras, maxCount, FINLAND_ANCHORS);
+    const prioritized = prioritizeSources(cameras, maxCount, FINLAND_ANCHORS, { retainAll });
     console.log(
       `[CCTV] Loaded Fintraffic camera sources: ${cameras.length} live presets across ${stationsSeen} stations (using nearest ${prioritized.length})`,
     );
@@ -446,7 +446,7 @@ const DRIVEBC_ORIENTATION_HEADINGS = Object.freeze({
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadDriveBcSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+export async function loadDriveBcSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch, retainAll = false } = {}) {
   // The public feed includes partner-owned images. A missing credit does not
   // prove ministry ownership, so only explicitly reviewed camera IDs qualify.
   const approvedIds = new Set(
@@ -530,7 +530,7 @@ export async function loadDriveBcSourcesFromOpenData({ env = globalThis.process?
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(1200, Math.floor(maxRaw)))
       : DEFAULT_DRIVEBC_MAX_SOURCES;
-    const prioritized = prioritizeSources(cameras, maxCount, DRIVEBC_ANCHORS);
+    const prioritized = prioritizeSources(cameras, maxCount, DRIVEBC_ANCHORS, { retainAll });
     console.log(
       `[CCTV] Loaded DriveBC camera sources: ${cameras.length} published (using nearest ${prioritized.length})`,
     );
@@ -611,7 +611,7 @@ export function nswCameraToSource(feature) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadNswSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+export async function loadNswSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch, retainAll = false } = {}) {
   try {
     const resp = await fetchImpl(NSW_CAMERAS_URL, {
       headers: {
@@ -627,7 +627,8 @@ export async function loadNswSourcesFromOpenData({ env = globalThis.process?.env
       return [];
     }
     const body = await readResponseJsonCapped(resp, 8 * 1024 * 1024);
-    const features = Array.isArray(body?.features) ? body.features : [];
+    if (!Array.isArray(body?.features)) return [];
+    const features = body.features;
     const cameras = features.map(nswCameraToSource).filter(Boolean);
     const maxRaw = Number(
       env.CCTV_NSW_MAX_SOURCES || DEFAULT_NSW_MAX_SOURCES,
@@ -635,7 +636,7 @@ export async function loadNswSourcesFromOpenData({ env = globalThis.process?.env
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(900, Math.floor(maxRaw)))
       : DEFAULT_NSW_MAX_SOURCES;
-    const prioritized = prioritizeSources(cameras, maxCount, [SYDNEY_CENTER]);
+    const prioritized = prioritizeSources(cameras, maxCount, [SYDNEY_CENTER], { retainAll });
     console.log(
       `[CCTV] Loaded NSW camera sources: ${cameras.length} (using nearest ${prioritized.length})`,
     );
@@ -783,7 +784,7 @@ export function calgaryCameraToSource(record) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadCalgarySourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+export async function loadCalgarySourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch, retainAll = false } = {}) {
   try {
     const endpoint = DEFAULT_CALGARY_ROWS_URL;
     const resp = await fetchImpl(endpoint, {
@@ -829,7 +830,7 @@ export async function loadCalgarySourcesFromOpenData({ env = globalThis.process?
       : DEFAULT_CALGARY_MAX_SOURCES;
     const prioritized = prioritizeSources(cameras, maxCount, [
       CALGARY_DOWNTOWN,
-    ]);
+    ], { retainAll });
     console.log(
       `[CCTV] Loaded Calgary camera sources: ${cameras.length} (using nearest ${prioritized.length})`,
     );
@@ -917,7 +918,7 @@ export function vegvesenCameraToSource(feature) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadVegvesenSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+export async function loadVegvesenSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch, retainAll = false } = {}) {
   try {
     const endpoint = DEFAULT_VEGVESEN_CCTV_URL;
     const resp = await fetchImpl(endpoint, {
@@ -947,7 +948,8 @@ export async function loadVegvesenSourcesFromOpenData({ env = globalThis.process
       resp,
       VEGVESEN_MAX_CATALOG_BYTES,
     );
-    const features = Array.isArray(payload?.features) ? payload.features : [];
+    if (!Array.isArray(payload?.features)) return [];
+    const features = payload.features;
     const cameras = [];
     const seen = new Set();
     for (const feature of features) {
@@ -962,7 +964,7 @@ export async function loadVegvesenSourcesFromOpenData({ env = globalThis.process
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(1000, Math.floor(maxRaw)))
       : DEFAULT_VEGVESEN_MAX_SOURCES;
-    const prioritized = prioritizeSources(cameras, maxCount, NORWAY_ANCHORS);
+    const prioritized = prioritizeSources(cameras, maxCount, NORWAY_ANCHORS, { retainAll });
     console.log(
       `[CCTV] Loaded Vegvesen camera sources: ${cameras.length} (using nearest ${prioritized.length})`,
     );

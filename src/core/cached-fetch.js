@@ -82,7 +82,7 @@ export function createCachedFetch({ fetchImpl = (...args) => fetch(...args), sto
     typeof record.body.slice === 'function' && record.body.byteLength <= MAX_RESPONSE_BYTES;
   function trim() {
     trimming = trimming.then(async () => {
-      const records = (await store.all()).filter((item) => item?.key?.startsWith('response:')).sort((a, b) => b.at - a.at);
+      const records = (await store.all('response:')).filter((item) => item?.key?.startsWith('response:')).sort((a, b) => b.at - a.at);
       let bytes = 0;
       for (const [index, record] of records.entries()) {
         bytes += Number(record.body?.byteLength) || 0;

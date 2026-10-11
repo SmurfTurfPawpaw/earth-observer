@@ -1,4 +1,5 @@
 import { showSavedScene } from './core/scene-preview.js';
+import { loadEngineScript } from './bootstrap-engine.js';
 // The worker reports actual network fallback; observations retain their own source times.
 navigator.serviceWorker?.addEventListener('message', (event) => {
   if (event.data?.type !== 'earth-observer:shell-status' || typeof event.data.message !== 'string') return;
@@ -13,17 +14,9 @@ async function boot() {
     if (import.meta.env.PROD && !globalThis.Cesium) {
       const preload = document.querySelector('link[data-globe-engine]');
       if (!preload) throw new Error('The 3D engine script is missing.');
-      const engine = document.createElement('script');
-      engine.src = preload.href;
-      engine.id = 'cesium-engine';
-      engine.async = true;
       const label = document.querySelector('#loading p');
       if (label) label.textContent = 'Loading the 3D engine…';
-      await new Promise((resolve, reject) => {
-        engine.addEventListener('load', resolve, { once: true });
-        engine.addEventListener('error', () => reject(new Error('The 3D engine could not download. Reload to try again.')), { once: true });
-        document.head.append(engine);
-      });
+      await loadEngineScript({ src: preload.href });
     }
     const label = document.querySelector('#loading p');
     if (label) label.textContent = 'Opening the globe…';

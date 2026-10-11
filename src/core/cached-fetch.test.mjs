@@ -116,3 +116,38 @@ test('corrupt snapshots cannot block network recovery and credentials bypass sna
   await fetch(url, { cache: 'no-store' });
   assert.equal(calls, 4); fetch.destroy();
 });
+
+test('cache pruning requests its response namespace and leaves notebook and scene records intact', async () => {
+  const store = createBrowserStore(null), prefixes = [], all = store.all;
+  store.all = (prefix) => { prefixes.push(prefix); return all(prefix); };
+  const oldKey = 'response:http://localhost/api/flights?lat=0&lon=0';
+  await store.put(oldKey, { at: 1, status: 200, body: new ArrayBuffer(4), headers: [], expire: 1 });
+  await store.put('evidence:photo', { photo: new Blob(['private photograph']) });
+  await store.put('scene:preview', { body: new ArrayBuffer(8) });
+  const removed = Promise.withResolvers(), originalDelete = store.delete;
+  store.delete = async (key) => { const result = await originalDelete(key); removed.resolve(key); return result; };
+  const fetch = createCachedFetch({ store, now: () => 100_000, fetchImpl: async () => response(12) });
+  assert.equal((await (await fetch(url)).json()).value, 12);
+  assert.equal(await removed.promise, oldKey);
+  assert.deepEqual(prefixes, ['response:']);
+  assert.equal(await store.get(oldKey), undefined);
+  assert.equal((await store.get('evidence:photo')).photo.size, 18);
+  assert.equal((await store.get('scene:preview')).body.byteLength, 8);
+  assert.equal((await store.get(`response:http://localhost${url}`)).status, 200);
+  fetch.destroy();
+});
+
+test('cache pruning remains compatible with injected legacy stores that ignore the prefix argument', async () => {
+  const removed = Promise.withResolvers(); let unrelatedReads = 0;
+  const unrelated = { key: 'evidence:private-photo', get body() { unrelatedReads++; throw new Error('Unrelated photo was touched'); } };
+  const prefixes = [];
+  const store = { get: async () => undefined, put: async () => {}, all: async (prefix) => {
+    prefixes.push(prefix);
+    return [unrelated, { key: 'response:expired', at: 1, status: 200, body: new ArrayBuffer(1), headers: [], expire: 1 }];
+  }, delete: async (key) => removed.resolve(key) };
+  const fetch = createCachedFetch({ store, now: () => 100_000, fetchImpl: async () => response(3) });
+  assert.equal((await (await fetch(url)).json()).value, 3);
+  assert.equal(await removed.promise, 'response:expired');
+  assert.deepEqual(prefixes, ['response:']);
+  assert.equal(unrelatedReads, 0); fetch.destroy();
+});

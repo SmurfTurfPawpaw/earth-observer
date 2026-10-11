@@ -1,6 +1,8 @@
 import * as Cesium from 'cesium';
 import { applyModelAtmosphereWorkaround } from '../app/atmosphereCompat.js';
 import { viewerGlobeAltitude } from './globe-framing.js';
+import { CSS_PIXEL_RENDERING, installGlobeRenderingPolicy } from './rendering-policy.js';
+import { observeStreetMapCoverage, streetMapCoverageNotice } from './basemap-coverage.js';
 
 const NASA_TILES = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg';
 
@@ -17,6 +19,7 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     skyBox: false,
     scene3DOnly: true,
     useDefaultRenderLoop: false,
+    useBrowserRecommendedResolution: CSS_PIXEL_RENDERING.useBrowserRecommendedResolution,
     terrainProvider: new Cesium.EllipsoidTerrainProvider(),
     geocoder: false,
     homeButton: false,
@@ -32,10 +35,10 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     shadows: false,
     contextOptions: { webgl: { alpha: false, antialias: true } },
   });
+  let renderingPolicy;
   try {
     viewer.targetFrameRate = 60;
-    viewer.resolutionScale = Math.min(1, 1.5 / (globalThis.devicePixelRatio || 1));
-    viewer.scene.globe.maximumScreenSpaceError = 3;
+    renderingPolicy = installGlobeRenderingPolicy(viewer);
     viewer.scene.globe.tileCacheSize = 100;
     viewer.scene.globe.preloadAncestors = true;
     viewer.scene.globe.preloadSiblings = true;
@@ -57,17 +60,19 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     });
     const imagery = viewer.imageryLayers.addImageryProvider(nasa);
     imagery.show = false;
-    let mode = 'map', mapStatus = 'loading', mapProvider, mapLayer, mapFlight, mapFailures = 0, mapRetryAt = 0, nasaAvailable = true;
+    let mode = 'map', mapStatus = 'loading', mapProvider, mapLayer, mapFlight, mapCoverage, mapRetryAt = 0, nasaAvailable = true;
     const mapLifetime = new AbortController();
     function applyBasemap() {
       imagery.show = nasaAvailable && (mode === 'imagery' || mapStatus === 'unavailable');
-      if (mapLayer) mapLayer.show = mode === 'map' && mapStatus === 'ready';
+      if (mapLayer) mapLayer.show = mode === 'map' && ['ready', 'partial'].includes(mapStatus);
+      renderingPolicy.setBasemapMode(mapLayer?.show ? 'map' : 'imagery');
       mapProvider?.setEnabled(Boolean(mapLayer?.show));
       viewer.scene.requestRender();
     }
     function mapUnavailable(message) {
       if (viewer.isDestroyed()) return;
       mapStatus = 'unavailable'; mapRetryAt = Date.now() + 30000;
+      mapCoverage?.destroy(); mapCoverage = undefined;
       mapProvider?.destroy(); mapProvider = undefined;
       if (mapLayer) viewer.imageryLayers.remove(mapLayer, true);
       mapLayer = undefined; applyBasemap();
@@ -75,18 +80,23 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     }
     function ensureMap() {
       if (mapFlight) return mapFlight;
-      if (mapStatus === 'ready') return Promise.resolve(true);
+      if (['ready', 'partial'].includes(mapStatus)) return Promise.resolve(true);
       if (Date.now() < mapRetryAt) return Promise.resolve(false);
       mapStatus = 'loading';
       mapFlight = import('../maps/openFreeMapImagery.js').then(async ({ createOpenFreeMapImageryProvider }) => {
         if (viewer.isDestroyed() || mode !== 'map') { mapStatus = 'idle'; return false; }
-        const provider = await createOpenFreeMapImageryProvider({ signal: mapLifetime.signal, onTile: () => { mapFailures = 0; } });
+        const provider = await createOpenFreeMapImageryProvider({ signal: mapLifetime.signal, onTile: () => { mapCoverage?.tileSucceeded(); } });
         if (viewer.isDestroyed()) { provider.destroy(); return false; }
-        mapProvider = provider; mapFailures = 0;
+        mapProvider = provider;
         mapLayer = viewer.imageryLayers.addImageryProvider(provider); mapStatus = 'ready';
-        provider.errorEvent.addEventListener(() => {
-          if (mode !== 'map' || mapStatus !== 'ready' || viewer.isDestroyed()) return;
-          if (++mapFailures >= 8) mapUnavailable('Street map tiles are unavailable. Showing coarse imagery; reconnect or choose the map again to retry.');
+        mapCoverage = observeStreetMapCoverage(provider, (state) => {
+          if (viewer.isDestroyed()) return;
+          // Failed ancestors do not prevent Cesium from rendering saved children.
+          // Keep genuine street detail above the bundled base instead of removing
+          // the whole layer after a run of cache misses.
+          mapStatus = state.status;
+          applyBasemap();
+          if (mode === 'map') onNotice(streetMapCoverageNotice(state));
         });
         applyBasemap(); return true;
       }).catch(() => { mapUnavailable('Street map tiles are unavailable. Showing coarse imagery; reconnect or choose the map again to retry.'); return false; })
@@ -102,14 +112,15 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
         return mode;
       },
       getState: () => ({ mode, status: mapStatus,
-        active: mode === 'map' && mapStatus === 'ready' ? 'map' : nasaAvailable && (mode === 'imagery' || mapStatus === 'unavailable') ? 'imagery' : 'bundled',
+        active: mode === 'map' && ['ready', 'partial'].includes(mapStatus) ? 'map' : nasaAvailable && (mode === 'imagery' || mapStatus === 'unavailable') ? 'imagery' : 'bundled',
+        coverage: mapCoverage?.getState() || null,
         nativeMaximumLevel: 14, maximumLevel: 18 }),
       ready: undefined,
     };
     viewer.earthBasemap = basemap;
     basemap.ready = ensureMap();
     const destroyViewer = viewer.destroy.bind(viewer);
-    viewer.destroy = () => { mapLifetime.abort(); mapProvider?.destroy(); return destroyViewer(); };
+    viewer.destroy = () => { renderingPolicy.destroy(); mapCoverage?.destroy(); mapLifetime.abort(); mapProvider?.destroy(); return destroyViewer(); };
     // Paint inexpensive bundled imagery first; NASA detail fills in without a blank globe.
     const baseReady = Cesium.TileMapServiceImageryProvider.fromUrl(
       Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'),
@@ -148,6 +159,7 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     ];
     return viewer;
   } catch (error) {
+    renderingPolicy?.destroy();
     viewer.destroy();
     throw error;
   }

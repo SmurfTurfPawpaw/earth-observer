@@ -1,4 +1,5 @@
 import { createCctvCatalog } from './cctv/catalog.js';
+import { cctvAreaQuery, cctvDistance } from './cctv/regions.js';
 import {
   CCTV_FRAME_FETCH_TIMEOUT_MS, CCTV_FRAME_MAX_BODY_BYTES, CCTV_MAX_SOURCES_CEILING,
   FINTRAFFIC_IMAGE_ORIGIN, NSW_IMAGE_ORIGIN, NSW_IMAGE_USER_AGENT,
@@ -142,21 +143,29 @@ export function cctvProxy(options = {}) {
     server.middlewares.use('/api/cctv', async (req, res) => {
       try {
         if (req.method !== 'GET') return json(res, 405, { error: 'Method Not Allowed' });
-        const path = new URL(req.url || '/', 'http://localhost').pathname;
+        const url = new URL(req.url || '/', 'http://localhost'), path = url.pathname;
         const match = /^\/(stream|frame|media)\/([^/]+)$/.exec(path);
         if (path !== '/sources' && path !== '/health' && !match) return json(res, 404, { error: 'Camera endpoint not found' });
-        const sources = await getSources();
-        const byId = new Map(sources.map((source) => [source.id, source]));
         // Revoked providers cannot remain visible in health or frame caches.
-        for (const id of cache.keys()) if (!byId.has(id)) deleteCached(id);
-        for (const id of health.keys()) if (!byId.has(id)) health.delete(id);
+        for (const id of cache.keys()) if (!getSources.isRegistered(id)) deleteCached(id);
+        for (const id of health.keys()) if (!getSources.isRegistered(id)) health.delete(id);
         if (path === '/sources') {
-          return json(res, 200, { sources: sources.map(publicSource), trimmedPacks: getSources.trimmedPacks() });
+          const query = cctvAreaQuery(url.searchParams);
+          if (query.error) return json(res, 400, { error: query.error });
+          const catalog = await getSources.getCatalog(query.area);
+          return json(res, 200, { ...catalog, sources: catalog.sources.map(publicSource) });
         }
-        if (path === '/health') return json(res, 200, { cameras: [...health.values()] });
+        if (path === '/health') {
+          const query = cctvAreaQuery(url.searchParams);
+          if (query.error) return json(res, 400, { error: query.error });
+          // Health reports only cameras already requested. It never loads a pack.
+          const ids = new Set(getSources.currentSources().filter((source) => !query.area || cctvDistance(source, query.area) <= query.area.radiusKm).map((source) => source.id));
+          return json(res, 200, { cameras: [...health.values()].filter((camera) => ids.has(camera.id)) });
+        }
         let id;
         try { id = decodeURIComponent(match[2]); } catch { return json(res, 400, { error: 'Invalid camera ID encoding' }); }
-        const source = byId.get(id);
+        // Camera prefixes resolve exactly one admitted provider, before any fetch.
+        const source = await getSources.getById(id);
         if (!source) return json(res, 404, { error: 'Camera is not registered for this deployment' });
         if (match[1] === 'stream') {
           return json(res, 200, {

@@ -5,6 +5,7 @@ import {
 export { normalizeFeedType, isVideoFeedType };
 import { directionToHeading } from '../../../src/data/directionText.js';
 import { haversineKm } from '../common/geo.js';
+import { CCTV_MAX_SOURCES_CEILING } from './constants.js';
 /**
  * FNV-1a 32-bit hash of a string, used to derive deterministic pseudo-random
  * values (e.g. hue for synthetic SVG billboards, fallback heading angles).
@@ -449,7 +450,7 @@ export function rowArrayToObject(row, columns) {
  * @param {Array<{lat:number,lon:number}>} anchors - At least one anchor.
  * @returns {Array<object>} Capped, priority-ordered camera list.
  */
-export function prioritizeSources(cameras, maxCount, anchors) {
+export function prioritizeSources(cameras, maxCount, anchors, { retainAll = false } = {}) {
   const list = Array.isArray(cameras) ? cameras : [];
   const anchorList = (Array.isArray(anchors) ? anchors : []).filter(
     (a) => Number.isFinite(a?.lat) && Number.isFinite(a?.lon),
@@ -486,6 +487,12 @@ export function prioritizeSources(cameras, maxCount, anchors) {
   // coverage reports.
   Object.defineProperty(kept, 'available', { value: list.length });
   Object.defineProperty(kept, 'region', { value: cameraRegion(list) });
+  // The shared catalog can filter a local area before applying this pack's cap.
+  // Keep this internal metadata out of JSON and bound the retained catalog.
+  if (retainAll) {
+    Object.defineProperty(kept, 'allSources', { value: scored.slice(0, CCTV_MAX_SOURCES_CEILING).map((entry) => entry.camera) });
+    Object.defineProperty(kept, 'catalogCap', { value: cap || maxCount });
+  }
   return kept;
 }
 

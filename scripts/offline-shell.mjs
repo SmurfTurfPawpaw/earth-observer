@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 export const OFFLINE_MANIFEST = '.offline-manifest.json';
+export const PUBLIC_SHELL_MAX_BYTES = 64 * 1024;
+export const RELEASE_MARKER_MAX_BYTES = 16 * 1024;
 const validScope = (scope) => /^\/(?:[a-z0-9-]+\/)*$/.test(scope);
 const safeFile = (file) => typeof file === 'string' && /^assets\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$/.test(file) && !file.split('/').some((part) => part === '.' || part === '..');
 
@@ -90,14 +92,31 @@ async function builtAsset(outDir, route, scope) {
   }
   throw new Error(`Missing essential offline asset: ${route}`);
 }
+/** The worker receives universal build bytes, never a platform-transformed navigation response. */
+export function publicShellAsset({ html, version, scope = '/' }) {
+  if (!validScope(scope) || !/^[A-Za-z0-9_-]{1,64}$/.test(version) || typeof html !== 'string') throw new Error('Invalid public shell build');
+  const body = JSON.stringify({ schema: 1, release: version, scope, html });
+  if (Buffer.byteLength(body) > PUBLIC_SHELL_MAX_BYTES) throw new Error('Public shell document exceeded its byte budget');
+  const digest = createHash('sha256').update(body).digest('hex');
+  const htmlDigest = createHash('sha256').update(html).digest('hex');
+  const filename = `assets/public-shell-${digest}.json`;
+  return { filename, body, descriptor: { url: scope + filename, digest, htmlDigest } };
+}
+
 export async function prepareOfflineShell({ outDir = 'dist', scope = '/', maxAssets = 96, maxBytes = 12 * 1024 * 1024 } = {}) {
   const [html, data] = await Promise.all([readFile(path.join(outDir, 'index.html'), 'utf8'), readFile(path.join(outDir, OFFLINE_MANIFEST), 'utf8')]);
-  const critical = collectOfflineShell({ manifest: JSON.parse(data), html, scope, maxAssets });
+  const critical = collectOfflineShell({ manifest: JSON.parse(data), html, scope, maxAssets: maxAssets - 1 });
   const hash = createHash('sha256'); let bytes = 0;
   for (const route of critical) {
     const body = await builtAsset(outDir, route, scope); bytes += body.length;
     if (bytes > maxBytes) throw new Error('Offline shell bytes exceeded their budget');
     hash.update(route).update(body);
   }
-  return { critical, version: hash.digest('hex').slice(0, 16), bytes };
+  const version = hash.digest('hex').slice(0, 16), shell = publicShellAsset({ html, version, scope });
+  const markerBytes = Buffer.byteLength(JSON.stringify({ schema: 1, release: version, critical, htmlDigest: shell.descriptor.htmlDigest }));
+  if (markerBytes > RELEASE_MARKER_MAX_BYTES) throw new Error('Offline release metadata exceeded its byte budget');
+  // Replace the root acquisition with JSON rather than adding another request or relaxing the budget.
+  bytes += Buffer.byteLength(shell.body) - Buffer.byteLength(html) + markerBytes;
+  if (bytes > maxBytes) throw new Error('Offline shell bytes exceeded their budget');
+  return { critical, version, bytes, shell };
 }

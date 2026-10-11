@@ -9,11 +9,16 @@ import { initialWorkspace, loadSession, saveSession, locateVisitor, safeStorage,
 import { validateArea, localCameraView, distanceKm, LOCAL_DEFAULT_LAYERS } from './core/local-area.js';
 import { installScenePreview } from './core/scene-preview.js';
 import { loadBasemapMode, saveBasemapMode } from './core/basemap-state.js';
+import { streetMapCoverageNotice } from './core/basemap-coverage.js';
+import { recoverInitialCameraView } from './core/globe-framing.js';
+import { installContextRecovery } from './core/context-recovery.js';
 
 let viewer;
 let manager;
 let shell;
 let destroyed = false;
+let describeBasemap = () => {};
+let contextRecovery;
 let area = null, intelligence, notebook, panelLoading = {}, locationRevision = 0, warmTimer;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
@@ -25,7 +30,7 @@ function showError(error) {
   document.getElementById('loading').hidden = true;
   document.getElementById('error').hidden = false;
   const detail = error?.message || String(error);
-  document.getElementById('error-message').textContent = /webgl|context|gpu/i.test(detail)
+  document.getElementById('error-message').textContent = typeof error?.code === 'string' && error.code.startsWith('EARTH_WEBGL_') ? detail : /webgl|context|gpu/i.test(detail)
     ? 'WebGL could not initialize. Enable hardware acceleration in your browser, then reload. You can also try another browser.'
     : `The browser could not initialize the globe. ${detail}`;
   console.error('Earth Observer:', error);
@@ -65,7 +70,9 @@ async function locate() {
 }
 async function restoreView(state) {
   setArea(state.area);
-  setCameraView(viewer, state.view);
+  const restored = recoverInitialCameraView(viewer, state.view);
+  setCameraView(viewer, restored.view);
+  if (restored.recovered) shell.notify('The saved camera pointed away from Earth. Its view has been restored.');
   if (state.layerParams) {
     for (const [id, params] of Object.entries(state.layerParams)) manager.setLayerParams?.(id, params);
   }
@@ -75,7 +82,7 @@ async function restoreView(state) {
 function warmTools() {
   const queue = LAYERS.map((layer) => layer.id);
   async function worker() {
-    while (queue.length && !destroyed) {
+    while (queue.length && !destroyed && !contextRecovery?.isLost()) {
       if (document.hidden || navigator.connection?.saveData || ['slow-2g', '2g'].includes(navigator.connection?.effectiveType)) return;
       await manager.preload(queue.shift());
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -115,19 +122,36 @@ export async function start() {
     viewer = createGlobeViewer({
       container: document.getElementById('globe'),
       creditContainer: document.getElementById('credits'),
-      onNotice: (message) => shell?.notify(message),
+      onNotice: (message) => { shell?.notify(message); describeBasemap(); },
     });
+    contextRecovery = installContextRecovery(viewer, {
+      onLost(error) { clearTimeout(warmTimer); showError(error); },
+      onRestored: showError,
+    });
+    disposers.push(() => contextRecovery.destroy());
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
     shell = createShell(viewer, manager);
     const basemapButton = document.getElementById('toggle-basemap');
+    describeBasemap = () => {
+      const state = viewer.earthBasemap?.getState();
+      const action = state?.mode === 'imagery' ? 'Show roads and place names' : 'Show global satellite imagery';
+      const detail = state?.mode === 'map'
+        ? state.status === 'unavailable' ? 'Street map unavailable; coarse imagery is shown. Reconnect and choose the map again to retry.'
+          : state.coverage ? streetMapCoverageNotice(state.coverage) : ''
+        : state?.active === 'bundled' ? 'Bundled imagery is shown while satellite imagery is unavailable.' : '';
+      basemapButton.title = detail ? `${action}. ${detail}` : action;
+      basemapButton.setAttribute('aria-label', action);
+      if (detail) basemapButton.setAttribute('aria-description', detail);
+      else basemapButton.removeAttribute('aria-description');
+    };
     const setBasemap = (mode) => {
       viewer.earthBasemap?.setMode(mode);
       saveBasemapMode(mode);
       basemapButton.setAttribute('aria-pressed', String(mode === 'imagery'));
-      basemapButton.title = mode === 'imagery' ? 'Show roads and place names' : 'Show global satellite imagery';
-      basemapButton.setAttribute('aria-label', basemapButton.title);
+      describeBasemap();
     };
     setBasemap(loadBasemapMode());
+    void viewer.earthBasemap?.ready?.then(describeBasemap);
     basemapButton.disabled = false;
     const toggleBasemap = () => setBasemap(viewer.earthBasemap?.getState().mode === 'imagery' ? 'map' : 'imagery');
     basemapButton.addEventListener('click', toggleBasemap);
@@ -160,8 +184,8 @@ export async function start() {
     resetButton.addEventListener('click', reset); disposers.push(() => resetButton.removeEventListener('click', reset));
     disposers.push(viewer.scene.renderError.addEventListener((_scene, error) => showError(error)));
     const visibility = () => {
-      viewer.useDefaultRenderLoop = !document.hidden;
-      if (!document.hidden) viewer.scene.requestRender();
+      viewer.useDefaultRenderLoop = !document.hidden && !contextRecovery.isLost();
+      if (viewer.useDefaultRenderLoop) viewer.scene.requestRender();
     };
     document.addEventListener('visibilitychange', visibility);
     disposers.push(() => document.removeEventListener('visibilitychange', visibility));
@@ -185,8 +209,8 @@ export async function start() {
     if (initial.requestLocation) void locate();
     // Startup must finish before optional code warming or offline-cache installation.
     warmTimer = setTimeout(() => {
-      if (destroyed) return;
-      const run = () => { if (!destroyed) warmTools(); };
+      if (destroyed || contextRecovery.isLost()) return;
+      const run = () => { if (!destroyed && !contextRecovery.isLost()) warmTools(); };
       if ('requestIdleCallback' in window) window.requestIdleCallback(run, { timeout: 3000 }); else run();
       if (import.meta.env.PROD && 'serviceWorker' in navigator) void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, { scope: import.meta.env.BASE_URL }).catch(() => {});
     }, 1000);
@@ -204,6 +228,7 @@ export async function start() {
 export async function destroy() {
   if (destroyed) return;
   destroyed = true;
+  describeBasemap = () => {};
   ++locationRevision; clearTimeout(warmTimer); intelligence?.destroy(); notebook?.destroy(); cachedFetch.destroy();
   disposers.splice(0).reverse().forEach((dispose) => dispose());
   shell?.destroy();

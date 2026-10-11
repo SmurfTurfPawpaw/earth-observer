@@ -1,5 +1,5 @@
 /** Device-only workspace/cache storage. No visitor identity or telemetry leaves the browser. */
-export function createBrowserStore(indexedDB = globalThis.indexedDB) {
+export function createBrowserStore(indexedDB = globalThis.indexedDB, { keyRange = globalThis.IDBKeyRange } = {}) {
   let opening;
   const memory = new Map();
   const temporary = new Set(), deleted = new Set();
@@ -44,6 +44,17 @@ export function createBrowserStore(indexedDB = globalThis.indexedDB) {
     return result;
   };
   const status = (persistent) => ({ persistent, storage: persistent ? 'indexeddb' : 'memory' });
+  // IndexedDB compares strings by UTF-16 code units. The next string after a
+  // prefix gives an exclusive upper bound, including arbitrarily long suffixes.
+  const rangeForPrefix = (prefix) => {
+    for (let index = prefix.length - 1; index >= 0; index--) {
+      const code = prefix.charCodeAt(index);
+      if (code < 0xffff) return keyRange.bound(prefix, prefix.slice(0, index) + String.fromCharCode(code + 1), false, true);
+    }
+    // Binary keys sort after every string; the smallest binary key excludes
+    // non-string records even for a prefix made entirely of \uffff code units.
+    return keyRange.bound(prefix, new Uint8Array(0), false, true);
+  };
   return {
     get: (key) => run(async () => {
       if (deleted.has(key)) return undefined;
@@ -69,17 +80,22 @@ export function createBrowserStore(indexedDB = globalThis.indexedDB) {
       if (result.ok) deleted.delete(key); else deleted.add(key);
       return status(result.ok);
     }),
-    all: () => run(async () => {
-      if (cleared) return [...memory.values()];
-      const result = await operation('readonly', (store) => store.getAll());
+    // all() retains its complete-store contract; all('evidence:') reads only
+    // matching IndexedDB records, without cloning unrelated photos or bodies.
+    all: (prefix = '') => run(async () => {
+      if (typeof prefix !== 'string') throw new TypeError('Record prefix must be a string');
+      const matches = (key) => !prefix || (typeof key === 'string' && key.startsWith(prefix));
+      const values = () => [...memory.values()].filter((record) => matches(record.key));
+      if (cleared) return values();
+      const result = await operation('readonly', (store) => prefix ? store.getAll(rangeForPrefix(prefix)) : store.getAll());
       if (result.ok) {
-        const merged = new Map(result.value.map((record) => [record.key, record]));
-        for (const key of temporary) if (memory.has(key)) merged.set(key, memory.get(key));
-        for (const key of deleted) merged.delete(key);
-        memory.clear();
+        const merged = new Map(result.value.filter((record) => matches(record.key)).map((record) => [record.key, record]));
+        for (const key of temporary) if (matches(key) && memory.has(key)) merged.set(key, memory.get(key));
+        for (const key of deleted) if (matches(key)) merged.delete(key);
+        for (const key of memory.keys()) if (matches(key)) memory.delete(key);
         for (const [key, record] of merged) memory.set(key, record);
       }
-      return [...memory.values()];
+      return values();
     }),
     clear: () => run(async () => {
       const result = await operation('readwrite', (store) => store.clear());

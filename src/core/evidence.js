@@ -43,7 +43,7 @@ export function createEvidenceNotebook({ container, store, getLocation = () => n
   const status = el('p'); status.className = 'notebook-status'; status.setAttribute('role', 'status');
   const actions = el('div'); actions.className = 'notebook-actions'; const exportButton = el('button', 'Export evidence pack'); exportButton.type = 'button'; actions.append(exportButton);
   const list = el('div'); list.className = 'notebook-list'; container.replaceChildren(intro, form, status, actions, list);
-  async function records() { return (await store.all()).filter((record) => record.key.startsWith('evidence:')).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  async function records() { return (await store.all('evidence:')).filter((record) => record.key.startsWith('evidence:')).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
   async function render() {
     const owner = ++generation, items = await records(); if (destroyed || generation !== owner) return;
     for (const url of urls) URL.revokeObjectURL(url); urls.clear();
