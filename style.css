@@ -139,6 +139,7 @@ details[open] > summary > .summary-chevron, #sources[open] > summary > .ui-icon:
 body.side-panel-open #navigation { right: 388px; }
 .view-position { position: absolute; bottom: calc(var(--credit-height) + 10px); left: 14px; color: #c2ced8; background: #141b23d9; padding: 5px 8px; border-radius: 5px; font-size: 10px; font-variant-numeric: tabular-nums; pointer-events: none; z-index: 3; }
 .credits { position: absolute; bottom: 0; left: 0; right: 0; background: #10171fee; min-height: 29px; padding: 6px 12px; z-index: 7; color: #c7d1da; font-size: calc(9px * var(--reading-scale, 1)); line-height: 1.55; overflow-wrap: anywhere; }
+.credits .cesium-widget-credits { position: static; display: inline; font-size: inherit; line-height: inherit; }
 .credits .cesium-credit-textContainer, .credits .cesium-credit-logoContainer { display: inline; }
 .credits .cesium-credit-text { color: inherit; }
 .credits .cesium-credit-logoContainer img { max-height: 17px; width: auto; vertical-align: middle; }
