@@ -1,6 +1,6 @@
 # Continuous playback: the next acceptance gate
 
-Priority changed by the user on 11 October 2026. The next milestone is a system that continues to evolve visually between source deliveries, reconciles when observations arrive, and preserves factual accuracy. General feature expansion and the pending release remain on hold while this contract is established. The implementation and measured limits below are local candidates; production remains version 24.
+Priority changed by the user on 11 October 2026. The next milestone is a system that continues to evolve visually between source deliveries, reconciles when observations arrive, and preserves factual accuracy. Version 25 contains the first continuity and warm-history package. Provider availability, dense fleet performance and worldwide continuous acquisition remain open; the larger goal has not been completed.
 
 Prediction supplies visual continuity while source facts remain exact. The implementation retains a discreet visible distinction, with full provenance in selected-item details. It does not need modal warnings, repetitive labels, or implementation jargon.
 
@@ -69,7 +69,9 @@ Focused renderer checks and the actual local browser replay show a clock that ad
 
 Dense fleet rendering remains a performance task: a local synthetic model-only benchmark measured about 5.3 ms median per frame for 500 moving aircraft and 20.8 ms for 2,000, before Cesium work. The original 80 ms fleet budget suggests accurate model keyframes with inexpensive continuous visual interpolation, preserving accurate selected/tracked sampling per frame. This has not been implemented or demonstrated as browser FPS evidence in this package.
 
-Satellites already use orbital prediction. The pending continuity package separates visible UTC from rendered frames, adds durable D1 collection revisions and an SSE browser connection, and acquires GKG directly on the laptop. Local checks cover those components; the package is **not a production release** and does not satisfy this trajectory gate by itself. Production remains the previously verified version 24.
+Satellites already use orbital prediction. Published version 25 separates visible UTC from rendered frames, adds durable D1 collection revisions and an SSE browser connection, and attempts official GKG acquisition directly on the laptop. Production checks verify the current bootstrap, a visible clock advancing within the same minute, a working map, prepared intelligence/history and a collection event carrying an actual newly published capture. The normal URL initially loaded the old saved offline shell; after the new worker installed it loaded the correct version-25 bootstrap. Upgrade progress deserves a clearer product affordance.
+
+Both matching laptop collectors were launched after deployment. The regional aircraft source returned 503 and entered bounded backoff, so no real aircraft capture has been published or claimed as live proof. The new metadata process serves 159 current USGS/GDACS/EONET records; direct GKG acquisition is unavailable and in backoff. Older GDELT records remain in historical storage. The public intelligence timeline does not yet replay separate aircraft history or transit telemetry. These provider gaps cannot be resolved by animation and do not constitute continuous collection of all 20 layers.
 
 Acceptance requires:
 
