@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-11",
+  "profile": "public-hosting",
+  "defaultDecision": "excluded",
+  "description": "Interactive public display policy. Allowed sources retain their conditions and attribution; configured sources require deployer configuration; absence is denial. See docs/DATA_POLICY.md.",
+  "providers": {
+    "openstreetmap": { "status": "allowed", "license": "ODbL-1.0", "evidence": "https://www.openstreetmap.org/copyright" },
+    "openfreemap": { "status": "allowed", "license": "ODbL-1.0", "evidence": "https://openfreemap.org/" },
+    "reearth-terrain": { "status": "allowed", "license": "CC-BY-4.0", "evidence": "https://terrain.reearth.land/", "conditions": ["Preserve terrain credits", "Water mask adds Protomaps and OpenStreetMap ODbL credit"] },
+    "noaa-gfs": { "status": "allowed", "license": "public-domain", "evidence": "https://www.weather.gov/disclaimer" },
+    "ecmwf-ifs": { "status": "allowed", "license": "CC-BY-4.0", "evidence": "https://www.ecmwf.int/en/forecasts/datasets/open-data", "conditions": ["ECMWF prescribed attribution and disclaimer", "Identify resampling/modifications"] },
+    "noaa-nowcoast": { "status": "allowed", "license": "public-domain-government-products", "evidence": "https://oceanservice.noaa.gov/disclaimer.html" },
+    "noaa-lightning-density": { "status": "allowed", "license": "public-derived-product", "evidence": "https://ocean.weather.gov/lightning/lightning_pdd.php", "conditions": ["Level-5 density only; no raw Vaisala detections"] },
+    "noaa-cyclones": { "status": "allowed", "license": "public-domain", "evidence": "https://www.weather.gov/disclaimer" },
+    "nasa-gibs": { "status": "allowed", "license": "public-Earth-science-products", "evidence": "https://gibs.earthdata.nasa.gov/" },
+    "nasa-firms": { "status": "configured", "license": "public-Earth-science-products", "requires": ["FIRMS_MAP_KEY"], "evidence": "https://firms.modaps.eosdis.nasa.gov/api/" },
+    "nasa-firms-archive": { "status": "allowed", "license": "public-Earth-science-product", "evidence": "src/data/local_data/firms/README.md", "conditions": ["Bundled NOAA-20 sample only: 45 detections acquired 2026-07-16", "Show acquisition date and archived/stale status", "Original capture time unavailable", "Do not claim current or comprehensive global coverage"] },
+    "usgs": { "status": "allowed", "license": "public-domain-government-products", "evidence": "https://www.usgs.gov/information-policies-and-instructions" },
+    "nifc-wfigs": { "status": "allowed", "license": "public-domain-government-products", "evidence": "https://data-nifc.opendata.arcgis.com/" },
+    "inciweb": { "status": "allowed", "license": "official-incident-links", "evidence": "https://inciweb.wildfire.gov/" },
+    "adsb-lol": { "status": "allowed", "license": "ODbL-1.0", "evidence": "https://www.adsb.lol/docs/open-data/api/" },
+    "celestrak": { "status": "allowed", "license": "government-origin-GP-public-use-policy", "evidence": "https://celestrak.org/usage-policy.php", "conditions": ["Ordinary GP datasets only", "Shared per-query cache at least 7200 seconds", "Stop repeated queries on non-200 responses"] },
+    "launch-library-2": { "status": "allowed", "license": "provider-permissive-use", "evidence": "https://github.com/TheSpaceDevs/Tutorials/blob/main/faqs/faq_TSD.md#terms-of-use", "conditions": ["Add value; no unchanged forwarding", "Anonymous requests at most 15/hour shared across deployment"] },
+    "natural-earth": { "status": "allowed", "license": "public-domain", "evidence": "https://www.naturalearthdata.com/about/terms-of-use/" },
+    "radio-audio": { "status": "excluded", "reason": "Individual broadcaster terms are separate and unreviewed." },
+    "google-maps": { "status": "excluded", "reason": "Integration removed from this baseline; any reintroduction needs a new review and eligible deployer agreement.", "evidence": "https://developers.google.com/maps/documentation/tile/policies" },
+    "cesium-ion": { "status": "excluded", "reason": "Ion asset integration removed; the globe uses keyless NASA/Natural Earth imagery.", "evidence": "https://cesium.com/legal/terms-of-service/" },
+    "tomtom": { "status": "excluded", "reason": "Traffic integration removed; any reintroduction needs a new review and suitable deployer contract.", "evidence": "https://docs.tomtom.com/legal/terms-and-conditions" },
+    "mapillary": { "status": "excluded", "reason": "Street imagery integration removed; any reintroduction needs a new imagery/API terms review.", "evidence": "https://www.mapillary.com/terms" },
+    "open-meteo": { "status": "excluded", "reason": "Integration removed; its free endpoint is not cleared for commercial/promotional deployment.", "evidence": "https://open-meteo.com/en/terms" },
+    "esri": { "status": "excluded", "reason": "Imagery integration removed; the keyless World Imagery endpoint is not cleared under this policy.", "evidence": "https://www.esri.com/en-us/legal/terms/web-site-service" },
+    "osrm-self-hosted": { "status": "excluded", "reason": "Routing integration removed from this baseline.", "evidence": "https://github.com/Project-OSRM/osrm-backend" },
+    "opensky": { "status": "excluded", "reason": "Live operational API integration needs a written licence even for nonprofits.", "evidence": "https://opensky-network.org/about/terms-of-use" },
+    "adsbdb": { "status": "excluded", "reason": "No general data/service licence; route source forbids republication without permission.", "evidence": "https://www.adsbdb.com/" },
+    "aisstream": { "status": "excluded", "reason": "Specific data redistribution/commercial rights not published in reviewed official documentation.", "evidence": "https://aisstream.io/" },
+    "google-news-rss": { "status": "excluded", "reason": "Personal noncommercial terms.", "evidence": "https://www.google.com/intl/en_us/terms_google_news.html" },
+    "telegeography": { "status": "excluded", "license": "CC-BY-NC-SA-3.0", "reason": "Noncommercial dataset." },
+    "bhote-koshi": { "status": "excluded", "license": "CC-BY-NC-4.0", "reason": "Noncommercial imagery and derived coordinates." },
+    "google-cctv-heights": { "status": "excluded", "reason": "Bundled extracted Google 3D tile heights lack approved reuse permission.", "evidence": "https://developers.google.com/maps/documentation/tile/policies" },
+    "fossgis-routing": { "status": "excluded", "reason": "Commercial and heavy-use restrictions; configure an independently permitted routing service instead.", "evidence": "https://routing.openstreetmap.de/about.html" },
+    "local-receiver": { "status": "excluded", "reason": "Local/private decoder and SDR plumbing is outside the hosted public product." }
+  },
+  "cctv": {
+    "allowed": ["fintraffic", "nsw", "calgary", "vegvesen"],
+    "configured": ["drivebc", "tfl", "ontario"],
+    "excluded": ["austin", "txdot", "caltrans", "deldot", "tallinn", "tarktee", "warendorf", "shinjuku", "custom"],
+    "conditions": {
+      "drivebc": ["Review ministry ownership and licence per camera ID", "CCTV_DRIVEBC_APPROVED_IDS", "CCTV_DRIVEBC_TERMS_ACCEPTED=1", "Independently license partner cameras"],
+      "tfl": ["Application registration", "TFL_APP_KEY", "CCTV_TFL_TERMS_ACCEPTED=1", "Full TfL/OS/Geomni attribution", "At most 500 requests/minute/feed"],
+      "ontario": ["Developer registration", "ONTARIO_511_API_KEY", "CCTV_ONTARIO_TERMS_ACCEPTED=1", "At most 10 requests/60 seconds"]
+    }
+  },
+  "transit": {
+    "allowed": ["mbta", "capmetro-austin", "hsl-helsinki", "ovapi-nl", "entur-norway"],
+    "configured": ["translink-seq"],
+    "excluded": ["metrotransit-msp"],
+    "conditions": {
+      "hsl-helsinki": ["Source credit and delivery time"],
+      "entur-norway": ["Real identifying ET-Client-Name", "NLOD credit/link and modifications notice"],
+      "ovapi-nl": ["Identifying User-Agent", "Conditional requests for polling faster than once/minute", "Accept gzip"],
+      "translink-seq": ["Provide current operator contact details", "Use alongside GTFS schedules", "Required user-facing disclaimer", "No unauthorized network/logo imagery"]
+    }
+  },
+  "bikeshare": {
+    "allowed": ["nyc-citibike", "chicago-divvy", "dc-capital-bikeshare"],
+    "defaultDecision": "excluded",
+    "rawDatasetExport": false,
+    "conditions": ["Integrated station-availability display only", "No standalone dataset hosting/resale", "No customer correlation", "No claimed affiliation or unauthorized operator logos/trade names"],
+    "evidence": {
+      "nyc-citibike": "https://citibikenyc.com/data-sharing-policy",
+      "chicago-divvy": "https://divvybikes.com/data-license-agreement",
+      "dc-capital-bikeshare": "https://capitalbikeshare.com/data-license-agreement"
+    }
+  },
+  "excludedAssetPaths": [
+    "src/data/local_data/telegeography_submarine_cables/",
+    "public/events/bhote-koshi-2026/",
+    "src/data/bhoteKoshiFloodPath.js",
+    "src/data/local_data/cctv_ground_heights/"
+  ]
+}

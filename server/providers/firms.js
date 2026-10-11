@@ -21,8 +21,9 @@ import { filterTrailing24h, parseFirmsCsv } from '../../src/data/firmsCsv.js';
  *   GET /api/firms        → {fetchedAt, stale, ttlMs, sources, count, fires}
  *   GET /api/firms/status → {hasKey, lastFetch, count, stale, ttlMs, transactions}
  *
- * Keyless (no FIRMS_MAP_KEY): /api/firms → 503 {error:'no_key'}; status →
- * {hasKey:false}. Upstream is never touched without a key.
+ * Keyless: returns the explicitly labeled archived NOAA-20 sample bundled
+ * with this project. It is neither current nor a global inventory. Upstream
+ * is never touched without a key.
  *
  * @returns {import('vite').Plugin}
  */
@@ -47,6 +48,20 @@ export function firmsProxy() {
   let statusCache = null;
   /** @type {?Promise<?{used: number, limit: number}>} */
   let statusInflight = null;
+  let snapshotPromise;
+
+  function archivedSnapshot() {
+    snapshotPromise ||= fsp.readFile(
+      new URL('../../src/data/local_data/firms/snapshot.json', import.meta.url),
+      'utf8',
+    ).then((text) => {
+      const snapshot = JSON.parse(text);
+      if (!Array.isArray(snapshot.fires) || !Number.isFinite(snapshot.lastObservationAt))
+        throw new Error('Bundled FIRMS sample is malformed');
+      return { ...snapshot, snapshot: true, stale: true, ttlMs: null };
+    }).catch((error) => { snapshotPromise = null; throw error; });
+    return snapshotPromise;
+  }
 
   const mapKey = () => String(process.env.FIRMS_MAP_KEY || '').trim();
 
@@ -127,6 +142,8 @@ export function firmsProxy() {
   function buildPayload(entry, stale) {
     const fires = filterTrailing24h(entry.fires, Date.now());
     return {
+      snapshot: false,
+      mode: 'live',
       fetchedAt: entry.at,
       stale,
       ttlMs: TTL_MS,
@@ -190,12 +207,17 @@ export function firmsProxy() {
 
         if (subPath === '/status') {
           if (!key) {
+            const snapshot = await archivedSnapshot();
             sendJson(200, {
               hasKey: false,
-              lastFetch: null,
-              count: null,
-              stale: false,
-              ttlMs: TTL_MS,
+              snapshot: true,
+              mode: snapshot.mode,
+              observationDate: snapshot.observationDate,
+              lastFetch: snapshot.fetchedAt,
+              count: snapshot.count,
+              coverage: snapshot.coverage,
+              stale: true,
+              ttlMs: null,
               transactions: null,
             });
             return;
@@ -213,7 +235,7 @@ export function firmsProxy() {
         }
 
         if (!key) {
-          sendJson(503, { error: 'no_key' });
+          sendJson(200, await archivedSnapshot());
           return;
         }
 

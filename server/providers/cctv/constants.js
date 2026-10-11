@@ -113,13 +113,13 @@ export const CALTRANS_ANCHORS = [
   { lat: 32.7157, lon: -117.1611 }, // San Diego
   { lat: 38.5816, lon: -121.4944 }, // Sacramento
 ];
-/** TfL JamCams: one keyless list endpoint; frames live on a public S3 bucket. */
+/** TfL JamCams: registered application list; frames live on the official bucket. */
 export const TFL_JAMCAM_URL = 'https://api.tfl.gov.uk/Place/Type/JamCam';
 export const TFL_IMAGE_ORIGIN =
   'https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/';
 export const DEFAULT_TFL_MAX_SOURCES = 250;
 export const LONDON_CENTER = { lat: 51.5074, lon: -0.1278 };
-/** Ontario 511: keyless CARS/511 camera catalog; frame URLs are still images. */
+/** Ontario 511: registered-key camera catalog; frame URLs are still images. */
 export const ONTARIO_511_CAMERAS_URL =
   'https://511on.ca/api/v2/get/cameras?format=json&lang=en';
 export const ONTARIO_511_IMAGE_ORIGIN = 'https://511on.ca/map/Cctv/';
@@ -142,7 +142,7 @@ export const FINTRAFFIC_STATIONS_URL =
  * frame proxy off-host. */
 export const FINTRAFFIC_IMAGE_ORIGIN = 'https://weathercam.digitraffic.fi/';
 /** Digitraffic asks every client to identify itself on API calls. */
-export const DIGITRAFFIC_USER = 'gods-eye-view';
+export const DIGITRAFFIC_USER = 'earth-observer';
 export const DEFAULT_FINTRAFFIC_MAX_SOURCES = 300;
 /** Ground-elevation prior, in metres, for stations that report no altitude.
  * 228 of 809 stations carry a real metre value (median 94 m); the rest report

@@ -1,343 +1,40 @@
-import fs from 'node:fs';
-import path from 'node:path';
+/** Reviewed public camera catalogs; only still images are registered. */
 import {
-  DEFAULT_AUSTIN_ROWS_URL,
-  DEFAULT_AUSTIN_MAX_SOURCES,
-  AUSTIN_DOWNTOWN,
-  CALTRANS_CCTV_URL,
-  DEFAULT_CALTRANS_DISTRICTS,
-  DEFAULT_CALTRANS_MAX_SOURCES,
-  CALTRANS_ANCHORS,
-  TFL_JAMCAM_URL,
-  TFL_IMAGE_ORIGIN,
-  DEFAULT_TFL_MAX_SOURCES,
-  LONDON_CENTER,
-  ONTARIO_511_CAMERAS_URL,
-  ONTARIO_511_IMAGE_ORIGIN,
-  DEFAULT_ONTARIO_MAX_SOURCES,
-  ONTARIO_ANCHORS,
-  FINTRAFFIC_STATIONS_URL,
-  FINTRAFFIC_IMAGE_ORIGIN,
-  FINTRAFFIC_GROUND_ELEVATION_M,
-  DIGITRAFFIC_USER,
-  DEFAULT_FINTRAFFIC_MAX_SOURCES,
-  FINLAND_ANCHORS,
-  DRIVEBC_WEBCAMS_URL,
-  DRIVEBC_IMAGE_URL,
-  DEFAULT_DRIVEBC_MAX_SOURCES,
-  DRIVEBC_ANCHORS,
-  TXDOT_CCTV_STATUS_URL,
-  TXDOT_CCTV_SNAPSHOT_URL,
-  TXDOT_DISTRICTS,
-  DEFAULT_TXDOT_DISTRICTS,
-  DEFAULT_TXDOT_MAX_SOURCES,
-  TXDOT_ANCHORS,
-  TXDOT_DISTRICT_ELEVATION_M,
-  TXDOT_DEFAULT_ELEVATION_M,
-  DEFAULT_TALLINN_SOURCE_FILE,
-  DEFAULT_TALLINN_MAX_SOURCES,
-  TALLINN_IMAGE_ORIGIN,
-  TALLINN_CENTER,
-  TARKTEE_LOCATIONS_URL,
-  TARKTEE_IMAGES_URL,
-  TARKTEE_IMAGE_ORIGIN,
-  DEFAULT_TARKTEE_MAX_SOURCES,
-  TARKTEE_ANCHORS,
-  DEFAULT_WARENDORF_SOURCE_FILE,
-  WARENDORF_IMAGE_ORIGINS,
-  NSW_CAMERAS_URL,
-  NSW_IMAGE_ORIGIN,
-  DEFAULT_NSW_MAX_SOURCES,
-  SYDNEY_CENTER,
-  NSW_MAX_VIEW_LABEL,
-  DEFAULT_CALGARY_ROWS_URL,
-  CALGARY_IMAGE_ORIGIN,
-  DEFAULT_CALGARY_MAX_SOURCES,
-  CALGARY_DOWNTOWN,
-  CALGARY_MAX_CATALOG_BYTES,
-  CCTV_SOURCE_FETCH_TIMEOUT_MS,
-  DELDOT_CCTV_URL,
-  DEFAULT_DELDOT_MAX_SOURCES,
-  DELDOT_ANCHORS,
-  DEFAULT_VEGVESEN_CCTV_URL,
-  VEGVESEN_IMAGE_ORIGIN,
-  VEGVESEN_VIDEO_URL,
-  DEFAULT_VEGVESEN_MAX_SOURCES,
-  VEGVESEN_MAX_CATALOG_BYTES,
-  NORWAY_ANCHORS,
+  TFL_JAMCAM_URL, TFL_IMAGE_ORIGIN, DEFAULT_TFL_MAX_SOURCES, LONDON_CENTER,
+  ONTARIO_511_CAMERAS_URL, ONTARIO_511_IMAGE_ORIGIN, DEFAULT_ONTARIO_MAX_SOURCES, ONTARIO_ANCHORS,
+  FINTRAFFIC_STATIONS_URL, FINTRAFFIC_IMAGE_ORIGIN, FINTRAFFIC_GROUND_ELEVATION_M,
+  DIGITRAFFIC_USER, DEFAULT_FINTRAFFIC_MAX_SOURCES, FINLAND_ANCHORS,
+  DRIVEBC_WEBCAMS_URL, DRIVEBC_IMAGE_URL, DEFAULT_DRIVEBC_MAX_SOURCES, DRIVEBC_ANCHORS,
+  NSW_CAMERAS_URL, NSW_IMAGE_ORIGIN, DEFAULT_NSW_MAX_SOURCES, SYDNEY_CENTER, NSW_MAX_VIEW_LABEL,
+  DEFAULT_CALGARY_ROWS_URL, CALGARY_IMAGE_ORIGIN, DEFAULT_CALGARY_MAX_SOURCES, CALGARY_DOWNTOWN,
+  CALGARY_MAX_CATALOG_BYTES, CCTV_SOURCE_FETCH_TIMEOUT_MS,
+  DEFAULT_VEGVESEN_CCTV_URL, VEGVESEN_IMAGE_ORIGIN, DEFAULT_VEGVESEN_MAX_SOURCES,
+  VEGVESEN_MAX_CATALOG_BYTES, NORWAY_ANCHORS,
 } from './constants.js';
 import {
-  toFiniteNumber,
-  extractAustinCoords,
-  extractAustinCameraId,
-  extractAustinName,
-  extractAustinHeading,
-  isLikelyAustinCoordinate,
-  fallbackHeadingFromId,
-  isLikelyFinlandCoordinate,
-  fintrafficCameraName,
-  hashSeed,
-  isPlausibleLatLon,
-  isLikelyBcCoordinate,
-  isLikelyTexasCoordinate,
-  isLikelyNswCoordinate,
-  isLikelyCalgaryCoordinate,
-  isLikelyNorwayCoordinate,
-  cameraDisplayCode,
-  rowArrayToObject,
-  prioritizeSources,
+  toFiniteNumber, fallbackHeadingFromId, isLikelyFinlandCoordinate, fintrafficCameraName,
+  hashSeed, isPlausibleLatLon, isLikelyBcCoordinate, isLikelyNswCoordinate,
+  isLikelyCalgaryCoordinate, isLikelyNorwayCoordinate, cameraDisplayCode, prioritizeSources,
 } from './normalize.js';
 import { directionToHeading } from '../../../src/data/directionText.js';
 import { readResponseJsonCapped } from '../common/http.js';
-/**
- * Fetch and parse Austin traffic camera records from the city Open Data portal.
- *
- * Downloads the Socrata rows.json payload, converts each row to a keyed
- * record, extracts camera ID / coords / heading / name, validates against
- * the Austin bounding box, deduplicates by ID, then distance-prioritizes
- * to stay within CCTV_AUSTIN_MAX_SOURCES.
- *
- * @returns {Promise<Array<object>>} Normalized camera source objects.
- */
-export async function loadAustinSourcesFromOpenData() {
-  const endpoint = process.env.CCTV_AUSTIN_ROWS_URL || DEFAULT_AUSTIN_ROWS_URL;
-  try {
-    const resp = await fetch(endpoint, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
-    });
-    if (!resp.ok) {
-      console.warn('[CCTV] Austin source download failed:', resp.status);
-      return [];
-    }
-    const payload = await resp.json();
-    const columns = Array.isArray(payload?.meta?.view?.columns)
-      ? payload.meta.view.columns
-      : [];
-    const rows = Array.isArray(payload?.data) ? payload.data : [];
-    if (!columns.length || !rows.length) return [];
 
-    const cameras = [];
-    for (const row of rows) {
-      if (!Array.isArray(row)) continue;
-      const record = rowArrayToObject(row, columns);
-      const cameraId = extractAustinCameraId(record);
-      if (!cameraId) continue;
-
-      // Only live cameras: the dataset carries DESIRED (planned, not built),
-      // REMOVED and VOID rows whose frame URLs never resolve — those cameras
-      // would render as permanent Street View / synthetic fallbacks. Tolerate
-      // a missing column (keep the row) so a schema change fails open.
-      const status = String(record.camera_status || '')
-        .trim()
-        .toUpperCase();
-      if (status && status !== 'TURNED_ON') continue;
-
-      const { lat, lon } = extractAustinCoords(record);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      if (!isLikelyAustinCoordinate(lat, lon)) continue;
-
-      const extractedHeading = extractAustinHeading(record);
-      const hasHeading = Number.isFinite(extractedHeading);
-      const headingDeg = hasHeading
-        ? extractedHeading
-        : fallbackHeadingFromId(cameraId);
-      cameras.push({
-        id: cameraId,
-        name: extractAustinName(record, cameraId),
-        city: 'Austin',
-        cityId: 'austin',
-        provider: 'Austin Transportation & Public Works',
-        lat,
-        lon,
-        headingDeg,
-        headingConfidence: hasHeading ? 'high' : 'low',
-        pitchDeg: hasHeading ? -24 : -18,
-        fovDeg: hasHeading ? 56 : 44,
-        rangeM: hasHeading ? 210 : 145,
-        mountHeightM: hasHeading ? 10 : 8,
-        groundElevationM: 150,
-        feedType: 'image',
-        url: `https://cctv.austinmobility.io/image/${encodeURIComponent(cameraId)}.jpg`,
-        snapshotUrl: `https://cctv.austinmobility.io/image/${encodeURIComponent(cameraId)}.jpg`,
-        sourceKind: 'austin-open-data',
-        license: 'Public city traffic camera frame',
-      });
-    }
-
-    const unique = Array.from(
-      new Map(cameras.map((camera) => [camera.id, camera])).values(),
-    );
-    const maxRaw = Number(
-      process.env.CCTV_AUSTIN_MAX_SOURCES || DEFAULT_AUSTIN_MAX_SOURCES,
-    );
-    const maxCount = Number.isFinite(maxRaw)
-      ? Math.max(8, Math.min(300, Math.floor(maxRaw)))
-      : DEFAULT_AUSTIN_MAX_SOURCES;
-    const prioritized = prioritizeSources(unique, maxCount, [AUSTIN_DOWNTOWN]);
-    if (prioritized.length < unique.length) {
-      console.log(
-        `[CCTV] Loaded Austin camera sources: ${unique.length} (using nearest ${prioritized.length})`,
-      );
-    } else {
-      console.log('[CCTV] Loaded Austin camera sources:', prioritized.length);
-    }
-    return prioritized;
-  } catch (error) {
-    console.warn(
-      '[CCTV] Austin source download error:',
-      error?.message || error,
-    );
-    return [];
-  }
-}
-
-/**
- * Fetch Caltrans CCTV cameras for the configured districts (CCTV_CALTRANS_DISTRICTS,
- * comma-separated 1..12; empty string disables the pack). One official JSON feed per
- * district, identical schema statewide; keyless. Only inService cameras with finite
- * coords and a cwwp2.dot.ca.gov https image URL are kept (the image-URL origin check
- * is defense-in-depth: the proxy only ever fetches catalog URLs, and this pins the
- * catalog to the official host). Districts fetch in parallel and fail independently
- * (Promise.allSettled) — one district outage never darkens the others.
- *
- * @returns {Promise<Array<object>>} Normalized camera source objects.
- */
-export async function loadCaltransSourcesFromOpenData() {
-  const districtsRaw =
-    process.env.CCTV_CALTRANS_DISTRICTS ?? DEFAULT_CALTRANS_DISTRICTS;
-  const districts = String(districtsRaw)
-    .split(',')
-    .map((token) => Number(token.trim()))
-    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 12);
-  if (!districts.length) return [];
-
-  const settled = await Promise.allSettled(
-    districts.map(async (district) => {
-      const resp = await fetch(CALTRANS_CCTV_URL(district), {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
-      });
-      if (!resp.ok) throw new Error(`D${district} HTTP ${resp.status}`);
-      const payload = await resp.json();
-      const rows = Array.isArray(payload?.data) ? payload.data : [];
-      return { district, rows };
-    }),
-  );
-
-  const cameras = [];
-  for (const result of settled) {
-    if (result.status !== 'fulfilled') {
-      console.warn(
-        '[CCTV] Caltrans district fetch failed:',
-        result.reason?.message || result.reason,
-      );
-      continue;
-    }
-    const { district, rows } = result.value;
-    for (const row of rows) {
-      const cctv = row?.cctv;
-      if (!cctv || String(cctv.inService).toLowerCase() !== 'true') continue;
-      const loc = cctv.location || {};
-      const lat = toFiniteNumber(loc.latitude);
-      const lon = toFiniteNumber(loc.longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-
-      const imageUrl = String(cctv.imageData?.static?.currentImageURL || '');
-      // Official-host pin (see JSDoc). Also drops records with no still image.
-      if (!imageUrl.startsWith('https://cwwp2.dot.ca.gov/')) continue;
-
-      const locationName = String(loc.locationName || '').trim();
-      // Leading token of locationName is the stable camera code ("TV102 -- I-580 : …").
-      const codeMatch = /^([A-Za-z0-9_-]+)\s*--/.exec(locationName);
-      const code = (
-        codeMatch ? codeMatch[1] : `x${cameras.length}`
-      ).toLowerCase();
-      const cameraId = `ca-d${district}-${code}`;
-
-      // loc.direction is a dedicated field ("West", "South") → allow bare words.
-      const heading = directionToHeading(loc.direction, true);
-      const hasHeading = Number.isFinite(heading);
-      const label =
-        locationName.replace(/^([A-Za-z0-9_-]+)\s*--\s*/, '') ||
-        `Caltrans D${district} ${code}`;
-      cameras.push({
-        id: cameraId,
-        name: loc.nearbyPlace ? `${label} (${loc.nearbyPlace})` : label,
-        city: String(loc.nearbyPlace || `Caltrans D${district}`),
-        cityId: `ca-d${district}`,
-        provider: 'Caltrans',
-        lat,
-        lon,
-        headingDeg: hasHeading ? heading : fallbackHeadingFromId(cameraId),
-        headingConfidence: hasHeading ? 'high' : 'low',
-        // Same two fabricated pose personalities as Austin (design §1a): these are
-        // RAW PRIOR starting points; the client's one-shot ground snap + manual
-        // calibration own the truth.
-        pitchDeg: hasHeading ? -24 : -18,
-        fovDeg: hasHeading ? 56 : 44,
-        rangeM: hasHeading ? 210 : 145,
-        mountHeightM: hasHeading ? 10 : 8,
-        // loc.elevation is reported in FEET (verified: D3 maxes at 7427 ft ≈
-        // 2264 m for the Sierra passes — as metres that would top Mt Whitney).
-        // Convert to metres and clamp to a sane CA-roads range so an occasional
-        // garbage upstream value can't fling a camera kilometres up. Prior only:
-        // the client one-shot snap corrects it on 3D-tile stacks — but on a
-        // no-tileset stack (keyless OSM) the snap misses and this height freezes,
-        // so it must be right-ish on its own.
-        groundElevationM: (() => {
-          const ft = toFiniteNumber(loc.elevation, NaN);
-          return Number.isFinite(ft)
-            ? Math.max(-100, Math.min(4000, ft * 0.3048))
-            : 150;
-        })(),
-        feedType: 'image',
-        url: imageUrl,
-        snapshotUrl: imageUrl,
-        sourceKind: 'caltrans-open-data',
-        license: 'Public Caltrans highway camera frame',
-      });
-    }
-  }
-
-  const maxRaw = Number(
-    process.env.CCTV_CALTRANS_MAX_SOURCES || DEFAULT_CALTRANS_MAX_SOURCES,
-  );
-  const maxCount = Number.isFinite(maxRaw)
-    ? Math.max(8, Math.min(600, Math.floor(maxRaw)))
-    : DEFAULT_CALTRANS_MAX_SOURCES;
-  const prioritized = prioritizeSources(cameras, maxCount, CALTRANS_ANCHORS);
-  console.log(
-    `[CCTV] Loaded Caltrans camera sources: ${cameras.length} inService (using nearest ${prioritized.length})`,
-  );
-  return prioritized;
-}
-
-/**
- * Fetch TfL JamCams (London). Keyless: the optional TFL_APP_KEY only raises the
- * list-endpoint rate limit (frames come from TfL's public S3 bucket, which is not
- * rate-limited); the 15-min source cache keeps list hits far below anonymous
- * limits anyway. Only `available === "true"` cameras with finite coords and an
- * image URL on the official bucket are kept. Attribution: "Powered by TfL Open
- * Data" (registered in src/data/dataCredits.js).
- *
- * @returns {Promise<Array<object>>} Normalized camera source objects.
- */
 export async function loadTflSourcesFromOpenData() {
+  const appKey = String(process.env.TFL_APP_KEY || '').trim();
+  if (!appKey || process.env.CCTV_TFL_TERMS_ACCEPTED !== '1') return [];
   try {
-    const appKey = String(process.env.TFL_APP_KEY || '').trim();
-    const url = appKey
-      ? `${TFL_JAMCAM_URL}?app_key=${encodeURIComponent(appKey)}`
-      : TFL_JAMCAM_URL;
+    const url = `${TFL_JAMCAM_URL}?app_key=${encodeURIComponent(appKey)}`;
     const resp = await fetch(url, {
       headers: { Accept: 'application/json' },
+      redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
     });
     if (!resp.ok) {
       console.warn('[CCTV] TfL JamCam download failed:', resp.status);
+      void resp.body?.cancel().catch(() => {});
       return [];
     }
-    const places = await resp.json();
+    const places = await readResponseJsonCapped(resp, 8 * 1024 * 1024);
     if (!Array.isArray(places)) return [];
 
     const cameras = [];
@@ -380,6 +77,9 @@ export async function loadTflSourcesFromOpenData() {
         snapshotUrl: imageUrl,
         sourceKind: 'tfl-open-data',
         license: 'Powered by TfL Open Data',
+        credit: 'Powered by TfL Open Data. Contains OS data © Crown copyright and database rights 2016. ' +
+          'Geomni UK Map data © and database rights [2019]. ' +
+          'https://tfl.gov.uk/corporate/terms-and-conditions/transport-data-service',
       });
     }
 
@@ -464,24 +164,30 @@ function pickOntarioCctvView(views) {
 }
 
 /**
- * Fetch Ontario 511 CCTV cameras. Keyless: the catalog is exposed by the
- * public 511 API, while frame URLs are stable still-image endpoints under
+ * Fetch Ontario 511 CCTV cameras with the deployer's registered API key.
+ * The current developer agreement requires a key, while frames are under
  * 511on.ca/map/Cctv/. Only rows with finite Ontario coords and at least one
  * enabled official still view are kept.
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
 export async function loadOntarioSourcesFromOpenData() {
+  const apiKey = String(process.env.ONTARIO_511_API_KEY || '').trim();
+  if (!apiKey || process.env.CCTV_ONTARIO_TERMS_ACCEPTED !== '1') return [];
   try {
-    const resp = await fetch(ONTARIO_511_CAMERAS_URL, {
+    const endpoint = new URL(ONTARIO_511_CAMERAS_URL);
+    endpoint.searchParams.set('key', apiKey);
+    const resp = await fetch(endpoint.toString(), {
       headers: { Accept: 'application/json' },
+      redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
     });
     if (!resp.ok) {
       console.warn('[CCTV] Ontario 511 camera download failed:', resp.status);
+      void resp.body?.cancel().catch(() => {});
       return [];
     }
-    const rows = await resp.json();
+    const rows = await readResponseJsonCapped(resp, 8 * 1024 * 1024);
     if (!Array.isArray(rows)) return [];
 
     const cameras = [];
@@ -602,13 +308,14 @@ export async function loadFintrafficSourcesFromOpenData() {
       console.warn(
         '[CCTV] Fintraffic station list redirected; redirects are not followed',
       );
+      void resp.body?.cancel().catch(() => {});
       return [];
     }
     if (!resp.ok) {
       console.warn('[CCTV] Fintraffic station download failed:', resp.status);
       return [];
     }
-    const payload = await resp.json();
+    const payload = await readResponseJsonCapped(resp, 8 * 1024 * 1024);
     const features = Array.isArray(payload?.features) ? payload.features : [];
     if (!features.length) return [];
 
@@ -740,22 +447,32 @@ const DRIVEBC_ORIENTATION_HEADINGS = Object.freeze({
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
 export async function loadDriveBcSourcesFromOpenData() {
+  // The public feed includes partner-owned images. A missing credit does not
+  // prove ministry ownership, so only explicitly reviewed camera IDs qualify.
+  const approvedIds = new Set(
+    String(process.env.CCTV_DRIVEBC_APPROVED_IDS || '').split(',')
+      .map((id) => id.trim()).filter((id) => /^[1-9]\d*$/.test(id)),
+  );
+  if (!approvedIds.size || process.env.CCTV_DRIVEBC_TERMS_ACCEPTED !== '1') return [];
   try {
     const resp = await fetch(DRIVEBC_WEBCAMS_URL, {
       headers: { Accept: 'application/json' },
+      redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
     });
     if (!resp.ok) {
       console.warn('[CCTV] DriveBC camera download failed:', resp.status);
+      void resp.body?.cancel().catch(() => {});
       return [];
     }
-    const rows = await resp.json();
+    const rows = await readResponseJsonCapped(resp, 8 * 1024 * 1024);
     if (!Array.isArray(rows)) return [];
 
     const cameras = [];
     for (const row of rows) {
       if (row?.is_on !== true || row?.should_appear !== true) continue;
       if (!Number.isSafeInteger(row.id) || row.id <= 0) continue;
+      if (!approvedIds.has(String(row.id))) continue;
       // GeoJSON point order: [longitude, latitude].
       const [lon, lat] = Array.isArray(row.location?.coordinates)
         ? row.location.coordinates
@@ -827,486 +544,6 @@ export async function loadDriveBcSourcesFromOpenData() {
   }
 }
 
-/**
- * Normalize one TxDOT district catalog into camera source objects. Split out
- * from the fetch so the shape handling is unit-testable without a network.
- *
- * The payload nests cameras under `roadwayCctvStatuses`, keyed by roadway.
- * Only `Device Online` rows register: an offline TxDOT device keeps serving a
- * stale frame that can be years old and would otherwise look live.
- *
- * @param {object} payload - Parsed GetCctvStatusListByDistrict response.
- * @param {string} district - TxDOT district code, e.g. 'AUS'.
- * @returns {Array<object>} Normalized camera source objects.
- */
-export function normalizeTxdotDistrictPayload(payload, district) {
-  const byRoadway = payload?.roadwayCctvStatuses;
-  if (!byRoadway || typeof byRoadway !== 'object') return [];
-  const code = String(district || '').toUpperCase();
-  const groundElevationM =
-    TXDOT_DISTRICT_ELEVATION_M[code] ?? TXDOT_DEFAULT_ELEVATION_M;
-  const cameras = [];
-  const seen = new Set();
-
-  for (const rows of Object.values(byRoadway)) {
-    if (!Array.isArray(rows)) continue;
-    for (const row of rows) {
-      if (String(row?.statusDescription || '') !== 'Device Online') continue;
-      if (row?.hasSnapshot === false) continue;
-      // Coordinates must be present as numbers: Number(null) and Number('')
-      // are both 0, which would silently park a camera on null island.
-      const lat = typeof row?.latitude === 'number' ? row.latitude : NaN;
-      const lon = typeof row?.longitude === 'number' ? row.longitude : NaN;
-      if (!isLikelyTexasCoordinate(lat, lon)) continue;
-
-      // icd_Id is the device key the snapshot endpoint takes and is unique
-      // within a district. An interchange camera appears under both of its
-      // roadways, so dedupe on it.
-      const icdId = String(row?.icd_Id || '').trim();
-      if (!icdId || seen.has(icdId)) continue;
-      seen.add(icdId);
-
-      const name = String(row?.name || icdId).trim();
-      // Heading comes from an explicit travel token in the NAME ("US-290 EB"),
-      // parsed in strict mode: bare cardinals are refused because Texas route
-      // names are full of them ("N Lamar", "West Ave"). Deliberately NOT from
-      // row.dirDescription / equipLoc.direction: that is the ROADWAY's
-      // canonical direction, not the camera's facing (it reads "North" for
-      // most Austin rows, including every east-west highway).
-      const heading = directionToHeading(name, false);
-      const hasHeading = Number.isFinite(heading);
-      // The device key itself, base64url-encoded, so every distinct key gets
-      // a distinct id (a hash or a slug can collide) and the key is
-      // recoverable from the id.
-      const cameraId = `txdot-${code.toLowerCase()}-${Buffer.from(icdId, 'utf8').toString('base64url')}`;
-      const snapshot = new URL(TXDOT_CCTV_SNAPSHOT_URL);
-      snapshot.searchParams.set('icdId', icdId);
-      snapshot.searchParams.set('districtCode', code);
-
-      cameras.push({
-        id: cameraId,
-        name,
-        city: String(row?.equipLoc?.roadway || code),
-        cityId: `tx-${code.toLowerCase()}`,
-        provider: 'TxDOT',
-        lat,
-        lon,
-        headingDeg: hasHeading ? heading : fallbackHeadingFromId(cameraId),
-        headingConfidence: hasHeading ? 'high' : 'low',
-        // Same two pose personalities as the other packs: raw priors the
-        // client's ground snap and manual calibration refine.
-        pitchDeg: hasHeading ? -24 : -18,
-        fovDeg: hasHeading ? 56 : 44,
-        rangeM: hasHeading ? 210 : 145,
-        // TxDOT mounts run tall on highway poles and mast arms.
-        mountHeightM: hasHeading ? 12 : 10,
-        groundElevationM,
-        feedType: 'image',
-        // JSON carrying a base64 JPEG; media.js decodes it for this origin only.
-        url: snapshot.toString(),
-        snapshotUrl: snapshot.toString(),
-        sourceKind: 'txdot-its',
-        license: 'Public TxDOT traffic camera data',
-        code: cameraDisplayCode(icdId.toUpperCase()),
-      });
-    }
-  }
-  return cameras;
-}
-
-/**
- * Fetch TxDOT ITS highway cameras (Texas), keyless. Districts come from
- * CCTV_TXDOT_DISTRICTS (comma-separated codes; empty string disables the
- * pack). One official JSON catalog per district, identical schema statewide;
- * districts fetch in parallel and fail independently.
- *
- * @returns {Promise<Array<object>>} Normalized camera source objects.
- */
-export async function loadTxdotSourcesFromOpenData() {
-  const districtsRaw =
-    process.env.CCTV_TXDOT_DISTRICTS ?? DEFAULT_TXDOT_DISTRICTS;
-  const districts = [
-    ...new Set(
-      String(districtsRaw)
-        .split(',')
-        .map((token) => token.trim().toUpperCase())
-        .filter((code) => TXDOT_DISTRICTS.has(code)),
-    ),
-  ];
-  if (!districts.length) return [];
-
-  const settled = await Promise.allSettled(
-    districts.map(async (district) => {
-      const resp = await fetch(TXDOT_CCTV_STATUS_URL(district), {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': 'gods-eye-view-cctv-proxy/1.0',
-        },
-        signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
-      });
-      if (!resp.ok) throw new Error(`${district} HTTP ${resp.status}`);
-      return { district, payload: await resp.json() };
-    }),
-  );
-
-  const cameras = [];
-  for (const result of settled) {
-    if (result.status !== 'fulfilled') {
-      console.warn(
-        '[CCTV] TxDOT district fetch failed:',
-        result.reason?.message || result.reason,
-      );
-      continue;
-    }
-    cameras.push(
-      ...normalizeTxdotDistrictPayload(
-        result.value.payload,
-        result.value.district,
-      ),
-    );
-  }
-
-  const maxRaw = Number(
-    process.env.CCTV_TXDOT_MAX_SOURCES || DEFAULT_TXDOT_MAX_SOURCES,
-  );
-  const maxCount = Number.isFinite(maxRaw)
-    ? Math.max(8, Math.min(2000, Math.floor(maxRaw)))
-    : DEFAULT_TXDOT_MAX_SOURCES;
-  const prioritized = prioritizeSources(cameras, maxCount, TXDOT_ANCHORS);
-  console.log(
-    `[CCTV] Loaded TxDOT camera sources: ${cameras.length} online across ${districts.join(',')} (using nearest ${prioritized.length})`,
-  );
-  return prioritized;
-}
-
-/**
- * Load Tallinn intersection cameras from the curated catalog file.
- *
- * Frames are public JPEG stills on ristmikud.tallinn.ee (stable /last/camNNN.jpg
- * URLs). The catalog ships coordinates + curated heading priors; only official
- * ristmikud HTTPS URLs are kept (proxy fetches registered URLs only).
- *
- * @returns {Array<object>} Normalized camera source objects.
- */
-export function loadTallinnSourcesFromCatalog({
-  sourceRoot = process.cwd(),
-} = {}) {
-  const sourceFile =
-    process.env.CCTV_TALLINN_SOURCES_FILE || DEFAULT_TALLINN_SOURCE_FILE;
-  const resolved = path.isAbsolute(sourceFile)
-    ? sourceFile
-    : path.resolve(sourceRoot, sourceFile);
-  let rows = [];
-  try {
-    if (!fs.existsSync(resolved)) {
-      console.warn('[CCTV] Tallinn source file missing:', resolved);
-      return [];
-    }
-    const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
-    rows = Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.warn(
-      '[CCTV] Tallinn source file read error:',
-      error?.message || error,
-    );
-    return [];
-  }
-
-  const cameras = [];
-  for (const item of rows) {
-    if (!item || typeof item !== 'object') continue;
-    const cameraId =
-      typeof item.id === 'string' || typeof item.id === 'number'
-        ? String(item.id).trim()
-        : '';
-    if (!cameraId) continue;
-    const lat = typeof item.lat === 'number' ? item.lat : NaN;
-    const lon = typeof item.lon === 'number' ? item.lon : NaN;
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-    // Rough Estonia/Tallinn metro sanity (allows nearby suburbs already in the pack).
-    if (lat < 59.2 || lat > 59.7 || lon < 24.3 || lon > 25.4) continue;
-
-    const imageUrl =
-      typeof item.url === 'string'
-        ? item.url.trim()
-        : typeof item.snapshotUrl === 'string'
-          ? item.snapshotUrl.trim()
-          : '';
-    if (!imageUrl.startsWith(TALLINN_IMAGE_ORIGIN)) continue;
-
-    const extractedHeading = toFiniteNumber(item.headingDeg, NaN);
-    const hasHeading = Number.isFinite(extractedHeading);
-    const headingDeg = hasHeading
-      ? ((extractedHeading % 360) + 360) % 360
-      : fallbackHeadingFromId(cameraId);
-    const headingConfidence = hasHeading
-      ? String(item.headingConfidence || '').toLowerCase() === 'low'
-        ? 'low'
-        : 'high'
-      : 'low';
-    cameras.push({
-      id: cameraId,
-      name: String(item.name || cameraId).trim(),
-      city: 'Tallinn',
-      cityId: 'tallinn',
-      provider: 'City of Tallinn',
-      lat,
-      lon,
-      headingDeg,
-      headingConfidence,
-      pitchDeg: headingConfidence === 'high' ? -24 : -18,
-      fovDeg: headingConfidence === 'high' ? 56 : 44,
-      rangeM: headingConfidence === 'high' ? 210 : 145,
-      mountHeightM: headingConfidence === 'high' ? 10 : 8,
-      groundElevationM: toFiniteNumber(item.groundElevationM, 15),
-      feedType: 'image',
-      url: imageUrl,
-      snapshotUrl: imageUrl,
-      sourceKind: 'tallinn-ristmikud',
-      license: 'Public City of Tallinn traffic camera data',
-      poseSource: hasHeading ? 'curated' : undefined,
-    });
-  }
-
-  const unique = Array.from(
-    new Map(cameras.map((camera) => [camera.id, camera])).values(),
-  );
-  const maxRaw = Number(
-    process.env.CCTV_TALLINN_MAX_SOURCES || DEFAULT_TALLINN_MAX_SOURCES,
-  );
-  const maxCount = Number.isFinite(maxRaw)
-    ? Math.max(8, Math.min(300, Math.floor(maxRaw)))
-    : DEFAULT_TALLINN_MAX_SOURCES;
-  const prioritized = prioritizeSources(unique, maxCount, [TALLINN_CENTER]);
-  console.log(
-    `[CCTV] Loaded Tallinn camera sources: ${unique.length} (using nearest ${prioritized.length})`,
-  );
-  return prioritized;
-}
-
-/**
- * Extract DATEX2 predefined-location id → {name, lat, lon} from Tarktee XML.
- *
- * @param {string} xml
- * @returns {Map<string,{name:string,lat:number,lon:number}>}
- */
-export function parseTarkteeDatexLocations(xml) {
-  const out = new Map();
-  const blockRe =
-    /<predefinedLocation\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/predefinedLocation>/g;
-  let match;
-  while ((match = blockRe.exec(String(xml || ''))) !== null) {
-    const id = match[1];
-    const body = match[2];
-    // Skip the group container (no coordinates of its own).
-    const latMatch = /<latitude>\s*(-?\d+(?:\.\d+)?)\s*<\/latitude>/i.exec(
-      body,
-    );
-    const lonMatch = /<longitude>\s*(-?\d+(?:\.\d+)?)\s*<\/longitude>/i.exec(
-      body,
-    );
-    if (!latMatch || !lonMatch) continue;
-    const lat = toFiniteNumber(latMatch[1]);
-    const lon = toFiniteNumber(lonMatch[1]);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-    const nameMatch = /<value\b[^>]*>\s*([^<]+?)\s*<\/value>/i.exec(body);
-    const name = nameMatch ? nameMatch[1].trim() : id;
-    out.set(id, { name, lat, lon });
-  }
-  return out;
-}
-
-/**
- * Extract DATEX2 traffic-view location id → HTTPS image URL from Tarktee XML.
- *
- * @param {string} xml
- * @returns {Map<string,string>}
- */
-export function parseTarkteeDatexImages(xml) {
-  const out = new Map();
-  const blockRe = /<trafficView\b[^>]*>([\s\S]*?)<\/trafficView>/g;
-  let match;
-  while ((match = blockRe.exec(String(xml || ''))) !== null) {
-    const body = match[1];
-    const refMatch =
-      /<linearPredefinedLocationReference\b[^>]*\bid="([^"]+)"/i.exec(body);
-    const urlMatch = /<urlLinkAddress>\s*([^<\s]+)\s*<\/urlLinkAddress>/i.exec(
-      body,
-    );
-    if (!refMatch || !urlMatch) continue;
-    const url = urlMatch[1].trim();
-    if (!url.startsWith(TARKTEE_IMAGE_ORIGIN)) continue;
-    out.set(refMatch[1], url);
-  }
-  return out;
-}
-
-/**
- * Fetch Estonian Transpordiamet / Tarktee road-weather cameras via DATEX2.
- *
- * Locations and current still URLs are keyless public feeds. Image paths on the
- * ArcGIS MapServer layer go stale; DATEX always carries the current JPEG URL.
- * Only https://tarktee.transpordiamet.ee/images/… URLs are registered.
- *
- * @returns {Promise<Array<object>>} Normalized camera source objects.
- */
-export async function loadTarkteeSourcesFromDatex() {
-  try {
-    const [locResp, imgResp] = await Promise.all([
-      fetch(TARKTEE_LOCATIONS_URL, {
-        headers: { Accept: 'application/xml,text/xml,*/*' },
-        signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
-      }),
-      fetch(TARKTEE_IMAGES_URL, {
-        headers: { Accept: 'application/xml,text/xml,*/*' },
-        signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
-      }),
-    ]);
-    if (!locResp.ok) {
-      console.warn('[CCTV] Tarktee locations download failed:', locResp.status);
-      return [];
-    }
-    if (!imgResp.ok) {
-      console.warn('[CCTV] Tarktee images download failed:', imgResp.status);
-      return [];
-    }
-    const [locXml, imgXml] = await Promise.all([
-      locResp.text(),
-      imgResp.text(),
-    ]);
-    const locations = parseTarkteeDatexLocations(locXml);
-    const images = parseTarkteeDatexImages(imgXml);
-    if (!locations.size || !images.size) {
-      console.warn('[CCTV] Tarktee DATEX parse empty:', {
-        locations: locations.size,
-        images: images.size,
-      });
-      return [];
-    }
-
-    const cameras = [];
-    for (const [locationId, loc] of locations.entries()) {
-      const imageUrl = images.get(locationId);
-      if (!imageUrl) continue;
-      // Estonia bounding box (mainland + nearby islands).
-      if (loc.lat < 57.4 || loc.lat > 59.9 || loc.lon < 21.5 || loc.lon > 28.4)
-        continue;
-
-      const numMatch = /\/images\/(\d+)\//.exec(imageUrl);
-      const cameraId = numMatch
-        ? `ee-tarktee-${numMatch[1]}`
-        : `ee-tarktee-${locationId}`;
-      cameras.push({
-        id: cameraId,
-        name: loc.name,
-        city: loc.name,
-        cityId: 'estonia',
-        provider: 'Transpordiamet (Tarktee)',
-        lat: loc.lat,
-        lon: loc.lon,
-        headingDeg: fallbackHeadingFromId(cameraId),
-        headingConfidence: 'low',
-        pitchDeg: -18,
-        fovDeg: 44,
-        rangeM: 145,
-        mountHeightM: 8,
-        groundElevationM: 40,
-        feedType: 'image',
-        url: imageUrl,
-        snapshotUrl: imageUrl,
-        sourceKind: 'tarktee-datex',
-        license: 'Public Transpordiamet / Tarktee road weather camera data',
-      });
-    }
-
-    const maxRaw = Number(
-      process.env.CCTV_TARKTEE_MAX_SOURCES || DEFAULT_TARKTEE_MAX_SOURCES,
-    );
-    const maxCount = Number.isFinite(maxRaw)
-      ? Math.max(8, Math.min(300, Math.floor(maxRaw)))
-      : DEFAULT_TARKTEE_MAX_SOURCES;
-    const prioritized = prioritizeSources(cameras, maxCount, TARKTEE_ANCHORS);
-    console.log(
-      `[CCTV] Loaded Tarktee camera sources: ${cameras.length} with images (using nearest ${prioritized.length})`,
-    );
-    return prioritized;
-  } catch (error) {
-    console.warn(
-      '[CCTV] Tarktee DATEX download error:',
-      error?.message || error,
-    );
-    return [];
-  }
-}
-
-/**
- * Load the Warendorf municipal webcams (Stadt Warendorf Marktplatz, Kreis
- * Warendorf registration offices) from the curated catalog file. Poses are
- * curated; only the two official municipal image hosts are registered.
- *
- * @returns {Array<object>} Normalized camera source objects.
- */
-export function loadWarendorfSourcesFromCatalog({
-  sourceRoot = process.cwd(),
-} = {}) {
-  const sourceFile =
-    process.env.CCTV_WARENDORF_SOURCES_FILE || DEFAULT_WARENDORF_SOURCE_FILE;
-  const resolved = path.isAbsolute(sourceFile)
-    ? sourceFile
-    : path.resolve(sourceRoot, sourceFile);
-  let rows = [];
-  try {
-    if (!fs.existsSync(resolved)) {
-      console.warn('[CCTV] Warendorf source file missing:', resolved);
-      return [];
-    }
-    const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
-    rows = Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.warn(
-      '[CCTV] Warendorf source file read error:',
-      error?.message || error,
-    );
-    return [];
-  }
-  const cameras = [];
-  for (const item of rows) {
-    if (!item || typeof item !== 'object') continue;
-    const id = typeof item.id === 'string' ? item.id.trim() : '';
-    const url =
-      typeof item.url === 'string'
-        ? item.url.trim()
-        : typeof item.snapshotUrl === 'string'
-          ? item.snapshotUrl.trim()
-          : '';
-    if (!id || !WARENDORF_IMAGE_ORIGINS.some((o) => url.startsWith(o)))
-      continue;
-    const lat = typeof item.lat === 'number' ? item.lat : NaN;
-    const lon = typeof item.lon === 'number' ? item.lon : NaN;
-    if (!isPlausibleLatLon(lat, lon)) continue;
-    cameras.push({
-      ...item,
-      id,
-      url,
-      snapshotUrl: url,
-      cityId: String(item.cityId || 'warendorf'),
-      feedType: 'image',
-      sourceKind: 'municipal-webcam',
-    });
-  }
-  console.log('[CCTV] Loaded Warendorf camera sources:', cameras.length);
-  return cameras;
-}
-
-/**
- * Label for one NSW camera: its `view` sentence when that is really a view
- * ("5 Ways at The Boulevarde looking west towards Sutherland"), else the
- * title ("5 Ways (Miranda)"). A works notice longer than NSW_MAX_VIEW_LABEL or
- * containing a line break is not a label.
- *
- * @param {{view?:string, title?:string}} props
- * @returns {string}
- */
 export function nswCameraLabel(props) {
   const view = String(props?.view || '').trim();
   const title = String(props?.title || '').trim();
@@ -1379,15 +616,17 @@ export async function loadNswSourcesFromOpenData() {
     const resp = await fetch(NSW_CAMERAS_URL, {
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'gods-eye-view-cctv-proxy/1.0',
+        'User-Agent': 'earth-observer-cctv/1.0',
       },
+      redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
     });
     if (!resp.ok) {
       console.warn('[CCTV] NSW camera download failed:', resp.status);
+      void resp.body?.cancel().catch(() => {});
       return [];
     }
-    const body = await resp.json();
+    const body = await readResponseJsonCapped(resp, 8 * 1024 * 1024);
     const features = Array.isArray(body?.features) ? body.features : [];
     const cameras = features.map(nswCameraToSource).filter(Boolean);
     const maxRaw = Number(
@@ -1546,8 +785,7 @@ export function calgaryCameraToSource(record) {
  */
 export async function loadCalgarySourcesFromOpenData() {
   try {
-    const endpoint =
-      process.env.CCTV_CALGARY_ROWS_URL || DEFAULT_CALGARY_ROWS_URL;
+    const endpoint = DEFAULT_CALGARY_ROWS_URL;
     const resp = await fetch(endpoint, {
       headers: { Accept: 'application/json' },
       redirect: 'manual',
@@ -1605,122 +843,6 @@ export async function loadCalgarySourcesFromOpenData() {
   }
 }
 
-export async function loadDelDOTSourcesFromOpenData() {
-  try {
-    const resp = await fetch(DELDOT_CCTV_URL, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
-      redirect: 'error',
-    });
-    if (!resp.ok) {
-      console.warn('[CCTV] DelDOT source download failed:', resp.status);
-      return [];
-    }
-    const payload = await readResponseJsonCapped(resp, 2 * 1024 * 1024);
-    const rows = Array.isArray(payload?.videoCameras)
-      ? payload.videoCameras
-      : [];
-    if (!rows.length) return [];
-
-    const cameras = [];
-    for (const row of rows) {
-      if (String(row?.status).toLowerCase() !== 'active') continue;
-      const lat = toFiniteNumber(row?.lat);
-      const lon = toFiniteNumber(row?.lon);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      // Delaware bounding box — a bad upstream coord can't place a camera out of state.
-      if (lat < 38.4 || lat > 39.9 || lon < -75.85 || lon > -75.0) continue;
-
-      // Prefer the catalog's HTTPS HLS transport; no subprocess is required.
-      let stream;
-      try {
-        stream = new URL(String(row?.urls?.m3u8s || ''));
-      } catch {
-        continue;
-      }
-      if (
-        stream.origin !== 'https://video.deldot.gov' ||
-        stream.username ||
-        stream.password ||
-        !/^\/live\/[A-Za-z0-9_.-]+\/playlist\.m3u8$/.test(stream.pathname)
-      )
-        continue;
-      const streamUrl = stream.href;
-
-      const id = String(row?.id || '').trim();
-      if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) continue;
-      const cameraId = `deldot-${id.toLowerCase()}`;
-      const title = String(row?.title || '').trim();
-
-      // Title carries an unambiguous travel token for ~1 in 5 cameras
-      // ("US 13 SB @ ..."). directionToHeading (allowBare=false) matches only
-      // NB/SB/EB/WB, never a bare "W"/"N" street prefix — "W NORTH ST" yields
-      // no heading and falls back.
-      const heading = directionToHeading(title);
-      const hasHeading = Number.isFinite(heading);
-
-      cameras.push({
-        id: cameraId,
-        name: title || `DelDOT ${id}`,
-        city: String(row?.county ? `${row.county} County` : 'Delaware'),
-        cityId: `deldot-${String(row?.county || 'de')
-          .toLowerCase()
-          .replace(/\s+/g, '-')}`,
-        provider: 'DelDOT',
-        lat,
-        lon,
-        headingDeg: hasHeading ? heading : fallbackHeadingFromId(cameraId),
-        headingConfidence: hasHeading ? 'high' : 'low',
-        // Fabricated RAW PRIOR poses (same personalities as Austin/Caltrans);
-        // the client ground-snap + manual calibration own the truth.
-        pitchDeg: hasHeading ? -24 : -18,
-        fovDeg: hasHeading ? 56 : 44,
-        rangeM: hasHeading ? 210 : 145,
-        mountHeightM: hasHeading ? 10 : 8,
-        groundElevationM: 10, // Estimated prior; client ground resolution owns placement.
-        feedType: 'hls',
-        url: streamUrl,
-        snapshotUrl: '',
-        sourceKind: 'deldot-open-data',
-        license: 'Public DelDOT traffic camera',
-      });
-    }
-
-    const unique = Array.from(
-      new Map(cameras.map((camera) => [camera.id, camera])).values(),
-    );
-    const maxRaw = Number(
-      process.env.CCTV_DELDOT_MAX_SOURCES || DEFAULT_DELDOT_MAX_SOURCES,
-    );
-    const maxCount = Number.isFinite(maxRaw)
-      ? Math.max(8, Math.min(400, Math.floor(maxRaw)))
-      : DEFAULT_DELDOT_MAX_SOURCES;
-    const prioritized = prioritizeSources(unique, maxCount, DELDOT_ANCHORS);
-    console.log(
-      `[CCTV] Loaded DelDOT camera sources: ${unique.length} Active (using nearest ${prioritized.length})`,
-    );
-    return prioritized;
-  } catch (error) {
-    console.warn(
-      '[CCTV] DelDOT source download error:',
-      error?.message || error,
-    );
-    return [];
-  }
-}
-
-/**
- * One Statens vegvesen `CctvSimple` feature -> one catalog source, or null.
- *
- * `orientationDescription` names the place the camera looks towards
- * ("Svelgen"), not a bearing, so it goes into the label and the heading uses
- * the shared id-hash fallback at low confidence, like Calgary and Fintraffic.
- * Cameras the feed reports as faulty are dropped. Cameras that publish HLS
- * get live video, with the still as the snapshot fallback.
- *
- * @param {object} feature - GeoJSON feature from the OGC items response.
- * @returns {?object}
- */
 export function vegvesenCameraToSource(feature) {
   if (!feature || typeof feature !== 'object') return null;
   const props = feature.properties;
@@ -1753,16 +875,6 @@ export function vegvesenCameraToSource(feature) {
   const towards = String(props.orientationDescription ?? '').trim();
   const road = String(props.roadNumber ?? '').trim();
   const name = towards && towards !== place ? `${place} → ${towards}` : place;
-  // Live video when the camera publishes HLS on the agency's own host; the
-  // still stays the snapshot fallback. CCTV_VEGVESEN_VIDEO=0 keeps stills only.
-  const videoUrl =
-    String(process.env.CCTV_VEGVESEN_VIDEO || '1').trim() !== '0' &&
-    Number(props.videoServiceLevel) > 0 &&
-    String(props.videoEncodingStandard ?? '').toLowerCase() === 'hls' &&
-    String(props.videoUrl ?? '').trim() === VEGVESEN_VIDEO_URL(rawId)
-      ? VEGVESEN_VIDEO_URL(rawId)
-      : '';
-
   return {
     id: cameraId,
     name: road ? `${road} ${name}` : name,
@@ -1788,8 +900,8 @@ export function vegvesenCameraToSource(feature) {
     // Caltrans pack documents. A per-camera height (e.g. Kartverket's keyless
     // point-height API) would remove it.
     groundElevationM: 150,
-    feedType: videoUrl ? 'hls' : 'image',
-    url: videoUrl || imageUrl,
+    feedType: 'image',
+    url: imageUrl,
     snapshotUrl: imageUrl,
     sourceKind: 'vegvesen-datex',
     license:
@@ -1807,7 +919,7 @@ export function vegvesenCameraToSource(feature) {
  */
 export async function loadVegvesenSourcesFromOpenData() {
   try {
-    const endpoint = process.env.CCTV_VEGVESEN_URL || DEFAULT_VEGVESEN_CCTV_URL;
+    const endpoint = DEFAULT_VEGVESEN_CCTV_URL;
     const resp = await fetch(endpoint, {
       headers: { Accept: 'application/geo+json,application/json' },
       redirect: 'manual',

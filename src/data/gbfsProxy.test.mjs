@@ -5,7 +5,7 @@ import {
   fetchGbfsUpstream,
 } from '../../server/providers/gbfs.js';
 
-const STATION_URL = 'https://gbfs.lyft.com/gbfs/2.3/bay/en/station_status.json';
+const STATION_URL = 'https://gbfs.lyft.com/gbfs/2.3/bkn/en/station_status.json';
 const STATION_BODY = '{"data":{"stations":[]}}';
 
 /**

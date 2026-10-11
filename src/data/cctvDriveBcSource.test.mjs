@@ -1,22 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { createCctvCatalog } from '../../server/providers/cctv/catalog.js';
 import {
-  DEFAULT_AUSTIN_MAX_SOURCES,
-  DEFAULT_CALTRANS_MAX_SOURCES,
   DEFAULT_CCTV_MAX_SOURCES,
   CCTV_MAX_SOURCES_CEILING,
-  DEFAULT_DRIVEBC_MAX_SOURCES,
-  DEFAULT_TFL_MAX_SOURCES,
-  DEFAULT_ONTARIO_MAX_SOURCES,
   DEFAULT_FINTRAFFIC_MAX_SOURCES,
-  DEFAULT_TXDOT_MAX_SOURCES,
-  DEFAULT_TALLINN_MAX_SOURCES,
-  DEFAULT_TARKTEE_MAX_SOURCES,
   DEFAULT_NSW_MAX_SOURCES,
+  DEFAULT_CALGARY_MAX_SOURCES,
+  DEFAULT_VEGVESEN_MAX_SOURCES,
   DRIVEBC_WEBCAMS_URL,
 } from '../../server/providers/cctv/constants.js';
 import {
@@ -59,9 +50,13 @@ function driveBcRow(id, lat, lon, overrides = {}) {
   };
 }
 
-test('DriveBC loader keeps published cameras and builds frame URLs from the camera id', async (t) => {
+test('DriveBC loader keeps reviewed published cameras and builds frame URLs from the camera id', async (t) => {
   quiet(t);
-  withEnv(t, { CCTV_DRIVEBC_MAX_SOURCES: undefined });
+  withEnv(t, {
+    CCTV_DRIVEBC_MAX_SOURCES: undefined,
+    CCTV_DRIVEBC_TERMS_ACCEPTED: '1',
+    CCTV_DRIVEBC_APPROVED_IDS: '13,682,1,2,3,4,5,6,7',
+  });
   const requested = [];
   t.mock.method(globalThis, 'fetch', async (url) => {
     requested.push(String(url));
@@ -86,6 +81,7 @@ test('DriveBC loader keeps published cameras and builds frame URLs from the came
       driveBcRow(5, 49.2, -123.1, { location: null }),
       driveBcRow(6, 1000, -123.1),
       driveBcRow(7, 34.05, -118.24),
+      driveBcRow(999, 49.2, -123.1), // valid but not reviewed: excluded
     ]);
   });
 
@@ -135,7 +131,7 @@ test('DriveBC loader keeps published cameras and builds frame URLs from the came
 
 test('DriveBC loader keeps the cameras nearest Vancouver and Victoria under its cap', async (t) => {
   quiet(t);
-  withEnv(t, { CCTV_DRIVEBC_MAX_SOURCES: '8' });
+  withEnv(t, { CCTV_DRIVEBC_MAX_SOURCES: '8', CCTV_DRIVEBC_TERMS_ACCEPTED: '1' });
   const rows = [
     // Fort Nelson rows come first in payload order, so only distance can drop them.
     ...[58.8, 58.81, 58.82, 58.83].map((lat, i) =>
@@ -148,6 +144,7 @@ test('DriveBC loader keeps the cameras nearest Vancouver and Victoria under its 
       driveBcRow(300 + i, lat, -123.37),
     ),
   ];
+  withEnv(t, { CCTV_DRIVEBC_APPROVED_IDS: rows.map((row) => row.id).join(',') });
   t.mock.method(globalThis, 'fetch', async () => Response.json(rows));
 
   const cameras = await loadDriveBcSourcesFromOpenData();
@@ -164,8 +161,9 @@ test('DriveBC loader keeps the cameras nearest Vancouver and Victoria under its 
 
 test('DriveBC loader fails soft on HTTP errors, unexpected payloads and network errors', async (t) => {
   quiet(t);
+  withEnv(t, { CCTV_DRIVEBC_TERMS_ACCEPTED: '1', CCTV_DRIVEBC_APPROVED_IDS: '13' });
   let respond;
-  t.mock.method(globalThis, 'fetch', (...args) => respond(...args));
+  const fetchMock = t.mock.method(globalThis, 'fetch', (...args) => respond(...args));
   for (respond of [
     async () => new Response('unavailable', { status: 503 }),
     async () => Response.json({ webcams: [] }),
@@ -175,24 +173,23 @@ test('DriveBC loader fails soft on HTTP errors, unexpected payloads and network 
   ]) {
     assert.deepEqual(await loadDriveBcSourcesFromOpenData(), []);
   }
+  assert.equal(fetchMock.mock.callCount(), 3, 'failure paths actually fetch the configured provider');
 });
 
 test('CCTV catalog merges DriveBC cameras and CCTV_DRIVEBC_ENABLED=0 skips the request', async (t) => {
   quiet(t);
-  const sourceRoot = fs.mkdtempSync(
-    path.join(os.tmpdir(), 'gev-cctv-catalog-'),
-  );
-  t.after(() => fs.rmSync(sourceRoot, { recursive: true, force: true }));
   withEnv(t, {
-    CCTV_SOURCES_FILE: undefined,
-    CCTV_SOURCES_JSON: undefined,
-    CCTV_FORCE_AUSTIN: undefined,
-    CCTV_PREFER_AUSTIN: undefined,
     CCTV_MAX_SOURCES: undefined,
-    CCTV_CALTRANS_DISTRICTS: undefined,
-    CCTV_TFL_ENABLED: undefined,
-    CCTV_DRIVEBC_ENABLED: undefined,
+    CCTV_FINTRAFFIC_ENABLED: '1',
+    CCTV_NSW_ENABLED: '1',
+    CCTV_CALGARY_ENABLED: '1',
+    CCTV_VEGVESEN_ENABLED: '1',
+    CCTV_TFL_ENABLED: '0',
+    CCTV_ONTARIO_ENABLED: '0',
+    CCTV_DRIVEBC_ENABLED: '1',
     CCTV_DRIVEBC_MAX_SOURCES: undefined,
+    CCTV_DRIVEBC_TERMS_ACCEPTED: '1',
+    CCTV_DRIVEBC_APPROVED_IDS: '13',
   });
   const requested = [];
   t.mock.method(globalThis, 'fetch', async (url) => {
@@ -203,7 +200,7 @@ test('CCTV catalog merges DriveBC cameras and CCTV_DRIVEBC_ENABLED=0 skips the r
       : new Response('unavailable', { status: 503 });
   });
 
-  const sources = await createCctvCatalog({ sourceRoot })();
+  const sources = await createCctvCatalog()();
   assert.deepEqual(
     sources.map((source) => source.id),
     ['drivebc-13'],
@@ -212,7 +209,7 @@ test('CCTV catalog merges DriveBC cameras and CCTV_DRIVEBC_ENABLED=0 skips the r
 
   process.env.CCTV_DRIVEBC_ENABLED = '0';
   requested.length = 0;
-  assert.deepEqual(await createCctvCatalog({ sourceRoot })(), []);
+  assert.deepEqual(await createCctvCatalog()(), []);
   assert.ok(requested.length > 0, 'the other live packs still load');
   assert.equal(
     requested.includes(DRIVEBC_WEBCAMS_URL),
@@ -222,19 +219,12 @@ test('CCTV catalog merges DriveBC cameras and CCTV_DRIVEBC_ENABLED=0 skips the r
 });
 
 test('default per-pack camera caps fit inside the default catalog cap', () => {
-  // Every default pack at its own cap (Warendorf ships 1 curated camera).
+  // Only the four reviewed, ungated camera providers are enabled by default.
   const packs =
-    DEFAULT_AUSTIN_MAX_SOURCES +
-    DEFAULT_CALTRANS_MAX_SOURCES +
-    DEFAULT_TFL_MAX_SOURCES +
-    DEFAULT_ONTARIO_MAX_SOURCES +
     DEFAULT_FINTRAFFIC_MAX_SOURCES +
-    DEFAULT_DRIVEBC_MAX_SOURCES +
-    DEFAULT_TXDOT_MAX_SOURCES +
-    DEFAULT_TALLINN_MAX_SOURCES +
-    DEFAULT_TARKTEE_MAX_SOURCES +
     DEFAULT_NSW_MAX_SOURCES +
-    1;
+    DEFAULT_CALGARY_MAX_SOURCES +
+    DEFAULT_VEGVESEN_MAX_SOURCES;
   assert.ok(
     packs <= DEFAULT_CCTV_MAX_SOURCES,
     `default packs (${packs}) would be thinned by the catalog cap (${DEFAULT_CCTV_MAX_SOURCES})`,

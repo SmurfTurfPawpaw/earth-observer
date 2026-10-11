@@ -6,7 +6,7 @@
  * and freezes the camera only while a drag is in progress.
  */
 import * as Cesium from 'cesium';
-import { pickWorldFromScreen } from '../annotations/annotationResolver.js';
+import { pickWorldFromScreen } from '../core/pick.js';
 import {
   claimPointer,
   pointerOwner,

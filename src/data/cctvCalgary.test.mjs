@@ -280,21 +280,21 @@ test('the catalog fetch refuses redirects and oversized bodies', async (t) => {
 });
 
 test('a reduced catalog cap thins every pack instead of dropping Calgary', () => {
-  // Calgary merges last in LIVE_PACKS, so a positional slice would delete it
-  // outright. The round-robin allocation must give it its share.
+  // A positional slice can omit later providers. Round-robin allocation must
+  // preserve coverage across each registered provider.
   const lane = (name, count) => ({
     name,
     sources: Array.from({ length: count }, (_, i) => ({ id: `${name}-${i}` })),
   });
   const { sources, packs } = allocateSourceCap(
-    [lane('austin', 250), lane('nsw', 217), lane('calgary', 215)],
+    [lane('fintraffic', 250), lane('nsw', 217), lane('calgary', 215)],
     30,
   );
   assert.equal(sources.length, 30);
   assert.deepEqual(
     packs.map((p) => [p.name, p.kept]),
     [
-      ['austin', 10],
+      ['fintraffic', 10],
       ['nsw', 10],
       ['calgary', 10],
     ],
@@ -330,9 +330,7 @@ const runCatalogWithMockedUpstreams = async (t) => {
     }
     return Response.json([]);
   });
-  // A source root with no curated catalogs or ground-height sidecar, so the
-  // file-based packs contribute nothing and only the live lanes are in play.
-  const sources = await createCctvCatalog({ sourceRoot: '/nonexistent' })();
+  const sources = await createCctvCatalog()();
   return { requested, sources };
 };
 

@@ -113,6 +113,8 @@ export function featurePoint(feature) {
       ? [geometry.coordinates]
       : geometry?.type === 'LineString'
         ? geometry.coordinates
+        : geometry?.type === 'MultiLineString' || geometry?.type === 'MultiPoint'
+          ? (geometry.type === 'MultiLineString' ? geometry.coordinates?.flat() : geometry.coordinates)
         : geometry?.type === 'Polygon'
           ? geometry.coordinates?.[0]
           : geometry?.type === 'MultiPolygon'
@@ -135,18 +137,21 @@ export function createInfrastructureSource({
   const cache = new Map();
   return {
     async getRecords(layerId, { signal } = {}) {
+      signal?.throwIfAborted();
       const url = INFRASTRUCTURE_DATA_URLS[layerId];
       if (!url) throw new TypeError(`Unknown infrastructure layer: ${layerId}`);
       if (!cache.has(layerId)) {
         signal?.throwIfAborted();
         const response = await fetchImpl(url, { signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const records = parseGeojsonLines(await response.text()).flatMap(
-          (feature) => {
+        const text = await response.text();
+        signal?.throwIfAborted();
+        const records = parseGeojsonLines(text).flatMap(
+          (feature, index) => {
             const point = featurePoint(feature);
-            return point
+            return point && Math.abs(point.lat) <= 90 && Math.abs(point.lon) <= 180
               ? [
-                  mapAnalystRecord(
+                  { ...mapAnalystRecord(
                     {
                       id: feature.properties?.osm_id ?? feature.id,
                       ...point,
@@ -154,12 +159,18 @@ export function createInfrastructureSource({
                     },
                     layerId,
                   ),
+                    id: String(feature.properties?.osm_id ?? feature.id ?? `record-${index}`),
+                    geometryType: feature.geometry.type,
+                    approximate: feature.geometry.type !== 'Point',
+                  },
                 ]
               : [];
           },
         );
+        signal?.throwIfAborted();
         cache.set(layerId, records);
       }
+      signal?.throwIfAborted();
       return cache.get(layerId);
     },
   };

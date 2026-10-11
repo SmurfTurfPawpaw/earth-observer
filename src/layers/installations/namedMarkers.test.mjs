@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import * as C from 'cesium';
 import { createNamedMarkers } from './namedMarkers.js';
 import { createLifecycle } from './lifecycle.js';
-import { createLocalInfrastructureOverlayEntry } from '../../data/localGeojsonCore.js';
 
 function setup(t) {
   let labels = [], options, publications = 0, visible = false;
@@ -135,15 +134,17 @@ test('the bounded host cohort ranks wide points and polygon titles by area', (t)
 });
 
 
-test('wide and polygon titles use the Data Centers entry contract and persistent shared domain', (t) => {
+test('wide and polygon titles use a static card domain with globe horizon culling', (t) => {
   const h = setup(t);
   h.markers.sync([h.records[0], { ...h.records[1], pointOnly: false }]);
   assert.equal(h.options.moving, false);
   assert.equal(h.options.solveIntervalMs, undefined);
   assert.equal(h.options.maxVisible, 24);
   for (const entry of h.labels) {
-    const reference = createLocalInfrastructureOverlayEntry({ id: entry.id, layerId: 'military-installations', position: entry.position, properties: { name: entry.title }, priority: entry.priority, accent: entry.accent });
-    assert.deepEqual(entry, { ...reference, selected: false });
+    assert.equal(entry.collisionGroup, 'ambient-card');
+    assert.equal(entry.horizonCull, true);
+    assert.equal(entry.interactive, false);
+    assert.equal(entry.selected, false);
   }
   h.lifecycle.destroy(h.state.viewer);
 });

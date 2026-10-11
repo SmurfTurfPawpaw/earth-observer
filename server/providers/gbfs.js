@@ -2,6 +2,7 @@ import { readResponseTextCapped } from './common/http.js';
 import {
   isAllowedGbfsHost,
   isAllowedGbfsPath,
+  isAllowedGbfsUrl,
   gbfsCacheControl,
 } from '../../src/data/gbfsSource.js';
 
@@ -59,7 +60,7 @@ export async function fetchGbfsUpstream(
       method: 'GET',
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'gods-eye-view-gbfs-proxy/1.0',
+        'User-Agent': 'earth-observer-gbfs-proxy/1.0',
       },
       redirect: 'manual',
       signal: controller.signal,
@@ -181,15 +182,15 @@ export function gbfsProxy() {
           return;
         }
 
-        if (!isAllowedGbfsPath(upstreamUrl.pathname)) {
-          res.writeHead(400, {
+        if (!isAllowedGbfsPath(upstreamUrl.pathname) || !isAllowedGbfsUrl(upstreamUrl.toString())) {
+          res.writeHead(403, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
           });
           res.end(
             JSON.stringify({
               error:
-                'Only station_information/station_status endpoints are allowed',
+                'GBFS endpoint is not approved for this deployment',
             }),
           );
           return;

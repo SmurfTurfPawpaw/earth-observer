@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PbfWriter } from 'pbf';
-import { transitProxy } from 'gods-eye-view/server/providers/transit';
+import { transitProxy } from '../../server/providers/transit.js';
 import {
   TRANSIT_BACKOFF_LADDER_MS,
   TRANSIT_PROXY_TTL_MS,
-} from 'gods-eye-view/sources/transit';
+} from '../data/transitProxy.js';
 
 /** Mount the plugin and return a caller for its single route. */
 function install(plugin, mode = 'configureServer') {
@@ -332,7 +332,6 @@ test('a feed served from cache during an outage does not claim fresh contact', a
 });
 
 // Include the provider-local storage contract in the repository's src test discovery.
-import '../../server/providers/transitHistory.test.mjs';
 
 test('history reads never fetch upstream, and 304/cache/failure replays never append', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: 1700000000000 });

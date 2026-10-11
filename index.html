@@ -1,39 +1,61 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>God's Eye View</title>
-  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
-  <link rel="stylesheet" href="/style.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
-  <!-- Icon font subset to the glyphs this app renders. Keep `icon_names` in sync
-       with the sources: src/materialSymbolsSubset.test.mjs fails when a source
-       names a glyph this list is missing, because a missing glyph does not draw
-       a box — the ligature never forms and the element renders the literal word. -->
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,400,0,0&icon_names=adjust,arrow_drop_down,arrow_forward,arrow_left,arrow_right,bolt,chevron_left,chevron_right,close,close_fullscreen,dark_mode,draw,east,flare,flight,layers_clear,light_mode,local_fire_department,my_location,navigation,normal,on,open_in_full,public,radar,radio,right_panel_close,right_panel_open,rocket_launch,skip_next,skip_previous,view_in_ar" rel="stylesheet" />
-</head>
-<body>
-  <!-- gev:template scene-chrome -->
-
-  <!-- gev:template cockpit -->
-
-  <!-- gev:template display-controls -->
-
-  <!-- gev:template command-dock -->
-
-  <!-- gev:template layer-panels -->
-
-  <!-- gev:template context -->
-
-  <!-- gev:template welcome -->
-
-  <!-- gev:template provider-settings -->
-
-  <!-- gev:template hud-loading -->
-
-  <script type="module" src="/src/main.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#111820" />
+    <meta name="description" content="Explore Earth with public geographic data and a lightweight 3D globe." />
+    <title>Earth Observer</title>
+    <link rel="preconnect" href="https://gibs.earthdata.nasa.gov" crossorigin />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#search">Skip to controls</a>
+    <main id="app" aria-label="Earth Observer">
+      <div id="globe" aria-label="Interactive globe. Drag to rotate, scroll to zoom. Use the navigation buttons for keyboard controls."></div>
+      <aside id="sidebar" aria-label="Explore and layers">
+        <header class="brand">
+          <div><h1>Earth Observer</h1><p>Public data. A global perspective.</p></div>
+          <button id="close-sidebar" class="icon-button mobile-only" type="button" aria-label="Close layer panel" disabled>×</button>
+        </header>
+        <form id="search-form" role="search">
+          <label for="search">Find a place</label>
+          <div class="search-row"><input id="search" name="search" type="search" placeholder="City, landmark, or lat, lon" autocomplete="off" list="place-suggestions" aria-describedby="search-help" /><button type="submit" disabled>Go</button></div>
+          <datalist id="place-suggestions"></datalist>
+          <p id="search-help" class="muted">Saved places or coordinates, e.g. 50.85, 4.35.</p>
+          <p id="search-status" role="status"></p>
+        </form>
+        <section class="layer-section" aria-labelledby="layers-heading">
+          <div class="section-heading"><h2 id="layers-heading">Layers <span id="layer-loading-count" class="loading-count" hidden></span></h2><button id="clear-layers" class="text-button" type="button" disabled>Clear all</button></div>
+          <p class="muted">Load only the data you want to explore.</p>
+          <div id="layers"><div class="layer-list-placeholder" aria-hidden="true"><span></span><span></span><span></span></div><p class="layer-controls-loading">Loading layer controls…</p></div>
+        </section>
+        <details id="sources" class="sources">
+          <summary>Data sources &amp; attribution</summary>
+          <div id="source-list"></div>
+          <p><a href="https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-standard-products" target="_blank" rel="noreferrer">Base imagery: NASA GIBS / Blue Marble</a>.</p>
+          <p><a href="https://www.naturalearthdata.com/about/terms-of-use/" target="_blank" rel="noreferrer">Fallback imagery: Natural Earth, public domain</a>.</p>
+          <p>Data freshness and coverage vary by source. Empty results can mean no records in the current view.</p>
+        </details>
+        <footer class="sidebar-footer"><a href="/DATA_POLICY.md" target="_blank" rel="noreferrer">Source terms</a><span aria-hidden="true">·</span><a href="/LICENSE.txt" target="_blank" rel="noreferrer">Code license</a></footer>
+      </aside>
+      <div class="map-topbar"><button id="open-sidebar" type="button" aria-controls="sidebar" aria-expanded="false" disabled>Layers &amp; search</button><button id="share-view" type="button" disabled>Share view</button></div>
+      <div id="load-status" class="load-status" role="status" aria-live="polite" hidden><span class="loading-spinner" aria-hidden="true"></span><span id="load-status-text"></span></div>
+      <nav id="navigation" aria-label="Globe navigation">
+        <button id="home" type="button" title="Show the full globe" disabled>Home</button>
+        <button id="north" type="button" title="Face north" disabled>North</button>
+        <button id="zoom-in" class="zoom-button" type="button" title="Zoom in" aria-label="Zoom in" disabled>+</button>
+        <button id="zoom-out" class="zoom-button" type="button" title="Zoom out" aria-label="Zoom out" disabled>−</button>
+        <button id="tilt" type="button" title="Toggle overhead and tilted views" aria-pressed="false" disabled>Tilt</button>
+      </nav>
+      <div id="view-position" class="view-position" aria-label="Camera position"></div>
+      <section id="selection" hidden aria-labelledby="selection-title"><div class="selection-header"><h2 id="selection-title">Selected feature</h2><button id="clear-selection" class="icon-button" type="button" aria-label="Close feature details">×</button></div><div id="selection-details"></div></section>
+      <div id="credits" class="credits" aria-label="Map attribution"></div>
+      <div id="notification" role="status" aria-live="polite" hidden></div>
+      <div id="loading" role="status"><span class="loading-spinner" aria-hidden="true"></span><div><p>Starting Earth Observer…</p><p class="muted">Loading the globe renderer.</p></div></div>
+      <section id="error" hidden role="alert"><h2>The globe could not start</h2><p id="error-message"></p><button id="reload" type="button">Reload</button></section>
+    </main>
+    <noscript>Earth Observer needs JavaScript enabled to display the globe.</noscript>
+    <script type="module" src="/src/bootstrap.js"></script>
+  </body>
 </html>

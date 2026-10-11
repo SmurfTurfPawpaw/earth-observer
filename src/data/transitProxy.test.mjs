@@ -36,10 +36,10 @@ test('route resolution admits only the catalog and registered feed ids', () => {
 
 test('upstream headers identify the proxy and carry feed-specific identification', () => {
   const plain = transitUpstreamHeaders(getTransitFeed('mbta'));
-  assert.match(plain['User-Agent'], /gods-eye-view-transit-proxy/);
+  assert.match(plain['User-Agent'], /earth-observer-transit-proxy/);
   assert.match(plain.Accept, /x-protobuf/);
   const entur = transitUpstreamHeaders(getTransitFeed('entur-norway'));
-  assert.equal(entur['ET-Client-Name'], 'gods-eye-view-transit');
+  assert.equal(entur['ET-Client-Name'], 'earth-observer-transit');
   assert.ok(transitUpstreamHeaders(null)['User-Agent']);
 });
 
@@ -288,7 +288,7 @@ test('conditional-request validators and gzip ride along with feed identificatio
   const entur = getTransitFeed('entur-norway');
   const plain = transitUpstreamHeaders(entur);
   assert.equal(plain['Accept-Encoding'], 'gzip');
-  assert.equal(plain['ET-Client-Name'], 'gods-eye-view-transit');
+  assert.equal(plain['ET-Client-Name'], 'earth-observer-transit');
   assert.equal('If-None-Match' in plain, false);
   const conditional = transitUpstreamHeaders(entur, {
     etag: 'W/"abc"',
@@ -299,7 +299,7 @@ test('conditional-request validators and gzip ride along with feed identificatio
     conditional['If-Modified-Since'],
     'Wed, 10 Sep 2026 12:00:00 GMT',
   );
-  assert.match(conditional['User-Agent'], /gods-eye-view/);
+  assert.match(conditional['User-Agent'], /earth-observer/);
 });
 
 test('retained routes validate the entire identifier and only MBTA is opted in', () => {

@@ -103,19 +103,6 @@ function hslRouteMode(routeId) {
 }
 
 /**
- * Metro Transit (Minneapolis–St Paul): light rail is the Blue/Green line
- * (route ids 901/902), Northstar commuter rail is 888.
- * @param {string|null} routeId
- * @returns {string}
- */
-function metroTransitRouteMode(routeId) {
-  if (!routeId) return 'unknown';
-  if (routeId === '901' || routeId === '902') return 'tram';
-  if (routeId === '888') return 'rail';
-  return 'bus';
-}
-
-/**
  * Registry of feeds. Order is presentation order in the stats/credit text.
  * `loadRadiusKm` is the distance from `center` inside which the feed is polled.
  * @type {ReadonlyArray<Readonly<{
@@ -170,26 +157,6 @@ export const TRANSIT_FEED_REGISTRY = Object.freeze([
     defaultMode: 'bus',
   }),
   Object.freeze({
-    id: 'metrotransit-msp',
-    name: 'Metro Transit',
-    operator: 'Metro Transit (Metropolitan Council)',
-    region: 'Minneapolis–St Paul, MN',
-    center: Object.freeze({ lat: 44.9778, lon: -93.265 }),
-    loadRadiusKm: 70,
-    url: 'https://svc.metrotransit.org/mtgtfs/vehiclepositions.pb',
-    license: 'Public Metro Transit vehicle position data',
-    licenseUrl: 'https://svc.metrotransit.org/',
-    attribution: 'Metro Transit — Metropolitan Council',
-    defaultEnabled: true,
-    terms: Object.freeze({
-      quote:
-        "Metro Transit's GTFS-realtime feeds are refreshed every 5 seconds.",
-      note: 'The realtime feed is published from a developer page carrying operational guidance and no licence text of its own. The public-domain statement below belongs to the Metropolitan Council metadata for the COMPANION SCHEDULE dataset, not to this feed: "None. This dataset is public domain under the Minnesota Government Data Practices Act". Credited as a courtesy, the way the other public agency feeds are.',
-    }),
-    defaultMode: 'bus',
-    routeMode: metroTransitRouteMode,
-  }),
-  Object.freeze({
     id: 'hsl-helsinki',
     name: 'HSL',
     operator: 'Helsinki Region Transport (HSL)',
@@ -203,7 +170,7 @@ export const TRANSIT_FEED_REGISTRY = Object.freeze([
     defaultEnabled: true,
     terms: Object.freeze({
       quote: null,
-      note: 'The open-data page refuses automated readers (HTTP 403, bot protection), so this entry rests on the owner opening it and accepting it rather than on a passage quoted here. HSL publishes its open data under CC BY 4.0 and asks to be credited as the source; the feed needs no key.',
+      note: 'HSL publishes its open API data under CC BY 4.0 and requires source attribution with the delivery time. The current official open-data page was verified on 2026-10-11; the feed needs no key.',
     }),
     defaultMode: 'bus',
     routeMode: hslRouteMode,
@@ -238,9 +205,9 @@ export const TRANSIT_FEED_REGISTRY = Object.freeze([
     center: Object.freeze({ lat: 64.0, lon: 11.5 }),
     loadRadiusKm: 720,
     url: 'https://api.entur.io/realtime/v1/gtfs-rt/vehicle-positions',
-    headers: Object.freeze({ 'ET-Client-Name': 'gods-eye-view-transit' }),
+    headers: Object.freeze({ 'ET-Client-Name': 'earth-observer-transit' }),
     license: 'Norwegian Licence for Open Government Data (NLOD)',
-    licenseUrl: 'https://developer.entur.org/pages-intro-authentication',
+    licenseUrl: 'https://developer.entur.no/terms-of-service',
     attribution: 'Entur — data under NLOD',
     defaultEnabled: true,
     terms: Object.freeze({
@@ -262,11 +229,11 @@ export const TRANSIT_FEED_REGISTRY = Object.freeze([
     license: 'CC BY 4.0',
     licenseUrl: 'https://translink.com.au/about-translink/open-data',
     attribution: 'TransLink — Queensland Government (CC BY 4.0)',
-    defaultEnabled: true,
+    defaultEnabled: false,
     terms: Object.freeze({
       quote:
         'Our data is licensed under a Creative Commons Attribution 4.0 International License. ... You must not represent that the State in any way endorses your Application.',
-      note: 'No key, no stated rate limit, no caching rule. Logos and network imagery need separate approval, so the credit is text only.',
+      note: 'Inactive until the deployment supplies current operator contact details, uses the realtime feed alongside GTFS schedules and includes the required disclaimer. See docs/DATA_POLICY.md.',
     }),
     defaultMode: 'bus',
   }),

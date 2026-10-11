@@ -42,32 +42,32 @@ test('a Vegvesen feature maps to a source on the pinned frame host', () => {
   assert.equal(source.snapshotUrl, source.url);
 });
 
-test('cameras that publish HLS get live video with the still as fallback', (t) => {
+test('cameras that publish HLS remain still-image sources in the hosted profile', (t) => {
   const video = {
     videoServiceLevel: 1,
     videoEncodingStandard: 'hls',
     videoUrl: 'https://kamera.vegvesen.no/public/3000063_1/manifest.m3u8',
   };
   const source = vegvesenCameraToSource(feature(video));
-  assert.equal(source.feedType, 'hls');
-  assert.equal(source.url, video.videoUrl);
+  assert.equal(source.feedType, 'image');
+  assert.equal(source.url, source.snapshotUrl);
   assert.equal(
     source.snapshotUrl,
     'https://kamera.atlas.vegvesen.no/api/images/3000063_1',
   );
-  // A manifest anywhere but the camera's own path stays a still.
+  // Video URLs, including off-host manifests, never enter the still catalog.
   const offPath = vegvesenCameraToSource(
     feature({ ...video, videoUrl: 'https://evil.test/x/manifest.m3u8' }),
   );
   assert.equal(offPath.feedType, 'image');
   assert.equal(offPath.url, offPath.snapshotUrl);
-  // The kill switch keeps every camera on stills.
+  // Legacy video configuration cannot restore the removed HLS integration.
   const saved = process.env.CCTV_VEGVESEN_VIDEO;
   t.after(() => {
     if (saved === undefined) delete process.env.CCTV_VEGVESEN_VIDEO;
     else process.env.CCTV_VEGVESEN_VIDEO = saved;
   });
-  process.env.CCTV_VEGVESEN_VIDEO = '0';
+  process.env.CCTV_VEGVESEN_VIDEO = '1';
   assert.equal(vegvesenCameraToSource(feature(video)).feedType, 'image');
 });
 
@@ -159,7 +159,7 @@ const runCatalog = async (t) => {
     }
     return Response.json([]);
   });
-  const sources = await createCctvCatalog({ sourceRoot: '/nonexistent' })();
+  const sources = await createCctvCatalog()();
   return { requested, sources };
 };
 

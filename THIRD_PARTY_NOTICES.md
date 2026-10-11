@@ -1,47 +1,17 @@
-# Third-party software notices
+# Third-party notices
 
-The project depends on third-party npm packages whose own licenses apply. This
-file records the packages added for the browser-local SDR feature and the
-Street Level viewer; the complete resolved dependency inventory remains in
-`package-lock.json`.
+The modified source retains Bilawal Sidhu's MIT copyright and grant in LICENSE.
+Third-party packages retain their own copyrights and licenses. The complete
+resolved inventory is in package-lock.json; installed package license files
+are authoritative and must accompany redistribution where required.
 
-## Web RTL-SDR
+- CesiumJS / @cesium/engine / @cesium/widgets: Apache-2.0.
+- satellite.js: MIT; satellite propagation algorithms derived from Vallado SGP4.
+- @mapbox/vector-tile and pbf: BSD-3-Clause.
+- @meri-imperiumi/eccodes-wasm: Apache-2.0; ECMWF ecCodes notices apply.
+- egm96-universal: MIT; geoid dataset notices apply.
+- Vite and vite-plugin-cesium: MIT (build dependencies).
 
-- Package: `@jtarrio/webrtlsdr` 3.0.6
-- Author: Jacobo Tarrio Barreiro; portions copyright Google Inc.
-- Source: <https://github.com/jtarrio/webrtlsdr>
-- License: Apache License 2.0
-- License text: <https://www.apache.org/licenses/LICENSE-2.0>
-
-## Signals
-
-- Package: `@jtarrio/signals` 0.10.1
-- Author: Jacobo Tarrio Barreiro
-- Source: <https://github.com/jtarrio/signals>
-- License: Apache License 2.0
-- License text: <https://www.apache.org/licenses/LICENSE-2.0>
-
-## MapillaryJS
-
-- Package: `mapillary-js` 4.1.2 (loaded on demand by the Street Level viewer,
-  with its stylesheet `dist/mapillary.css`)
-- Author: Copyright (c) Facebook, Inc. and its affiliates
-- Source: <https://github.com/mapillary/mapillary-js>
-- License: MIT
-- License text: <https://github.com/mapillary/mapillary-js/blob/main/LICENSE>
-
-## RxJS (MapillaryJS dependency)
-
-- Package: `rxjs` 7.8.2
-- Author: Google, Inc., Netflix, Inc., Microsoft Corp. and contributors
-- Source: <https://github.com/ReactiveX/rxjs>
-- License: Apache License 2.0
-- License text: <https://www.apache.org/licenses/LICENSE-2.0>
-
-## three.js (MapillaryJS dependency)
-
-- Package: `three` 0.134.0
-- Author: Copyright © 2010-2021 three.js authors
-- Source: <https://github.com/mrdoob/three.js>
-- License: MIT
-- License text: <https://github.com/mrdoob/three.js/blob/dev/LICENSE>
+Data credits and conditions are separate from software licenses; see
+docs/DATA_POLICY.md. Unused SDR, Mapillary, HLS, voice, model, and scene assets
+have been removed from this baseline.

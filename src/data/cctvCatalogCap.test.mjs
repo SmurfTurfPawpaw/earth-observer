@@ -8,7 +8,7 @@ import {
   CCTV_MAX_SOURCES_CEILING,
   DEFAULT_CCTV_MAX_SOURCES,
 } from '../../server/providers/cctv/constants.js';
-import { createCctvCatalog } from '../../server/providers/cctv/catalog.js';
+import { CCTV_PROVIDER_PACKS, createCctvCatalog } from '../../server/providers/cctv/catalog.js';
 
 const pack = (name, count, prefix = name) => ({
   name,
@@ -106,34 +106,35 @@ test('resolveCatalogCap bounds the env value and falls back to the default', () 
   assert.equal(resolveCatalogCap('120.9'), 120);
 });
 
-test('the catalog applies the fair cap to configured packs end to end', async () => {
+test('the catalog applies the fair cap to approved providers end to end', async (t) => {
   const saved = { ...process.env };
   try {
-    process.env.CCTV_PREFER_AUSTIN = '0';
-    process.env.CCTV_SOURCES_FILE = '/nonexistent/cctv.json';
-    process.env.CCTV_SOURCES_JSON = JSON.stringify(
-      Array.from({ length: 12 }, (_, i) => ({
-        id: `env-${i}`,
-        name: `Env ${i}`,
-        lat: 30 + i * 0.01,
-        lon: -97,
-        url: `https://example.test/${i}.jpg`,
-      })),
-    );
     process.env.CCTV_MAX_SOURCES = '9';
-    const getSources = createCctvCatalog({ sourceRoot: '/nonexistent' });
+    for (const pack of CCTV_PROVIDER_PACKS) {
+      const isDefault = ['fintraffic', 'nsw', 'calgary', 'vegvesen'].includes(pack.name);
+      process.env[`CCTV_${pack.name.toUpperCase()}_ENABLED`] = isDefault ? '1' : '0';
+      t.mock.method(pack, 'load', async () => Array.from({ length: 12 }, (_, i) => ({
+        id: `${pack.name}-${i}`, name: `${pack.name} ${i}`,
+        lat: 30 + i * 0.01, lon: -97,
+      })));
+    }
+    const getSources = createCctvCatalog();
     const sources = await getSources();
     assert.equal(sources.length, 9);
     assert.deepEqual(
-      sources.slice(0, 3).map((s) => s.id),
-      ['env-0', 'env-1', 'env-2'],
+      sources.slice(0, 4).map((s) => s.pack),
+      ['fintraffic', 'nsw', 'calgary', 'vegvesen'],
     );
-    assert.equal(sources[0].pack, 'env');
-    const [trimmed] = getSources.trimmedPacks();
     assert.deepEqual(
-      { ...trimmed, region: undefined },
-      { pack: 'env', available: 12, served: 9, region: undefined },
+      getSources.trimmedPacks().map(({ pack, available, served }) => ({ pack, available, served })),
+      [
+        { pack: 'fintraffic', available: 12, served: 3 },
+        { pack: 'nsw', available: 12, served: 2 },
+        { pack: 'calgary', available: 12, served: 2 },
+        { pack: 'vegvesen', available: 12, served: 2 },
+      ],
     );
+    const [trimmed] = getSources.trimmedPacks();
     assert.equal(trimmed.region.south, 30);
     assert.ok(Math.abs(trimmed.region.north - 30.11) < 1e-9);
   } finally {

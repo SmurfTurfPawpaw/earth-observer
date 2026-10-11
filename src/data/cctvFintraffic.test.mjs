@@ -183,7 +183,7 @@ test('Fintraffic loader identifies itself to Digitraffic and refuses redirects',
   );
 
   assert.equal(capture.url, FINTRAFFIC_STATIONS_URL);
-  assert.equal(capture.options.headers['Digitraffic-User'], 'gods-eye-view');
+  assert.equal(capture.options.headers['Digitraffic-User'], 'earth-observer');
   assert.equal(capture.options.headers['Accept-Encoding'], 'gzip');
   assert.equal(capture.options.redirect, 'manual');
   assert.ok(capture.options.signal instanceof AbortSignal);

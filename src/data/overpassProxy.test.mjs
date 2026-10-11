@@ -12,7 +12,7 @@ import {
   simplifyOverpassPayloadBody,
   isOverpassBoundaryQuery,
   resolveOverpassPreflight,
-} from '../../vite.config.js';
+} from '../../server/providers/overpass.js';
 
 test('preflight checks memory, in-flight, then disk before consuming limiter quota', async () => {
   const key = 'normalized query';

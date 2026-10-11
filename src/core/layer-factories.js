@@ -1,0 +1,152 @@
+/** Lazy adapters reuse the independent engines, never the old application/UI. */
+const CODE_LOADERS = {
+  aircraft: () => Promise.all([import('./aircraft.js'), import('../sources/live/aircraft.js')]),
+  weather: () => Promise.all([import('../layers/weather/index.js'), import('../layers/weather/source.js')]),
+  wind: () => Promise.all([import('../layers/wind/index.js'), import('../layers/wind/source.js')]),
+  cyclones: () => Promise.all([import('../layers/cyclones/index.js'), import('../layers/cyclones/source.js')]),
+  earthquakes: () => Promise.all([import('../layers/earthquakes/index.js'), import('../layers/earthquakes/source.js')]),
+  perimeters: () => Promise.all([import('../app/layers/perimeters.js'), import('../layers/perimeters/source.js')]),
+  imagery: () => Promise.all([import('../app/layers/recentImagery.js'), import('../layers/recentImagery/source.js')]),
+  satellites: () => Promise.all([import('../app/layers/satellites.js'), import('../layers/satellites/source.js')]),
+  launches: () => Promise.all([import('./launches.js'), import('../layers/launches/source.js')]),
+  bikeshare: () => Promise.all([import('../app/layers/bikeshare.js'), import('../layers/bikeshare/source.js')]),
+  transit: () => Promise.all([import('./transit.js')]),
+  cctv: () => Promise.all([import('./cctv.js')]),
+  installations: () => Promise.all([import('../app/layers/militaryInstallations.js'), import('../layers/installations/source.js'), import('../sources/openFreeMap.js')]),
+  alpr: () => Promise.all([import('../app/layers/alprCameras.js'), import('../layers/alpr/source.js')]),
+  firms: () => Promise.all([import('./firms.js'), import('../layers/firms/source.js')]),
+  infrastructure: () => Promise.all([import('./infrastructure.js'), import('../sources/infrastructureData.js')]),
+};
+const GROUPS = {
+  flights: 'aircraft', military: 'aircraft', 'weather-radar': 'weather', 'weather-satellite': 'weather',
+  'weather-lightning': 'weather', wind: 'wind', 'weather-cyclones': 'cyclones', earthquakes: 'earthquakes',
+  'fire-perimeters': 'perimeters', 'recent-imagery': 'imagery', satellites: 'satellites',
+  'rocket-launches': 'launches', bikeshare: 'bikeshare', transit: 'transit', cctv: 'cctv',
+  'military-installations': 'installations', 'alpr-cameras': 'alpr', 'local-firms': 'firms',
+  'local-datacenters': 'infrastructure', 'local-dams': 'infrastructure',
+};
+const SERVICE_REQUIREMENTS = {
+  weather: ['weatherClock'], wind: ['weatherClock'], cyclones: ['overlayHost'], earthquakes: ['overlayHost'],
+  perimeters: ['overlayHost'], imagery: ['render'], satellites: ['overlayHost', 'render'],
+  bikeshare: ['overlayHost', 'render'], installations: ['surface', 'overlayHost', 'render'],
+  alpr: ['surface', 'overlayHost', 'render'],
+};
+const codeCache = new Map();
+export const layerServiceRequirements = (id) => SERVICE_REQUIREMENTS[GROUPS[id]] || [];
+
+/** Code-only warm-up: imports neither construct a layer nor request its dataset. */
+export function preloadLayer(id) {
+  const group = GROUPS[id];
+  if (!group) return Promise.reject(new Error(`Unknown layer: ${id}`));
+  if (!codeCache.has(group)) codeCache.set(group, CODE_LOADERS[group]().catch((error) => {
+    codeCache.delete(group); throw error;
+  }));
+  return codeCache.get(group);
+}
+
+function aircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities }) {
+  const endpoint = military ? '/api/military' : '/api/flights';
+  const read = async (query = {}, { signal } = {}) => {
+    const params = new URLSearchParams();
+    if (!military && Number.isFinite(query.latitude) && Number.isFinite(query.longitude)) {
+      params.set('lat', query.latitude.toFixed(4));
+      params.set('lon', query.longitude.toFixed(4));
+    }
+    const response = await fetchImpl(`${endpoint}${params.size ? '?' + params : ''}`, { signal });
+    if (!response.ok) throw new Error(`adsb.lol HTTP ${response.status}`);
+    return { response, payload: await response.json() };
+  };
+  return {
+    label: 'adsb.lol',
+    async getSnapshot(query, options) {
+      const { response, payload } = await read(query, options);
+      const now = Date.now();
+      const upstreamTime = Number(payload?.now);
+      const upstreamMs = Number.isFinite(upstreamTime) && upstreamTime > 0 ? upstreamTime * (upstreamTime < 100000000000 ? 1000 : 1) : null;
+      const receivedAt = now - Math.max(0, Number(response.headers.get('x-feed-age-ms')) || 0);
+      const observedAtMs = upstreamMs !== null && upstreamMs <= now + 10000 ? Math.min(upstreamMs, receivedAt) : receivedAt;
+      return { ...readsbSnapshot(payload, {
+        source: 'adsb.lol', now,
+        coverage: military ? 'military receiver snapshot' : 'bounded view near the requested coordinates',
+        observedAtMs,
+        stale: response.headers.get('x-feed-cache') === 'STALE' || now - observedAtMs > 120000,
+      }), status: response.status };
+    },
+    async getIdentities(query, options) { return readsbIdentities((await read(query, options)).payload); },
+    async getTrack() { return { records: [], complete: false }; },
+    async getEnrichment() { return null; },
+  };
+}
+
+export async function createLayer(id, { services = {}, fetchImpl }) {
+  const { surface, weatherClock, overlayHost } = services;
+  const modules = await preloadLayer(id);
+  if (id === 'flights' || id === 'military') {
+    const military = id === 'military';
+    const [engine, normalizers] = modules;
+    return engine.createObservedAircraftLayer({ id, source: aircraftSource(fetchImpl, military, normalizers) });
+  }
+  if (id.startsWith('weather-') && id !== 'weather-cyclones') {
+    const [engine, source] = modules;
+    return engine.createWeatherLayer({ id, clock: weatherClock, feed: source.createWeatherSource({ fetchImpl }) });
+  }
+  if (id === 'wind') {
+    const [engine, source] = modules;
+    return engine.createWindLayer({ clock: weatherClock, feed: source.createWindSource({ fetchImpl }) });
+  }
+  if (id === 'weather-cyclones') {
+    const [engine, source] = modules;
+    return engine.createCyclonesLayer({ overlayHost, feed: source.createCycloneSource({ fetchImpl }) });
+  }
+  if (id === 'earthquakes') {
+    const [engine, source] = modules;
+    return engine.createEarthquakesLayer({ overlayHost, source: source.createUsgsEarthquakeSource({ fetchImpl }) });
+  }
+  if (id === 'fire-perimeters') {
+    const [adapter, source] = modules;
+    return adapter.createApplicationFirePerimeters({ overlayHost, source: source.createWfigsPerimeterSource({ fetchImpl }) });
+  }
+  if (id === 'recent-imagery') {
+    const [adapter, source] = modules;
+    return adapter.createApplicationRecentImagery({ source: source.createRecentImagerySource({ fetchImpl }) });
+  }
+  if (id === 'satellites') {
+    const [adapter, source] = modules;
+    return adapter.createApplicationSatellites({ source: source.createSatelliteSource({ fetchImpl }) });
+  }
+  if (id === 'rocket-launches') {
+    const [engine, source] = modules;
+    return engine.createLaunchSitesLayer({ source: source.createLaunchSource({ fetchImpl }) });
+  }
+  if (id === 'bikeshare') {
+    const [adapter, source] = modules;
+    return adapter.createApplicationBikeshare({ source: source.createBikeshareSource({ fetchImpl }) });
+  }
+  if (id === 'transit') {
+    const [{ createObservedTransitLayer }] = modules;
+    return createObservedTransitLayer({ fetchImpl });
+  }
+  if (id === 'cctv') {
+    const [{ createCamerasLayer }] = modules;
+    return createCamerasLayer({ fetchImpl });
+  }
+  if (id === 'military-installations') {
+    const [adapter, source, tiles] = modules;
+    const feed = source.createInstallationSource({ fetchImpl, mapTiles: tiles.createOpenFreeMapSource({ fetchImpl }) });
+    feed.searchNearby = async () => ({ records: [], status: 'unavailable', reason: 'Places search is not configured' });
+    return adapter.createApplicationInstallations({ surface, source: feed });
+  }
+  if (id === 'alpr-cameras') {
+    const [adapter, source] = modules;
+    return adapter.createApplicationAlpr({ surface, source: source.createAlprTileSource({ tileFetchImpl: fetchImpl }) });
+  }
+  if (id === 'local-firms') {
+    const [engine, source] = modules;
+    return engine.createFireDetectionsLayer({ source: source.createFirmsSource({ fetchImpl }) });
+  }
+  if (id === 'local-datacenters' || id === 'local-dams') {
+    const [engine, source] = modules;
+    return engine.createInfrastructureLayer({ id, source: source.createInfrastructureSource({ fetchImpl }) });
+  }
+  throw new Error(`Unknown layer: ${id}`);
+}

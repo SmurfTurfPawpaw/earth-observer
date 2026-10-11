@@ -20,7 +20,6 @@ import {
   fetchOverpassPayload,
   overpassNotConfigured,
 } from './overpass/transport.js';
-import { installRouteMiddleware } from './places/routes.js';
 
 /** @type {Map<string,Promise>} In-flight Overpass requests keyed by normalized query body. */
 const _overpassInFlight = new Map();
@@ -68,7 +67,7 @@ function sendOverpassResponse(res, payload, cacheStatus = 'MISS') {
  *
  * @returns {import('vite').Plugin}
  */
-function overpassProxy({ routing = {} } = {}) {
+function overpassProxy() {
   const installMiddleware = (server) => {
     server.middlewares.use('/api/overpass', async (req, res) => {
       // Hoisted out of the try so the catch's serve-stale lookup can see it
@@ -231,7 +230,6 @@ function overpassProxy({ routing = {} } = {}) {
       }
     });
 
-    installRouteMiddleware(server.middlewares, routing);
   };
   return {
     name: 'overpass-proxy',

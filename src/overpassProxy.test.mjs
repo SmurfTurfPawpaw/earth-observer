@@ -11,7 +11,7 @@ import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import createViteConfig, { fetchOverpassPayload, overpassPayloadIsData, readOverpassDisk } from '../vite.config.js';
+import { overpassProxy, fetchOverpassPayload, overpassPayloadIsData, readOverpassDisk } from '../server/providers/overpass.js';
 
 const DATA = { status: 200, body: '{"elements":[]}' };
 
@@ -66,7 +66,7 @@ test('configured failover accepts empty data and keeps the application identity'
     endpoints,
     fetchImpl: async (url, options) => {
       seen.push(url);
-      assert.equal(options.headers['User-Agent'], 'gods-eye-view/0.1 (+https://github.com/bilawalsidhu/gods-eye-view)');
+      assert.equal(options.headers['User-Agent'], 'earth-observer/1.0 (+https://github.com/SmurfTurfPawpaw/earth-observer)');
       assert.equal(options.redirect, 'error');
       return new Response(seen.length === 1 ? url : DATA.body, { status: seen.length === 1 ? 406 : 200 });
     },
@@ -126,7 +126,7 @@ test('production reader rejects oversized, malformed and runtime-failure bodies'
 });
 
 function proxyHandler() {
-  const plugin = createViteConfig({ mode: 'test' }).plugins.find(p => p.name === 'overpass-proxy');
+  const plugin = overpassProxy();
   const routes = new Map();
   plugin.configureServer({ middlewares: { use: (route, handler) => routes.set(route, handler) } });
   return routes.get('/api/overpass');

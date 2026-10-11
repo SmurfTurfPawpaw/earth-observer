@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+.env
+.env.*
+.cache
+.gev-cache
+*.log
+qa-artifacts
+screenshots
