@@ -30,7 +30,9 @@ function showError(error) {
   document.getElementById('loading').hidden = true;
   document.getElementById('error').hidden = false;
   const detail = error?.message || String(error);
-  document.getElementById('error-message').textContent = typeof error?.code === 'string' && error.code.startsWith('EARTH_WEBGL_') ? detail : /webgl|context|gpu/i.test(detail)
+  const graphicsInterrupted = typeof error?.code === 'string' && error.code.startsWith('EARTH_WEBGL_');
+  document.querySelector('#error h2').textContent = graphicsInterrupted ? 'Map rendering interrupted' : 'The globe could not start';
+  document.getElementById('error-message').textContent = graphicsInterrupted ? detail : /webgl|context|gpu/i.test(detail)
     ? 'WebGL could not initialize. Enable hardware acceleration in your browser, then reload. You can also try another browser.'
     : `The browser could not initialize the globe. ${detail}`;
   console.error('Earth Observer:', error);

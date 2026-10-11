@@ -29,10 +29,12 @@ export async function showSavedScene(store = createBrowserStore()) {
     target.hidden = false;
   } catch { /* A saved image is optional, never a startup dependency. */ }
 }
-export function installScenePreview(viewer, { store, cameraView, getState }) {
-  let wanted = true, lastSave = 0, capturing = false, stopped = false;
+export function installScenePreview(viewer, { store, cameraView, getState,
+  setTimeoutImpl = globalThis.setTimeout, clearTimeoutImpl = globalThis.clearTimeout }) {
+  let wanted = true, lastSave = 0, capturing = false, stopped = false, revealTimer;
   const preview = document.getElementById('scene-preview');
   const hide = () => {
+    if (revealTimer !== undefined) { clearTimeoutImpl(revealTimer); revealTimer = undefined; }
     if (liveSceneReady) return;
     liveSceneReady = true;
     if (preview) preview.hidden = true;
@@ -41,9 +43,12 @@ export function installScenePreview(viewer, { store, cameraView, getState }) {
   const moveStart = viewer.camera.moveStart.addEventListener(hide);
   const move = viewer.camera.moveEnd.addEventListener(() => { wanted = true; hide(); });
   const post = viewer.scene.postRender.addEventListener(() => {
-    // A rendered partial globe is usable. Waiting for every tile could leave a
-    // stale opaque preview covering the live scene indefinitely on a slow link.
-    hide();
+    // A first frame may contain only the globe's base color. Keep the labeled
+    // saved view until tiles settle, but reveal incomplete/offline coverage soon.
+    if (!liveSceneReady) {
+      if (viewer.scene.globe.tilesLoaded) hide();
+      else if (revealTimer === undefined) revealTimer = setTimeoutImpl(hide, 2500);
+    }
     if (stopped || capturing || !wanted || !viewer.scene.globe.tilesLoaded || Date.now() - lastSave < 10000) return;
     // Complex registered notices are shown only by their live renderer, never flattened into an image.
     const state = getState();
@@ -62,6 +67,10 @@ export function installScenePreview(viewer, { store, cameraView, getState }) {
       }, 'image/jpeg', .75);
     } catch { capturing = false; }
   });
-  viewer.canvas.addEventListener('pointerdown', hide, { passive: true });
-  return () => { stopped = true; moveStart(); move(); post(); hide(); viewer.canvas.removeEventListener('pointerdown', hide); };
+  const inputEvents = ['pointerdown', 'wheel', 'keydown'];
+  for (const name of inputEvents) document.addEventListener(name, hide, { capture: true, passive: true });
+  return () => {
+    stopped = true; moveStart(); move(); post(); hide();
+    for (const name of inputEvents) document.removeEventListener(name, hide, { capture: true });
+  };
 }
