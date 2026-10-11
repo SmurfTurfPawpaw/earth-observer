@@ -2,7 +2,8 @@ export const DISCOVERY_INDEX_SCHEMA_VERSION = 1;
 export const DISCOVERY_INDEX_MAX_RECORDS = 600;
 export const DISCOVERY_INDEX_MAX_BYTES = 2 * 1024 * 1024;
 export const DISCOVERY_INDEX_NOTE = 'Search covers only retained metadata: titles or generated topic labels, reviewed topics, publishers and explicitly attributed country fields. It does not search article text or establish complete coverage, an incident location, confidence or truth.';
-const DAY = 86400000, SOURCE_IDS = new Set(['gdelt', 'usgs', 'gdacs']);
+const DAY = 86400000, SOURCE_IDS = new Set(['gdelt', 'usgs', 'gdacs', 'eonet']);
+const EONET_CATEGORIES = { wildfires: 'Wildfires', severeStorms: 'Severe Storms', volcanoes: 'Volcanoes' };
 const CATEGORY_NAMES = { geopolitics: 'Geopolitics', economy: 'Economics and trade', disasters: 'Disasters' };
 const CATEGORIES = Object.keys(CATEGORY_NAMES);
 // Kept in sync with the reviewed GKG taxonomy by a primary-contract test.
@@ -38,7 +39,7 @@ const tokens = (value) => fold(value).match(/[\p{L}\p{N}]+/gu) || [];
 const stamp = (value) => { const at = value && Date.parse(value); return Number.isFinite(at) ? new Date(at).toISOString() : null; };
 const time = (value) => Number.isFinite(value) ? value : Date.parse(value || '');
 const identity = (record) => `${record.kind}\n${record.url}`;
-const recordTime = (record) => time(record.publishedAt || record.observedAt || record.indexedAt || record.updatedAt || record.retrievedAt) || 0;
+const recordTime = (record) => time(record.kind === 'curated-event' ? record.sourceGeometryAt || record.closedAt || record.retrievedAt : record.publishedAt || record.observedAt || record.indexedAt || record.updatedAt || record.retrievedAt) || 0;
 function countryInfo(code) {
   if (typeof code !== 'string' || !/^[A-Z]{2}$/.test(code) || ['ZZ', 'EU', 'UN', 'QO', 'XA', 'XB'].includes(code)) return null;
   let name; try { name = NAMES?.of(code); } catch {}
@@ -55,18 +56,24 @@ export function canonicalDiscoveryUrl(value) {
   } catch { return null; }
 }
 
-/** Whitelisted source metadata only; never retains bodies, images or topic-mention coordinates. */
+/** Whitelisted source metadata only; curated events and topic mentions never retain incident coordinates. */
 export function canonicalDiscoveryRecord(value) {
   if (!value || typeof value !== 'object' || !SOURCE_IDS.has(value.sourceId)) return null;
   const url = canonicalDiscoveryUrl(value.url); if (!url) return null;
-  const kind = value.kind === 'topic-mention' ? 'topic-mention' : value.sourceId === 'gdelt' ? 'article-link' : 'hazard-report';
+  const curated = value.sourceId === 'eonet';
+  if (curated && (value.kind !== 'curated-event' || value.category !== 'disasters' ||
+    [value.publishedAt, value.observedAt, value.indexedAt, value.updatedAt, value.publisherCountry].some((item) => item != null) ||
+    !/^https:\/\/eonet\.gsfc\.nasa\.gov\/api\/v3\/events\/EONET_\d{1,16}$/.test(url))) return null;
+  const kind = curated ? 'curated-event' : value.kind === 'topic-mention' ? 'topic-mention' : value.sourceId === 'gdelt' ? 'article-link' : 'hazard-report';
+  if (!curated && value.kind === 'curated-event') return null;
   if (kind === 'topic-mention' && (value.sourceId !== 'gdelt' || value.publishedAt != null || value.observedAt != null)) return null;
-  const themes = [...new Set((Array.isArray(value.themes) ? value.themes : []).filter((code) => Object.hasOwn(DISCOVERY_REVIEWED_TOPICS, code)))].sort();
+  const themes = curated ? [] : [...new Set((Array.isArray(value.themes) ? value.themes : []).filter((code) => Object.hasOwn(DISCOVERY_REVIEWED_TOPICS, code)))].sort();
   if (kind === 'topic-mention' && !themes.length) return null;
   const categories = [...new Set([value.category, ...(Array.isArray(value.categories) ? value.categories : []),
     ...(kind === 'topic-mention' ? themes.map((code) => DISCOVERY_REVIEWED_TOPICS[code][0]) : [])])].filter((category) => CATEGORIES.includes(category)).sort((a, b) => CATEGORIES.indexOf(a) - CATEGORIES.indexOf(b));
   if (!categories.length) return null;
   const category = categories.includes(value.category) ? value.category : categories[0], publisher = new URL(url).hostname.replace(/^www\./, '');
+  if (curated && (categories.length !== 1 || category !== 'disasters')) return null;
   const reviewedTopics = [...new Set(themes.map((code) => DISCOVERY_REVIEWED_TOPICS[code][1]))];
   const title = kind === 'topic-mention' ? `Topic mention · ${themes.filter((code) => DISCOVERY_REVIEWED_TOPICS[code][0] === category).map((code) => DISCOVERY_REVIEWED_TOPICS[code][1]).slice(0, 3).join(', ')}` : text(value.title);
   if (!title) return null;
@@ -74,9 +81,9 @@ export function canonicalDiscoveryRecord(value) {
     source: text(value.source, 253) || publisher, publisher, category, categories, themes, reviewedTopics,
     mentionedCountries: kind === 'topic-mention' ? countries(value.mentionedCountries) : [],
     countries: kind === 'hazard-report' ? countries(value.countries) : [],
-    publishedAt: kind === 'topic-mention' ? null : stamp(value.publishedAt), observedAt: kind === 'topic-mention' ? null : stamp(value.observedAt),
-    indexedAt: stamp(value.indexedAt), updatedAt: kind === 'topic-mention' ? null : stamp(value.updatedAt), retrievedAt: stamp(value.retrievedAt),
-    publisherCountry: kind === 'topic-mention' ? null : text(value.publisherCountry, 80) || null,
+    publishedAt: kind === 'topic-mention' || curated ? null : stamp(value.publishedAt), observedAt: kind === 'topic-mention' || curated ? null : stamp(value.observedAt),
+    indexedAt: curated ? null : stamp(value.indexedAt), updatedAt: kind === 'topic-mention' || curated ? null : stamp(value.updatedAt), retrievedAt: stamp(value.retrievedAt),
+    publisherCountry: kind === 'topic-mention' || curated ? null : text(value.publisherCountry, 80) || null,
     verification: text(value.verification, 400), timeMeaning: text(value.timeMeaning, 250), relatedReports: [] };
   for (const key of ['aggregator', 'language', ...(kind === 'topic-mention' ? ['batch'] : []), ...(kind === 'hazard-report' ? ['country', 'eventType', 'reviewStatus', 'alertLevel', 'measurementSource'] : [])]) if (text(value[key], 120)) record[key] = text(value[key], 120);
   const aggregatorUrl = canonicalDiscoveryUrl(value.aggregatorUrl); if (aggregatorUrl) record.aggregatorUrl = aggregatorUrl;
@@ -84,6 +91,17 @@ export function canonicalDiscoveryRecord(value) {
     if (Number.isFinite(value.lat) && Number.isFinite(value.lon) && Math.abs(value.lat) <= 90 && Math.abs(value.lon) <= 180) { record.lat = value.lat; record.lon = value.lon; }
     if (Number.isFinite(value.magnitude)) record.magnitude = value.magnitude;
     if (stamp(value.eventEndAt)) record.eventEndAt = stamp(value.eventEndAt);
+  }
+  if (curated) {
+    record.eventId = url.split('/').at(-1);
+    record.sourceGeometryAt = stamp(value.sourceGeometryAt); record.closedAt = stamp(value.closedAt);
+    record.eonetCategories = [...new Set((Array.isArray(value.eonetCategories) ? value.eonetCategories : []).map((item) => item?.id))]
+      .filter((id) => Object.hasOwn(EONET_CATEGORIES, id)).map((id) => Object.freeze({ id, title: EONET_CATEGORIES[id] }));
+    record.referencedSources = (Array.isArray(value.referencedSources) ? value.referencedSources : []).slice(0, 4).flatMap((item) => {
+      const referenceUrl = canonicalDiscoveryUrl(item?.url), id = text(item?.id, 80);
+      return referenceUrl && id ? [Object.freeze({ id, url: referenceUrl })] : [];
+    });
+    if (!record.eonetCategories.length) return null;
   }
   return record;
 }
@@ -103,6 +121,8 @@ function fieldsFor(record) {
   for (const code of record.mentionedCountries) { const info = countryInfo(code); add('Country mentioned', `${info.name} (${code})`, 5, info.aliases.join(' ')); }
   for (const code of record.countries) { const info = countryInfo(code); add('Reported country', `${info.name} (${code})`, 5, info.aliases.join(' ')); }
   add('Reported country name', record.country, 5); add('Publisher domain', record.publisher, 3); add('Publisher country', record.publisherCountry, 3);
+  for (const item of record.eonetCategories || []) add('EONET category', item.title, 5);
+  for (const item of record.referencedSources || []) add('Referenced source', item.id, 2);
   add('Source', record.source); for (const category of record.categories) add('Category', CATEGORY_NAMES[category], 2, `${category} ${CATEGORY_NAMES[category]}`);
   return fields;
 }
@@ -183,7 +203,7 @@ export function createDiscoveryIndex({ now = Date.now, maxRecords = DISCOVERY_IN
   function replacePayload(payload) {
     if (!Array.isArray(payload?.indexRecords) || payload.indexCoverage?.schemaVersion !== DISCOVERY_INDEX_SCHEMA_VERSION || !Array.isArray(payload.indexCoverage.sources)) throw new TypeError('The metadata index payload is invalid');
     let changed = false;
-    for (const source of payload.indexCoverage.sources.slice(0, 3)) changed = replaceSource({ ...source, records: payload.indexRecords.filter((record) => record.sourceId === source.id) }) || changed;
+    for (const source of payload.indexCoverage.sources.slice(0, SOURCE_IDS.size)) changed = replaceSource({ ...source, records: payload.indexRecords.filter((record) => record.sourceId === source.id) }) || changed;
     return changed;
   }
   function search({ q = '', category = 'all', country = '', limit = 80 } = {}) {
@@ -205,7 +225,7 @@ export function createDiscoveryIndex({ now = Date.now, maxRecords = DISCOVERY_IN
       rows.push({ record: category === 'all' ? entry.record : { ...entry.record, category,
         ...(entry.record.kind === 'topic-mention' ? { title: `Topic mention · ${entry.record.themes.filter((code) => DISCOVERY_REVIEWED_TOPICS[code][0] === category).map((code) => DISCOVERY_REVIEWED_TOPICS[code][1]).slice(0, 3).join(', ')}` } : {}) }, relevance, reasons: [...new Set(reasons)] });
     }
-    const kindOrder = { 'hazard-report': 0, 'article-link': 1, 'topic-mention': 2 };
+    const kindOrder = { 'hazard-report': 0, 'curated-event': 1, 'article-link': 2, 'topic-mention': 3 };
     rows.sort((a, b) => b.relevance - a.relevance || recordTime(b.record) - recordTime(a.record) || kindOrder[a.record.kind] - kindOrder[b.record.kind] || a.record.url.localeCompare(b.record.url));
     limit = Math.max(0, Math.min(DISCOVERY_INDEX_MAX_RECORDS, Math.floor(Number(limit) || 0)));
     const selected = limit ? diversified(rows, limit) : [];

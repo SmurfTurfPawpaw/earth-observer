@@ -12,6 +12,16 @@ function environment(fetchImpl) {
 }
 const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 
+test('curated metadata uses its source-date labels and cannot expose an incident-navigation action', () => {
+  const detail = intelligenceReportDetails({ kind: 'curated-event', source: 'NASA EONET',
+    sourceGeometryAt: '2021-01-01T00:00:00Z', closedAt: '2026-10-10T00:00:00Z', retrievedAt: '2026-10-11T00:00:00Z',
+    lat: 50, lon: 4, publishedAt: '2026-10-11T00:00:00Z' });
+  assert.equal(detail.curated, true); assert.equal(detail.canNavigate, false);
+  assert.match(detail.source, /curated event metadata/);
+  assert.deepEqual(detail.dates.map(([label]) => label), ['EONET geometry date', 'EONET closed date', 'Retrieved']);
+  assert.equal(detail.dates[0][1], '2021-01-01T00:00:00Z');
+});
+
 test('only an opened visible panel fetches, cache survives close, and refresh timers use the remaining freshness interval', async () => {
   let requests = 0;
   const env = environment(async () => { requests++; return Response.json(payload); });

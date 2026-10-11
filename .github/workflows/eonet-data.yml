@@ -1,0 +1,61 @@
+name: Refresh curated EONET metadata
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: intelligence-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    if: github.repository == 'SmurfTurfPawpaw/earth-observer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EONET_OUTPUT: .cache/intelligence-snapshots
+      EONET_RETRY_STATE: .cache/eonet-state/acquisition.json
+      NODE_OPTIONS: --max-old-space-size=256
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/cache/restore@v4
+        with:
+          path: .cache/eonet-state
+          key: eonet-acquisition-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: eonet-acquisition-${{ runner.os }}-
+      - name: Check curated snapshot and acquisition contracts
+        run: node --test server/hosted/eonet-snapshot*.test.mjs scripts/eonet-snapshot.test.mjs
+      - name: Acquire one fixed bounded EONET metadata sample
+        id: generate
+        run: node scripts/eonet-snapshot.mjs "$EONET_OUTPUT"
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .cache/eonet-state
+          key: eonet-acquisition-${{ runner.os }}-${{ github.run_id }}
+      - name: Preserve last-good metadata when upstream is unavailable
+        if: steps.generate.outputs.status == 'skipped'
+        run: echo 'No EONET asset is replaced during provider backoff or invalid/incomplete acquisition.'
+      - name: Publish this separate bounded metadata asset
+        if: steps.generate.outputs.status == 'generated'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view intelligence-data --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release create intelligence-data --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false \
+              --title 'Latest discovery metadata' \
+              --notes 'Bounded independently dated discovery metadata assets. Each asset documents its source, sample limits, retrieval and date meanings. Linked publisher text, images and attachments are not collected.'
+          fi
+          gh release upload intelligence-data "$EONET_OUTPUT/eonet.snapshot.json" --repo "$GH_REPO" --clobber

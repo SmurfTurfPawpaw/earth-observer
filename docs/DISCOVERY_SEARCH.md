@@ -11,6 +11,7 @@ Every query term must match a metadata field. Text is normalized for case and ac
 - Original titles where the source supplies them, or explicitly generated GKG topic labels.
 - Every reviewed GKG topic label, including topics omitted from a compact label's first three items.
 - Publisher domains, source names and categories.
+- Reviewed EONET category titles and referenced-source IDs, with explicit curated-event provenance.
 - Countries mentioned in GKG articles, countries reported by GDACS, and separately identified publisher countries where supplied.
 
 Country names and aliases are indexed alongside their two-letter codes. `Ukraine sanctions` can therefore match a GKG record with `mentionedCountries: ["UA"]` and the reviewed `SANCTIONS` theme. Its `matchReasons` identify both metadata fields. A country filter accepts a GKG mention or an official reported-country tag; publisher country does not become an incident-country filter. Legacy title-only records can match a country name in their title, accompanied by an explicit explanation that no authoritative incident-country tag was supplied.
@@ -19,7 +20,7 @@ Ordering uses the strongest metadata field match for each term, then the source 
 
 ## Bounds, identity and expiry
 
-The reusable index retains at most 600 unique records and 2 MiB of serialized canonical record JSON. These limits describe the records, not total JavaScript heap size. The hosted API uses a tighter 440-record ceiling: up to 240 GDELT category records, 100 USGS reports and 100 GDACS reports before canonical deduplication. Only acquired sources are present; those maxima are not claims of actual coverage. The default display remains bounded to 80 grouped reports.
+The reusable index retains at most 600 unique records and 2 MiB of serialized canonical record JSON. These limits describe the records, not total JavaScript heap size. The hosted API uses a tighter 500-record ceiling: up to 240 GDELT category records, 100 USGS reports, 100 GDACS reports and 60 EONET references before canonical deduplication. Only acquired sources are present; those maxima are not claims of actual coverage. The default display remains bounded to 80 grouped reports.
 
 Identity is a safe canonical HTTP(S) URL plus record kind. Fragments and recognized tracking parameters are removed. Same-batch topic records for a URL merge reviewed topics, categories and country mentions. A newer batch replaces older mentions rather than attaching a newer timestamp to the older metadata. Topic records retain `publishedAt: null`, `observedAt: null` and no coordinates. Hazard reports preserve their source-provided dates and coordinates. Unused bodies, images and arbitrary fields are discarded.
 
@@ -35,7 +36,7 @@ Each source supplies a generation, expiry, status and coverage note. GKG records
     "schemaVersion": 1,
     "recordCount": 156,
     "byteLength": 175908,
-    "maxRecords": 440,
+    "maxRecords": 500,
     "maxBytes": 2097152,
     "omittedRecords": 0,
     "sources": ["id, generation, expiresAt, status, coverage, recordCount"],
@@ -50,4 +51,6 @@ The numeric `indexVersion` is local to the index instance. Source generation and
 
 An actual previously retrieved GKG snapshot generated at `2026-10-11T08:47:34.825Z` contained 202 category records. Offline indexing merged these to 156 unique URL/kind records, preserving 73 publisher domains and 79 distinct mentioned countries in 175,908 serialized bytes. `Ukraine` matched six records, `Ukraine trade` four, and `Belgium` one. These counts describe this one bounded sample, not the number of news stories or incidents in those countries. The trace `.qa/discovery-index-real-fixture.json` records evaluation time, method and exact match explanations; no additional network acquisition or browser behavior was claimed.
 
-Focused tests cover country aliases and field roles, all-term matching, the reviewed taxonomy, canonical identity, source-generation replacement, individual batch expiry, size caps, ordering/diversity, full 440-candidate API capacity, shared acquisition across queries, controlled fallback reuse and relevance after grouping. The GKG sampler additionally revisits quota-skipped rows under progressively relaxed country/publisher quotas, so eligible single-record publishers can fill the existing 80-record cap without duplicating or creating records.
+Focused tests cover country aliases and field roles, all-term matching, the reviewed taxonomy, canonical identity, source-generation replacement, individual batch expiry, size caps, ordering/diversity, the full 500-candidate four-source API capacity, shared acquisition across queries, controlled fallback reuse and relevance after grouping. The GKG sampler additionally revisits quota-skipped rows under progressively relaxed country/publisher quotas, so eligible single-record publishers can fill the existing 80-record cap without duplicating or creating records.
+
+EONET's `curated-event` kind preserves latest source geometry/closed dates and original retrieval, with no publication/event timestamp, incident country or coordinates. Its reviewed references do not group with hazards or headlines as independent confirmation. A country or non-disaster filter leaves the acquired global EONET generation intact but omits those records from matching views. The separate dated primary-record context uses its own local filter and does not enter the live discovery index or grouped counts.

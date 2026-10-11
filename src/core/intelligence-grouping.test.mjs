@@ -9,6 +9,15 @@ const row = (id, values = {}) => ({ id, sourceId: 'gdelt', source: `${id}.exampl
   category: 'economy', title: 'Regional port trade negotiations resume', indexedAt: new Date(NOW).toISOString(),
   retrievedAt: new Date(NOW + 1000).toISOString(), verification: 'Publisher report; claims unverified', relatedReports: [], ...values });
 
+test('curated events keep their source dates and never become related confirmation through a shared reference or headline', () => {
+  const ordinary = row('gdacs', { category: 'disasters', observedAt: new Date(NOW).toISOString() });
+  const curated = row('eonet', { sourceId: 'eonet', kind: 'curated-event', category: 'disasters',
+    sourceGeometryAt: new Date(NOW).toISOString(), indexedAt: null, observedAt: null, referencedSources: [{ id: 'GDACS', url: ordinary.url }] });
+  const groups = groupReports([ordinary, curated]);
+  assert.equal(groups.length, 2); assert.deepEqual(groups.map((item) => item.relatedReports), [[], []]);
+  assert.equal(groups.find((item) => item.sourceId === 'eonet').sourceGeometryAt, curated.sourceGeometryAt);
+});
+
 test('legacy server exports are the shared implementation and retain caution wording', () => {
   assert.equal(serverGrouping, groupReports); assert.equal(SERVER_NOTE, GROUPING_NOTE);
   assert.match(GROUPING_NOTE, /do not establish independent confirmation/);

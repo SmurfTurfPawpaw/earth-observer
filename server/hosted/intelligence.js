@@ -2,6 +2,7 @@ import { readResponseJsonCapped } from '../providers/common/http.js';
 import { GROUPING_NOTE, normalizeGdelt, normalizeGdacs, normalizeUsgs, groupReports } from './intelligence-sources.js';
 import { gdeltQueryUrl } from './gdelt-query.js';
 import { createGdeltSnapshotReader } from './gdelt-snapshot.js';
+import { createEonetSnapshotReader, EONET_SOURCE } from './eonet-snapshot.js';
 import { createDiscoveryIndex, discoveryQueryText, DISCOVERY_INDEX_MAX_BYTES } from '../../src/core/discovery-index.js';
 export { gdeltQueryUrl } from './gdelt-query.js';
 
@@ -20,12 +21,13 @@ export function intelligenceQuery(params) {
   return { category, country, countryName: country ? COUNTRIES.of(country) : '', q };
 }
 
-/** Three fixed integrations, shared bounded cache and provider backoff; no startup polling. */
+/** Fixed reviewed integrations, shared bounded acquisition and provider backoff; no startup polling. */
 export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = globalThis.process?.env || {},
   snapshotStore, snapshotReader = createGdeltSnapshotReader({ fetchImpl, now, store: snapshotStore }),
+  eonetReader = createEonetSnapshotReader({ fetchImpl, now, store: snapshotStore }),
   allowLiveGdeltFallback = env.GDELT_LIVE_FALLBACK === '1' } = {}) {
   const cache = new Map(), pending = new Map(), failures = new Map(), attempts = new Map();
-  const index = createDiscoveryIndex({ now, maxRecords: 440 });
+  const index = createDiscoveryIndex({ now, maxRecords: 500 });
   const providerFailures = new Map();
   const policies = {
     gdelt: { name: 'The GDELT Project', url: 'https://www.gdeltproject.org/', ttl: 300000, timeout: 15000, cooldown: 300000, minGap: 6000 },
@@ -112,6 +114,7 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
       try { filters = intelligenceQuery(url.searchParams); }
       catch (error) { res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify({ error: error.message })); return; }
       const jobs = [readNews(filters)];
+      if (eonetReader) jobs.push(eonetReader(filters));
       if (filters.category === 'all' || filters.category === 'disasters') {
         if (!filters.country) jobs.push(read('usgs', 'usgs:global', 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson', normalizeUsgs));
         const gdacs = new URL('https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH');
@@ -121,13 +124,16 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
       }
       const results = await Promise.all(jobs);
       for (const result of results) {
+        // An inapplicable country/topic filter does not withdraw a previously
+        // acquired global generation or give its metadata a newer date.
+        if (result.state.status === 'not-applicable') continue;
         const source = result.indexSource || { id: result.state.id, generation: result.state.retrievedAt || 'unavailable',
           expiresAt: result.state.retrievedAt ? new Date(Date.parse(result.state.retrievedAt) + 86400000).toISOString() : null,
           status: result.state.status, coverage: result.state.coverage || '' };
         index.replaceSource({ ...source, records: result.indexRecords || result.records });
       }
       const indexState = index.getState();
-      const reports = filters.q ? index.search({ ...filters, limit: 440 }).reports : results.flatMap((result) => result.records).filter((report) => {
+      const reports = filters.q ? index.search({ ...filters, limit: 500 }).reports : results.flatMap((result) => result.records).filter((report) => {
         if (filters.country && report.sourceId !== 'gdelt' && !report.countries?.includes(filters.country)) return false;
         return true;
       });
@@ -138,9 +144,9 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
       res.end(JSON.stringify({ reports: grouped, sources, filters, retrievedAt: new Date(now()).toISOString(),
         indexRecords: indexState.records, indexVersion: indexState.indexVersion,
         indexCoverage: { schemaVersion: indexState.schemaVersion, recordCount: indexState.recordCount, byteLength: indexState.byteLength,
-          maxRecords: 440, maxBytes: DISCOVERY_INDEX_MAX_BYTES, omittedRecords: indexState.omittedRecords,
+          maxRecords: 500, maxBytes: DISCOVERY_INDEX_MAX_BYTES, omittedRecords: indexState.omittedRecords,
           sources: indexState.sources, note: indexState.note },
-        grouping: GROUPING_NOTE, coverage: `${results[0].state.coverage || 'GDELT discovery sample unavailable.'} Official hazard reports cover the last seven days. GDACS filters use reported countries. These are not geographic proof.`,
+        grouping: GROUPING_NOTE, coverage: `${results[0].state.coverage || 'GDELT discovery sample unavailable.'} Official hazard reports cover the last seven days. GDACS filters use reported countries. ${eonetReader ? `${EONET_SOURCE.name} supplies a bounded curated event sample; geometry dates can precede the seven-day query window and are not verified incident times. ` : ''}These are not geographic proof.`,
         nextRefreshMs: 300000 }));
     });
   };

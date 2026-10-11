@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-11T10:01:19Z",
+  "scope": "Three dated primary-record context checks related to the existing Maxinomics research. This file adds no transcript or video review coverage.",
+  "countriesScope": "ISO 3166-1 alpha-2 jurisdictions or subjects; these are not incident locations.",
+  "records": [
+    {
+      "id": "china-export-control-suspension",
+      "title": "Scope and deadline of China's export-control suspension",
+      "topic": "critical-minerals",
+      "countries": [
+        "CN"
+      ],
+      "reviewedAt": "2026-10-11T10:01:19Z",
+      "finding": {
+        "kind": "primary-record-paraphrase",
+        "text": "China's 7 November 2025 announcement 70 suspends named October instruments 55–58 and 61–62 through 10 November 2026. It does not list April announcement 18, which established licensing for specified rare-earth items.",
+        "sourceIds": [
+          "mofcom-2025-70",
+          "mofcom-2025-18"
+        ]
+      },
+      "temporalScope": {
+        "kind": "legal-instrument",
+        "asOf": "2026-10-11",
+        "suspensionStartsOn": "2025-11-07",
+        "suspensionEndsOn": "2026-11-10",
+        "statusAtReview": "within-published-suspension-period"
+      },
+      "relatedCreator": {
+        "videoId": "BXLGV0Sj0n8",
+        "url": "https://www.youtube.com/watch?v=BXLGV0Sj0n8",
+        "publishedDate": "2026-09-11",
+        "reviewCoverage": "third-party-full-text-reviewed",
+        "officialTranscriptRetrieved": false,
+        "audioVerified": false
+      },
+      "relationToCreator": {
+        "kind": "inference",
+        "text": "The creator's geopolitical-leverage theme is an interpretation. Suspending the named October instruments does not demonstrate that every rare-earth restriction was suspended. These legal records do not validate every statement in the unverified repost."
+      },
+      "sources": [
+        {
+          "id": "mofcom-2025-70",
+          "publisher": "China Ministry of Commerce and General Administration of Customs",
+          "title": "Announcement 70 (2025): suspension of named export-control measures",
+          "titleKind": "english-paraphrase-of-chinese-title",
+          "date": "2025-11-07",
+          "dateKind": "issued",
+          "url": "https://www.mofcom.gov.cn/zcfb/blgg/gg/2025/art/2025/art_da147202d0934ddebe252772e95ed7b3.html"
+        },
+        {
+          "id": "mofcom-2025-18",
+          "publisher": "China Ministry of Commerce and General Administration of Customs",
+          "title": "Announcement 18 (2025): controls on specified medium and heavy rare-earth items",
+          "titleKind": "english-paraphrase-of-chinese-title",
+          "date": "2025-04-04",
+          "dateKind": "issued",
+          "url": "https://www.mofcom.gov.cn/zcfb/blgg/gg/2025/art/2025/art_5e663d0bfec7452dabd950d0f0e42153.html"
+        }
+      ],
+      "limitations": [
+        "This records the published scope and deadline as reviewed; it does not predict a future extension, termination, or new policy."
+      ]
+    },
+    {
+      "id": "iranian-oil-expired-authorizations",
+      "title": "Expired US authorizations for particular Iranian-oil transactions",
+      "topic": "sanctions-and-energy",
+      "countries": [
+        "IR",
+        "US"
+      ],
+      "reviewedAt": "2026-10-11T10:01:19Z",
+      "finding": {
+        "kind": "primary-record-paraphrase",
+        "text": "OFAC General License U authorized specified Iranian-oil transactions for cargo loaded by 12:01 a.m. EDT on 20 March 2026, until 12:01 a.m. EDT on 19 April. General License X1 later authorized limited wind-down transactions through 12:01 a.m. EDT on 17 July 2026. Both periods had ended by this review.",
+        "sourceIds": [
+          "ofac-iran-gl-u",
+          "ofac-iran-gl-x1"
+        ]
+      },
+      "temporalScope": {
+        "kind": "expired-legal-authorizations",
+        "asOf": "2026-10-11",
+        "statusAtReview": "expired",
+        "authorizations": [
+          {
+            "instrument": "General License U",
+            "loadedNoLaterThan": "2026-03-20T00:01:00-04:00",
+            "expiresAt": "2026-04-19T00:01:00-04:00",
+            "statusAtReview": "expired"
+          },
+          {
+            "instrument": "General License X1",
+            "effectiveOn": "2026-07-07",
+            "expiresAt": "2026-07-17T00:01:00-04:00",
+            "statusAtReview": "expired"
+          }
+        ]
+      },
+      "relatedCreator": {
+        "videoId": "IWj39ekjwcE",
+        "url": "https://www.youtube.com/watch?v=IWj39ekjwcE",
+        "publishedDate": "2026-03-31",
+        "reviewCoverage": "official-description-reviewed",
+        "officialTranscriptRetrieved": false,
+        "audioVerified": false
+      },
+      "relationToCreator": {
+        "kind": "inference",
+        "text": "License U was in force when the March 31 video appeared, so its title cannot establish a universal prohibition. This comparison addresses the title and reviewed description, not an unread transcript. Expired licenses provide historical context rather than current permission."
+      },
+      "sources": [
+        {
+          "id": "ofac-iran-gl-u",
+          "publisher": "US Treasury, Office of Foreign Assets Control",
+          "title": "General License U",
+          "titleKind": "document-heading",
+          "date": "2026-03-20",
+          "dateKind": "document-dated",
+          "url": "https://ofac.treasury.gov/system/files/2026-03/iran_glu_0.pdf"
+        },
+        {
+          "id": "ofac-iran-gl-x1",
+          "publisher": "US Treasury, Office of Foreign Assets Control",
+          "title": "General License X1",
+          "titleKind": "document-heading",
+          "date": "2026-07-07",
+          "dateKind": "effective",
+          "url": "https://ofac.treasury.gov/media/936446/download?inline="
+        }
+      ],
+      "limitations": [
+        "Each license had cargo, transaction, and other exclusions. This is not a determination of eligibility for a transaction or a review of every current license or jurisdiction."
+      ]
+    },
+    {
+      "id": "us-productivity-q2-2026",
+      "title": "Q2 productivity measures and the limits of an AI explanation",
+      "topic": "productivity-and-labor",
+      "countries": [
+        "US"
+      ],
+      "reviewedAt": "2026-10-11T10:01:19Z",
+      "finding": {
+        "kind": "primary-record-paraphrase",
+        "text": "BLS reported Q2 2026 nonfarm-business productivity growth of 1.4% at a seasonally adjusted quarterly annualized rate and 2.2% from Q2 2025. These compare different periods. The revised release was published on 3 September 2026.",
+        "sourceIds": [
+          "bls-q2-2026-revised"
+        ]
+      },
+      "temporalScope": {
+        "kind": "statistical-release",
+        "asOf": "2026-10-11",
+        "referencePeriod": "2026-Q2",
+        "releasedOn": "2026-09-03",
+        "statusAtReview": "historical-statistical-release"
+      },
+      "relatedCreator": {
+        "videoId": "mCd9ctg1sO4",
+        "url": "https://www.youtube.com/watch?v=mCd9ctg1sO4",
+        "publishedDate": "2026-05-29",
+        "reviewCoverage": "third-party-full-text-reviewed",
+        "officialTranscriptRetrieved": false,
+        "audioVerified": false
+      },
+      "relationToCreator": {
+        "kind": "inference",
+        "text": "This later release is context rather than evidence available at the May 29 publication. Aggregate output per hour does not identify an AI contribution or establish a general household prosperity forecast."
+      },
+      "sources": [
+        {
+          "id": "bls-q2-2026-revised",
+          "publisher": "US Bureau of Labor Statistics",
+          "title": "Productivity and Costs, Second Quarter 2026, Revised",
+          "titleKind": "official-release-title",
+          "date": "2026-09-03",
+          "dateKind": "released",
+          "url": "https://www.bls.gov/news.release/archives/prod2_09032026.htm"
+        }
+      ],
+      "limitations": [
+        "Quarterly annualization is not the four-quarter comparison. The statistics do not identify an AI cause or validate the creator's proprietary freight indicators."
+      ]
+    }
+  ]
+}

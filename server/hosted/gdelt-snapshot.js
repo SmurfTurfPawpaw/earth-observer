@@ -62,15 +62,25 @@ export function validateGdeltSnapshot(payload, nowMs = Date.now()) {
 }
 
 /** One shared release acquisition for every visitor filter, with optional persistent last-good state. */
-export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, store, timeoutMs = 12000 } = {}) {
+export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, store, timeoutMs = 12000, storageTimeoutMs = 1000 } = {}) {
   let cached, pending, restoreWork, retryAt = 0, failures = 0, lastFailure = null;
   const index = createDiscoveryIndex({ now, maxRecords: 240, maxBytes: GDELT_SNAPSHOT_MAX_BYTES });
-  const restore = () => restoreWork ||= (async () => {
+  const storageDeadlineMs = Number.isFinite(storageTimeoutMs) ? Math.max(1, Math.min(5000, storageTimeoutMs)) : 1000;
+  const optionalStorage = async (task) => {
+    let timer;
     try {
+      return await Promise.race([Promise.resolve().then(task).catch(() => null),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), storageDeadlineMs); })]);
+    } finally { clearTimeout(timer); }
+  };
+  const restore = () => restoreWork ||= (async () => {
+    const restored = await optionalStorage(async () => {
       const saved = await store?.get('gdelt:snapshot');
       if (!saved || !Number.isFinite(saved.acquiredAt) || saved.acquiredAt > now() + FUTURE_MS) return;
-      cached = { acquiredAt: saved.acquiredAt, snapshot: validateGdeltSnapshot(saved.snapshot, now()) };
-    } catch {} // Persistence is optional; a cache failure cannot prevent network recovery.
+      return { acquiredAt: saved.acquiredAt, snapshot: validateGdeltSnapshot(saved.snapshot, now()) };
+    });
+    // Timed-out persistence has no side effects if it eventually settles.
+    if (restored && !cached) cached = restored;
   })();
   async function acquire() {
     try {
@@ -81,7 +91,8 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
       signal.throwIfAborted();
       const snapshot = validateGdeltSnapshot(payload, now());
       cached = { acquiredAt: now(), snapshot }; failures = 0; retryAt = 0; lastFailure = null;
-      try { await store?.put('gdelt:snapshot', cached); } catch {}
+      const saved = cached;
+      await optionalStorage(() => store?.put('gdelt:snapshot', saved));
     } catch (error) {
       failures = Math.min(6, failures + 1);
       retryAt = now() + Math.min(300000 * 2 ** (failures - 1), 3600000);

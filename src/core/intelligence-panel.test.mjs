@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createIntelligencePanel } from './intelligence.js';
+import { readFile } from 'node:fs/promises';
+
+const primaryContext = JSON.parse(await readFile(new URL('../../public/research/primary-context.json', import.meta.url), 'utf8'));
 
 // Exercises the real panel, feed and demand controller without a browser or HTTP.
 class Element {
@@ -75,6 +78,7 @@ function fixture(t, { offline = false } = {}) {
   const fetchImpl = async (url, init = {}) => {
     calls.push({ url, init });
     const path = new URL(url, globalThis.location.origin);
+    if (path.pathname === '/research/primary-context.json') return Response.json(primaryContext);
     if (path.pathname === '/api/intelligence') return offline ? Response.json({ error: 'Fixture unavailable' }, { status: 503 }) : Response.json(payload);
     if (path.pathname === '/api/economics') return Response.json({ status: 'ready', frequency: 'annual',
       country: { id: path.searchParams.get('country') }, indicators: [], retrievedAt: stamp, nextRefreshMs: 86400000 });
@@ -94,6 +98,7 @@ function fixture(t, { offline = false } = {}) {
     refresh: find((element) => element.tagName === 'button' && element.textContent === 'Refresh sources'),
     status: container.children.find((element) => element.className === 'intelligence-status'),
     list: find((element) => element.className === 'intelligence-list'),
+    research: find((element) => element.className === 'intelligence-research'),
   };
   const demandCalls = () => calls.filter(({ url }) => url === '/api/discovery/demand');
   const intelligenceCalls = () => calls.filter(({ url }) => url.startsWith('/api/intelligence?'));
@@ -165,4 +170,26 @@ test('accepted reviewed demand does not depend on upstream availability', async 
   assert.equal(env.demandCalls().length, 1);
   assert.deepEqual(JSON.parse(env.demandCalls()[0].init.body), { subjectId: 'gkg:WB_698_TRADE', country: '', consent: true });
   assert.ok(env.intelligenceCalls().every(({ url }) => !url.includes('Trade') && !url.includes('q=')));
+});
+
+test('mounted research context loads once on news open and filters locally outside live groups and demand', async (t) => {
+  const env = fixture(t);
+  const requests = () => env.calls.filter(({ url }) => new URL(url, globalThis.location.origin).pathname === '/research/primary-context.json');
+  assert.equal(env.calls.length, 0, 'Mounting the optional context must not acquire anything');
+  await env.panel.open(); await settle();
+  assert.equal(requests().length, 1);
+  assert.match(env.ui.research.textContent, /Primary-record paraphrase/);
+  assert.match(env.ui.research.textContent, /expired/);
+  assert.match(env.ui.research.textContent, /inference/);
+  assert.doesNotMatch(env.ui.list.textContent, /Primary-record paraphrase/);
+  const before = env.intelligenceCalls().length;
+  env.ui.query.value = 'productivity'; env.ui.form.trigger('submit'); await settle();
+  assert.match(env.ui.research.textContent, /Reference period 2026-Q2/);
+  assert.doesNotMatch(env.ui.research.textContent, /General License U/);
+  assert.equal(env.intelligenceCalls().length, before);
+  assert.equal(env.demandCalls().length, 0);
+  env.ui.category.value = 'disasters'; env.ui.category.trigger('change'); await settle();
+  assert.match(env.ui.research.textContent, /No dated research context matches/);
+  env.panel.close(); await env.panel.open(); await settle();
+  assert.equal(requests().length, 1, 'Reopen uses validated memory and does not poll or refetch');
 });

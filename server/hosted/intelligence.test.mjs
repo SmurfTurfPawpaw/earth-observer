@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { intelligenceProxy as createIntelligenceProxy, intelligenceQuery, gdeltQueryUrl } from './intelligence.js';
 import { normalizeGdelt, normalizeUsgs, normalizeGdacs, groupReports, safeReportUrl } from './intelligence-sources.js';
 
-// Exercise the explicitly controlled live fallback independently of scheduled assets.
-const intelligenceProxy = (options) => createIntelligenceProxy({ snapshotReader: null, allowLiveGdeltFallback: true, ...options });
+// Exercise the controlled live fallback independently of both scheduled assets.
+// The public four-source integration is covered by intelligence-eonet.test.mjs.
+const intelligenceProxy = (options) => createIntelligenceProxy({ snapshotReader: null, eonetReader: null, allowLiveGdeltFallback: true, ...options });
 
 const timestamp = Date.UTC(2026, 9, 11, 10);
 const gdelt = { articles: [{ title: 'Port trade negotiations resume after delays', url: 'https://publisher.example/news/one?utm_source=feed', seendate: '20261011T093000Z', sourcecountry: 'France', language: 'English' }] };

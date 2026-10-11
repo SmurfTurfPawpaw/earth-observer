@@ -3,6 +3,7 @@ import { ECONOMICS_COUNTRIES } from './economics-catalog.js';
 import { canonicalDiscoveryRecord, createDiscoveryIndex, discoveryQueryText, DISCOVERY_INDEX_NOTE } from './discovery-index.js';
 import { createDemandTracker } from './demand.js';
 import { groupReports } from './intelligence-grouping.js';
+import { createPrimaryContextPanel } from './primary-context.js';
 
 const CATEGORIES = [['all', 'All topics'], ['disasters', 'Disasters'], ['geopolitics', 'Geopolitics'], ['economy', 'Economics & trade']];
 
@@ -18,14 +19,14 @@ export function intelligenceTime(value) {
 }
 const COUNTRY_NAMES = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'none' });
 export function intelligenceReportDetails(report) {
-  const topic = report.kind === 'topic-mention';
+  const topic = report.kind === 'topic-mention', curated = report.kind === 'curated-event';
   const countries = topic && Array.isArray(report.mentionedCountries) ? report.mentionedCountries.map((code) => {
     try { return COUNTRY_NAMES.of(code) || code; } catch { return code; }
   }).join(', ') : '';
-  return { topic, source: `${report.source || 'Source unspecified'}${report.aggregator ? ` · found by ${report.aggregator}` : ''}${report.publisherCountry ? ` · publisher country: ${report.publisherCountry}` : ''}`,
+  return { topic, curated, source: `${report.source || 'Source unspecified'}${curated ? ' · curated event metadata' : ''}${report.aggregator ? ` · found by ${report.aggregator}` : ''}${report.publisherCountry && !curated ? ` · publisher country: ${report.publisherCountry}` : ''}`,
     countries: countries ? `Countries mentioned: ${countries}. These mentions do not establish an incident location or publisher country.` : '',
-    dates: [['Published', report.publishedAt], ['Event', report.observedAt], ['Updated', report.updatedAt], [topic ? 'GDELT batch' : 'Indexed', report.indexedAt], ['Retrieved', report.retrievedAt]],
-    canNavigate: !topic && Number.isFinite(report.lat) && Number.isFinite(report.lon) && Math.abs(report.lat) <= 90 && Math.abs(report.lon) <= 180 };
+    dates: curated ? [['EONET geometry date', report.sourceGeometryAt], ['EONET closed date', report.closedAt], ['Retrieved', report.retrievedAt]] : [['Published', report.publishedAt], ['Event', report.observedAt], ['Updated', report.updatedAt], [topic ? 'GDELT batch' : 'Indexed', report.indexedAt], ['Retrieved', report.retrievedAt]],
+    canNavigate: !topic && !curated && Number.isFinite(report.lat) && Number.isFinite(report.lon) && Math.abs(report.lat) <= 90 && Math.abs(report.lon) <= 180 };
 }
 
 /** An opened, visible panel owns its requests; no constructor or closed-panel fetch. */
@@ -49,7 +50,7 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
   function derive() {
     if (!sourcePayload) { payload = null; return; }
     if (indexed) {
-      const result = index.search({ ...filters, limit: 440 });
+      const result = index.search({ ...filters, limit: 500 });
       const key = (record) => `${record.sourceId}|${record.kind}|${record.url}`;
       const retained = new Set(index.getState().records.map(key));
       const current = (record) => { const canonical = canonicalDiscoveryRecord(record); return canonical && retained.has(key(canonical)); };
@@ -150,7 +151,7 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
 }
 
 /** Source-linked metadata cards, never full article text, images, or verification claims. */
-export function createIntelligencePanel({ container, fetchImpl, viewer, onNavigate, onStatus = () => {}, documentRef = container?.ownerDocument || globalThis.document } = {}) {
+export function createIntelligencePanel({ container, fetchImpl, store, viewer, onNavigate, onStatus = () => {}, documentRef = container?.ownerDocument || globalThis.document } = {}) {
   if (!container || !documentRef) throw new TypeError('An intelligence panel container is required');
   const node = (tag, className, text) => { const element = documentRef.createElement(tag); if (className) element.className = className; if (text !== undefined) element.textContent = text; return element; };
   const link = (title, href) => {
@@ -178,11 +179,14 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
   const refresh = node('button', '', 'Refresh sources'); refresh.type = 'button'; actions.append(refresh);
   const list = node('div', 'intelligence-list');
   const economicFacts = node('section', 'economics-section');
+  const researchContainer = node('section', 'intelligence-research');
   const footer = node('p', 'intelligence-meta'); footer.append('News discovery: ', link('The GDELT Project', 'https://www.gdeltproject.org/'), '. Original publishers retain their rights. No article text or images are copied. ',
     link('Research and coverage notes', 'https://github.com/SmurfTurfPawpaw/earth-observer/blob/main/docs/MAXINOMICS_RESEARCH.md'));
-  container.replaceChildren(form, note, economicFacts, status, coverage, actions, demandContainer, list, footer);
+  container.replaceChildren(form, note, economicFacts, status, coverage, actions, demandContainer, researchContainer, list, footer);
   const economics = createEconomicsPanel({ container: economicFacts, fetchImpl, documentRef });
   const demand = createDemandTracker({ container: demandContainer, fetchImpl, documentRef });
+  const research = createPrimaryContextPanel(researchContainer, { fetchImpl, store, documentRef,
+    url: `${import.meta.env?.BASE_URL || '/'}research/primary-context.json` });
   let renderedPayload;
   function reportContent(report, related = false) {
     const detail = intelligenceReportDetails(report);
@@ -192,6 +196,11 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
     meta.textContent = detail.source;
     block.append(meta);
     if (detail.countries) block.append(node('p', 'intelligence-meta', detail.countries));
+    if (detail.curated && Array.isArray(report.referencedSources) && report.referencedSources.length) {
+      const references = node('p', 'intelligence-meta', 'Referenced sources: ');
+      for (const [i, reference] of report.referencedSources.slice(0, 4).entries()) { if (i) references.append(' · '); references.append(link(String(reference.id || 'Source'), reference.url)); }
+      block.append(references);
+    }
     block.append(node('p', 'intelligence-meta', detail.dates.map(([label, value]) => { const stamp = intelligenceTime(value); return stamp ? `${label} ${stamp}` : null; }).filter(Boolean).join(' · ') || 'Publication and event times are unavailable'));
     if (Array.isArray(report.matchReasons) && report.matchReasons.length) block.append(node('p', 'intelligence-meta', report.matchReasons.slice(0, 3).join(' ')));
     if (report.timeMeaning || report.verification) {
@@ -242,6 +251,7 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
   }
   const feed = createIntelligenceFeed({ fetchImpl, documentRef, onChange: render });
   const apply = () => {
+    research.setFilters({ category: category.value, country: country.value, q: query.value });
     if (category.value === 'economy') void economics.open(country.value || 'WLD'); else economics.close();
     void feed.setFilters({ category: category.value, country: country.value, q: query.value });
   };
@@ -252,9 +262,9 @@ export function createIntelligencePanel({ container, fetchImpl, viewer, onNaviga
   country.addEventListener('change', apply);
   render(feed.getState());
   return {
-    open() { if (category.value === 'economy') void economics.open(country.value || 'WLD'); return feed.open(); },
-    close() { economics.close(); feed.close(); },
+    open() { void research.open(); if (category.value === 'economy') void economics.open(country.value || 'WLD'); return feed.open(); },
+    close() { research.close(); economics.close(); feed.close(); },
     refresh: refreshClick,
-    destroy() { demand.destroy(); economics.destroy(); feed.destroy(); form.removeEventListener('submit', submit); category.removeEventListener('change', apply); country.removeEventListener('change', apply); refresh.removeEventListener('click', refreshClick); container.replaceChildren(); }
+    destroy() { research.destroy(); demand.destroy(); economics.destroy(); feed.destroy(); form.removeEventListener('submit', submit); category.removeEventListener('change', apply); country.removeEventListener('change', apply); refresh.removeEventListener('click', refreshClick); container.replaceChildren(); }
   };
 }

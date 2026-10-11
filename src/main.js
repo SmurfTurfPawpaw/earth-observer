@@ -103,7 +103,7 @@ async function handlePanel({ panel, open }) {
     if (panel === 'news') {
       const { createIntelligencePanel } = await import('./core/intelligence.js');
       if (destroyed) return;
-      intelligence = createIntelligencePanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch,
+      intelligence = createIntelligencePanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, store,
         onStatus: () => { document.getElementById('news-status').hidden = true; },
         onNavigate: ({ lat, lon }) => { void activateLocal({ lat, lon, radiusKm: 25 }, { animate: true }); },
       });

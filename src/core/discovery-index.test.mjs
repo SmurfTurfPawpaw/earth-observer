@@ -12,6 +12,48 @@ const hazard = (overrides = {}) => ({ sourceId: 'gdacs', source: 'GDACS', url: '
   category: 'disasters', countries: ['BE'], country: 'Belgium', observedAt: ISO, retrievedAt: ISO, eventType: 'FL', lat: 50, lon: 4, ...overrides });
 const replace = (index, records, id = records[0]?.sourceId || 'gdelt', generation = 'one', extra = {}) => index.replaceSource({ id, generation, records,
   expiresAt: new Date(NOW + 86400000).toISOString(), coverage: 'Synthetic bounded metadata fixture', ...extra });
+const curatedEvent = (overrides = {}) => ({ sourceId: 'eonet', source: 'NASA EONET', id: 'eonet:EONET_1',
+  kind: 'curated-event', url: 'https://eonet.gsfc.nasa.gov/api/v3/events/EONET_1', title: 'A named volcanic event', category: 'disasters',
+  eonetCategories: [{ id: 'volcanoes', title: 'Volcanoes' }], referencedSources: [{ id: 'GDACS', url: 'https://www.gdacs.org/report/one' }],
+  sourceGeometryAt: '2021-10-11T00:00:00.000Z', closedAt: null, retrievedAt: ISO,
+  publishedAt: null, observedAt: null, indexedAt: null, publisherCountry: null, ...overrides });
+
+test('curated EONET metadata retains exact date roles and source references without invented incident fields', () => {
+  const index = createDiscoveryIndex({ now: () => NOW });
+  replace(index, [curatedEvent({ lat: 50, lon: 4, countries: ['BE'], mentionedCountries: ['BE'],
+    themes: ['SANCTIONS'], magnitude: 9, body: 'Unused publisher text', image: 'https://example.test/photo' })], 'eonet');
+  const found = index.search({ q: 'NASA volcanoes GDACS', category: 'disasters' });
+  assert.equal(found.matchCount, 1); const record = found.reports[0];
+  assert.equal(record.kind, 'curated-event'); assert.equal(record.eventId, 'EONET_1');
+  assert.equal(record.sourceGeometryAt, '2021-10-11T00:00:00.000Z'); assert.equal(record.retrievedAt, ISO);
+  for (const field of ['publishedAt', 'observedAt', 'indexedAt', 'updatedAt', 'publisherCountry']) assert.equal(record[field], null);
+  for (const field of ['lat', 'lon', 'magnitude', 'body', 'image']) assert.equal(field in record, false);
+  assert.deepEqual(record.countries, []); assert.deepEqual(record.mentionedCountries, []); assert.deepEqual(record.themes, []);
+  assert.deepEqual(record.referencedSources, [{ id: 'GDACS', url: 'https://www.gdacs.org/report/one' }]);
+  assert.match(record.matchReasons.join(' '), /EONET category/);
+  assert.equal(index.search({ country: 'BE' }).matchCount, 0);
+  assert.equal(index.search({ category: 'geopolitics' }).matchCount, 0);
+});
+
+test('curated source identity refuses fabricated dates, categories and noncanonical event URLs', () => {
+  for (const extra of [{ kind: 'hazard-report' }, { sourceId: 'gdacs' }, { publishedAt: ISO }, { observedAt: ISO },
+    { indexedAt: ISO }, { updatedAt: ISO }, { publisherCountry: 'US' }, { category: 'economy' },
+    { categories: ['geopolitics'] }, { url: 'https://publisher.example/event' }, { url: 'https://eonet.gsfc.nasa.gov/api/v3/events/EONET_1?x=1' },
+    { eonetCategories: [{ id: 'unknown', title: 'Armed conflict' }] }]) assert.equal(canonicalDiscoveryRecord(curatedEvent(extra)), null);
+  const record = canonicalDiscoveryRecord(curatedEvent({ referencedSources: [{ id: 'Bad', url: 'javascript:alert(1)' },
+    { id: 'Credentials', url: 'https://user:secret@example.test/' }, { id: 'GDACS', url: 'https://www.gdacs.org/report/one?utm_source=x' }] }));
+  assert.deepEqual(record.referencedSources, [{ id: 'GDACS', url: 'https://www.gdacs.org/report/one' }]);
+});
+
+test('a fourth source survives payload replacement and retrieval expiry does not rewrite its historical geometry date', () => {
+  let at = NOW; const index = createDiscoveryIndex({ now: () => at });
+  const eonet = curatedEvent();
+  index.replacePayload({ indexRecords: [topic(), hazard(), { ...hazard(), sourceId: 'usgs', url: 'https://earthquake.usgs.gov/earthquakes/event/one' }, eonet],
+    indexCoverage: { schemaVersion: 1, sources: ['gdelt', 'gdacs', 'usgs', 'eonet'].map((id) => ({ id, generation: 'fixture-one', expiresAt: new Date(NOW + 86400000).toISOString() })) } });
+  assert.equal(index.getState().recordCount, 4); assert.equal(index.search({ q: 'NASA' }).reports.length, 1);
+  at += 23 * 3600000; assert.equal(index.search({ q: 'NASA' }).reports[0].sourceGeometryAt, eonet.sourceGeometryAt);
+  at = NOW + 86400001; assert.equal(index.search({ q: 'NASA' }).reports.length, 0);
+});
 
 test('reviewed browser taxonomy exactly matches the source-validated GKG labels', () => {
   assert.deepEqual(DISCOVERY_REVIEWED_TOPICS, GKG_THEMES);

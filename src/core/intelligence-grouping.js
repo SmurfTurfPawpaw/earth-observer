@@ -1,7 +1,7 @@
 export const GROUPING_NOTE = 'Related coverage is indicative. Similar headlines, locations or times do not establish independent confirmation; providers may share the same underlying source.';
 const STOP_WORDS = new Set('the a an and or of for in on to at by from with as is are was were new latest report reports update says said after amid over more'.split(' '));
 const words = (title) => new Set(String(title).toLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]{3,}/gu)?.filter((word) => !STOP_WORDS.has(word)) || []);
-const reportTime = (report) => Date.parse(report.observedAt || report.indexedAt || report.updatedAt || report.publishedAt || '');
+const reportTime = (report) => Date.parse(report.kind === 'curated-event' ? report.sourceGeometryAt || report.closedAt || '' : report.observedAt || report.indexedAt || report.updatedAt || report.publishedAt || '');
 function near(a, b) {
   if (![a.lat, a.lon, b.lat, b.lon].every(Number.isFinite)) return false;
   const rad = Math.PI / 180, dlat = (b.lat - a.lat) * rad, dlon = (b.lon - a.lon) * rad;
@@ -10,7 +10,7 @@ function near(a, b) {
 }
 function relatedReason(a, b) {
   // A shared machine-generated topic label is not evidence of the same story.
-  if (a.kind === 'topic-mention' || b.kind === 'topic-mention') return null;
+  if (['topic-mention', 'curated-event'].includes(a.kind) || ['topic-mention', 'curated-event'].includes(b.kind)) return null;
   if (a.category !== b.category || a.source === b.source) return null;
   const difference = Math.abs(reportTime(a) - reportTime(b));
   if (!Number.isFinite(difference)) return null;

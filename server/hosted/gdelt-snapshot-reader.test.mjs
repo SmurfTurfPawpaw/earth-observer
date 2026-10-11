@@ -110,6 +110,50 @@ test('cold readers coalesce persisted restore and cache failures never reject su
   assert.equal((await broken(filters())).state.status, 'ready');
 });
 
+test('never-settling optional storage reads cannot prevent shared release recovery', { timeout: 1000 }, async () => {
+  let gets = 0, requests = 0;
+  const read = createGdeltSnapshotReader({ now: () => CLOCK, storageTimeoutMs: 10,
+    store: { get() { gets++; return new Promise(() => {}); } },
+    fetchImpl: async (url) => { requests++; assert.equal(url, GDELT_SNAPSHOT_URL); return Response.json(fixture()); } });
+  const results = await Promise.all(Array.from({ length: 8 }, () => read(filters())));
+  assert.equal(gets, 1); assert.equal(requests, 1);
+  for (const result of results) {
+    assert.equal(result.state.status, 'ready'); assert.equal(result.indexSource.generation, new Date(CLOCK).toISOString());
+    assert.equal(result.indexRecords.length, 3);
+  }
+  await read(filters('economy')); assert.equal(gets, 1); assert.equal(requests, 1);
+});
+
+test('never-settling optional storage writes release coalesced callers with unchanged source dates', { timeout: 1000 }, async () => {
+  let writes = 0, requests = 0;
+  const read = createGdeltSnapshotReader({ now: () => CLOCK, storageTimeoutMs: 10,
+    store: { async get() { return null; }, put(key, value) {
+      writes++; assert.equal(key, 'gdelt:snapshot'); assert.equal(value.snapshot.generatedAt, new Date(CLOCK).toISOString());
+      return new Promise(() => {});
+    } }, fetchImpl: async () => { requests++; return Response.json(fixture()); } });
+  const results = await Promise.all(Array.from({ length: 8 }, () => read(filters())));
+  assert.equal(writes, 1); assert.equal(requests, 1);
+  for (const result of results) {
+    assert.equal(result.state.status, 'ready'); assert.equal(result.records.length, 3);
+    assert.equal(result.state.generatedAt, new Date(CLOCK).toISOString()); assert.equal(result.state.retrievedAt, new Date(CLOCK).toISOString());
+  }
+  assert.equal((await read(filters())).indexSource.generation, new Date(CLOCK).toISOString());
+  assert.equal(writes, 1); assert.equal(requests, 1);
+});
+
+test('late restored metadata cannot overwrite a newer generation acquired after the storage deadline', { timeout: 1000 }, async () => {
+  let requests = 0; const delayedGet = Promise.withResolvers(), old = fixture(CLOCK - 1800000), fresh = fixture();
+  const read = createGdeltSnapshotReader({ now: () => CLOCK, storageTimeoutMs: 10,
+    store: { get() { return delayedGet.promise; } }, fetchImpl: async () => { requests++; return Response.json(fresh); } });
+  assert.equal((await read(filters())).indexSource.generation, fresh.generatedAt);
+  delayedGet.resolve({ acquiredAt: CLOCK - 1800000, snapshot: old });
+  await new Promise((resolve) => setImmediate(resolve));
+  const retained = await read(filters());
+  assert.equal(requests, 1); assert.equal(retained.indexSource.generation, fresh.generatedAt);
+  assert.equal(retained.state.generatedAt, fresh.generatedAt); assert.equal(retained.state.retrievedAt, fresh.generatedAt);
+  assert.ok(retained.indexRecords.every((record) => record.retrievedAt === fresh.generatedAt));
+});
+
 test('public intelligence uses schedule-only by default while unavailable snapshots permit explicitly controlled live fallback', async () => {
   const urls = [];
   const scheduled = endpoint(intelligenceProxy({ now: () => CLOCK, env: {}, fetchImpl: async (url) => { urls.push(url); return Response.json(fixture()); } }));

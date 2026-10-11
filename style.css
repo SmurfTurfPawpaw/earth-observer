@@ -292,6 +292,9 @@ body.side-panel-open #navigation { right: 388px; }
 .intelligence-demand p { margin-top: 8px; }
 .intelligence-card details { margin-top: 9px; }
 .intelligence-card details p { margin-top: 7px; }
+.intelligence-research .intelligence-card { margin-top: 12px; }
+.intelligence-research h4 { font-size: calc(12px * var(--reading-scale, 1)); line-height: 1.6; }
+.intelligence-research ul { padding-left: 18px; font-size: calc(10px * var(--reading-scale, 1)); line-height: 1.7; overflow-wrap: anywhere; }
 .community-section { margin-top: 22px; padding-top: 15px; border-top: 1px solid var(--line); font-size: calc(11px * var(--reading-scale, 1)); }
 .community-section > summary { cursor: pointer; font-weight: 600; }
 .community-section > summary > span { margin-left: 6px; font-size: calc(9px * var(--reading-scale, 1)); font-weight: 400; }

@@ -5,6 +5,7 @@ import { createGkgSnapshot, gkgTopicReport } from './gdelt-gkg.js';
 import { GDELT_SNAPSHOT_URL, validateGdeltSnapshot } from './gdelt-snapshot.js';
 import { gdeltQueryUrl } from './gdelt-query.js';
 import { createDiscoveryIndex } from '../../src/core/discovery-index.js';
+import { createEonetSnapshot, EONET_SNAPSHOT_URL } from './eonet-snapshot.js';
 
 const NOW = Date.parse('2026-10-11T10:05:00.000Z'), ISO = new Date(NOW).toISOString(), BATCH = '20261011100000';
 function snapshot() {
@@ -28,7 +29,7 @@ test('country-name/topic/publisher searches share one snapshot and expose unfilt
   assert.equal(first.payload.indexRecords.length, 2, 'other countries and categories remain available for local queries');
   assert.ok(first.payload.indexRecords.some((record) => record.mentionedCountries.includes('FR')));
   assert.ok(first.payload.indexRecords.find((record) => record.url.includes('bbc')).reviewedTopics.includes('Trade'));
-  assert.equal(first.payload.indexCoverage.schemaVersion, 1); assert.equal(first.payload.indexCoverage.maxRecords, 440);
+  assert.equal(first.payload.indexCoverage.schemaVersion, 1); assert.equal(first.payload.indexCoverage.maxRecords, 500);
   const version = first.payload.indexVersion;
   const economy = await read('/?category=economy&q=Ukraine%20trade'); assert.equal(economy.payload.reports.length, 1);
   const publisher = await read('/?category=geopolitics&q=bbc.example'); assert.equal(publisher.payload.reports.length, 1);
@@ -50,15 +51,19 @@ test('API candidates retain every source cap while the default display stays gro
     properties: { url: `https://earthquake.usgs.gov/event/${i}`, title: `Earthquake ${i}`, time: NOW - i * 1000 } })) };
   const gdacs = { features: Array.from({ length: 100 }, (_, i) => ({ geometry: { coordinates: [i / 10, 50] }, properties: {
     eventid: i + 1, eventtype: 'FL', name: `Flood ${i}`, fromdate: ISO, country: 'Belgium', affectedcountries: [{ iso2: 'BE' }], url: { report: `https://www.gdacs.org/report/${i}` } } })) };
+  const eonet = await createEonetSnapshot({ events: Array.from({ length: 60 }, (_, i) => ({ id: `EONET_${i + 1}`, title: `Curated wildfire ${i}`,
+    categories: [{ id: 'wildfires' }], sources: [{ id: 'GDACS', url: `https://www.gdacs.org/report/${i}` }],
+    closed: null, geometry: [{ date: ISO }] })) }, { retrievedAt: ISO, nowMs: NOW });
   let requests = 0;
-  const read = endpoint(intelligenceProxy({ now: () => NOW, fetchImpl: async (url) => { requests++; return Response.json(url === GDELT_SNAPSHOT_URL ? large : url.includes('usgs.gov') ? usgs : gdacs); } }));
+  const read = endpoint(intelligenceProxy({ now: () => NOW, fetchImpl: async (url) => { requests++; return Response.json(url === GDELT_SNAPSHOT_URL ? large : url === EONET_SNAPSHOT_URL ? eonet : url.includes('usgs.gov') ? usgs : gdacs); } }));
   const result = await read('/?category=all');
-  assert.equal(requests, 3); assert.equal(result.payload.indexRecords.length, 440); assert.equal(result.payload.reports.length, 80);
+  assert.equal(requests, 4); assert.equal(result.payload.indexRecords.length, 500); assert.equal(result.payload.reports.length, 80);
   assert.ok(result.payload.indexCoverage.byteLength <= 2 * 1024 * 1024);
-  assert.deepEqual(result.payload.indexCoverage.sources.map((source) => source.recordCount).sort((a, b) => a - b), [100, 100, 240]);
+  assert.deepEqual(result.payload.indexCoverage.sources.map((source) => source.recordCount).sort((a, b) => a - b), [60, 100, 100, 240]);
   assert.equal(result.payload.indexRecords.find((record) => record.sourceId === 'usgs').kind, 'hazard-report');
   assert.equal(result.payload.indexRecords.find((record) => record.sourceId === 'gdelt').kind, 'topic-mention');
-  await read('/?category=all&q=Ukraine%20military'); assert.equal(requests, 3);
+  assert.equal(result.payload.indexRecords.find((record) => record.sourceId === 'eonet').kind, 'curated-event');
+  await read('/?category=all&q=Ukraine%20military'); assert.equal(requests, 4);
 });
 
 test('controlled live fallback also serves arbitrary topic changes from its existing coarse metadata sample', async () => {
