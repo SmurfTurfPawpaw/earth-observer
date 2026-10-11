@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeOpenSkyAircraft, normalizeReadsbAircraft, openSkySnapshot, readsbSnapshot } from './aircraft.js';
+import { normalizeOpenSkyAircraft, normalizeReadsbAircraft, openSkySnapshot, readsbSnapshot, preparedAircraftSnapshot } from './aircraft.js';
 
 const NOW = 1791676800000;
 const receiver = (fields = {}) => ({ hex: 'ABC123', lat: 50.85, lon: 4.35, gs: 200, track: 90, ...fields });
@@ -93,4 +93,52 @@ test('readsb geometric altitude uses a provided geometric rate without mixing ba
   assert.equal(onlyBaroAltitude.verticalRateAltitudeType, 'barometric');
   const invalidGeometricRate = normalizeReadsbAircraft({ ...row, geom_rate: Infinity }, NOW, reported);
   assert.equal(invalidGeometricRate.verticalRateAltitudeType, 'barometric');
+});
+
+test('prepared records retain exact SI fixes and only qualified earlier matching history is admitted', () => {
+  const latest = { id: 'abc123', latitude: 50.85, longitude: 4.35, positionTimeMs: NOW, positionTimeQuality: 'reported',
+    ellipsoidAltitudeM: 1200, baroAltitudeM: 1100, speedMps: 100, courseDeg: 90, verticalRateMps: 2, verticalRateAltitudeType: 'geometric' };
+  const previous = { ...latest, longitude: 4.34, positionTimeMs: NOW - 30000 };
+  const payload = { schemaVersion: 1, source: 'adsb.lol', prepared: true, delivery: 'prepared-aircraft-observations', observedAtMs: NOW,
+    observedAtSource: 'source', stale: false, records: [latest], history: [previous, { ...previous, id: 'other' },
+      { ...previous, positionTimeQuality: 'unknown' }, { ...previous, positionTimeMs: null }, { ...previous, positionTimeMs: NOW + 1 }] };
+  const snapshot = preparedAircraftSnapshot(payload, { now: NOW + 1000 });
+  assert.equal(snapshot.records[0].positionTimeMs, NOW); assert.equal(snapshot.records[0].ellipsoidAltitudeM, 1200);
+  assert.equal(snapshot.records[0].verticalRateAltitudeType, 'geometric'); assert.equal(snapshot.records[0].baroAltitudeM, 1100);
+  assert.equal(snapshot.history.length, 1); assert.equal(snapshot.history[0].positionTimeMs, NOW - 30000);
+  assert.equal(snapshot.ageMs, 1000); assert.equal(snapshot.complete, false);
+  const old = preparedAircraftSnapshot(payload, { now: NOW + 300000 });
+  assert.equal(old.stale, true); assert.equal(old.records[0].positionTimeMs, NOW); assert.equal(old.history[0].positionTimeMs, NOW - 30000);
+  assert.throws(() => preparedAircraftSnapshot({ ...payload, records: Array(2001).fill(latest) }), /Malformed/);
+  assert.throws(() => preparedAircraftSnapshot({ ...payload, history: Array(4001).fill(previous) }), /Malformed/);
+  assert.throws(() => preparedAircraftSnapshot({ ...payload, observedAtSource: 'receipt' }), /Malformed/);
+});
+
+test('prepared unknown source epochs retain static coordinates without qualifying motion or inventing source age', () => {
+  const record = { id: 'abc123', latitude: 50.85, longitude: 4.35, positionTimeQuality: 'unknown', positionTimeMs: null, contactTimeMs: null,
+    speedMps: 100, courseDeg: 90, ellipsoidAltitudeM: 1200 };
+  const payload = { schemaVersion: 1, source: 'adsb.lol', prepared: true, delivery: 'prepared-aircraft-observations',
+    observedAtSource: 'unknown', observedAtMs: null, records: [record], history: [], freshness: 'unknown',
+    collectedAt: new Date(NOW - 1000).toISOString(), captureAgeMs: 1000, sourceAgeMs: null };
+  const snapshot = preparedAircraftSnapshot(payload, { now: NOW });
+  assert.equal(snapshot.observedAtSource, 'unknown'); assert.equal(snapshot.observedAtMs, null); assert.equal(snapshot.ageMs, null);
+  assert.equal(snapshot.records[0].latitude, 50.85); assert.equal(snapshot.records[0].positionTimeMs, null);
+  assert.equal(snapshot.records[0].positionTimeQuality, 'unknown'); assert.equal(snapshot.freshness, 'unknown'); assert.equal(snapshot.stale, false);
+  const unqualified = preparedAircraftSnapshot({ ...payload, records: [{ ...record, positionTimeQuality: 'reported', positionTimeMs: NOW, contactTimeMs: NOW }] }, { now: NOW });
+  assert.equal(unqualified.records[0].positionTimeQuality, 'unknown'); assert.equal(unqualified.records[0].positionTimeMs, null);
+  assert.equal(unqualified.records[0].contactTimeMs, null);
+  assert.throws(() => preparedAircraftSnapshot({ ...payload, observedAtMs: NOW }), /Malformed/);
+});
+
+test('prepared cached delivery recomputes source and capture ages while leaving original fix dates unchanged', () => {
+  const record = { id: 'abc123', latitude: 50.85, longitude: 4.35, positionTimeQuality: 'reported', positionTimeMs: NOW - 1000 };
+  const payload = { schemaVersion: 1, source: 'adsb.lol', prepared: true, delivery: 'prepared-aircraft-observations',
+    observedAtSource: 'source', observedAtMs: NOW, records: [record], history: [], freshness: 'current',
+    collectedAt: new Date(NOW).toISOString(), sourceAgeMs: 0, captureAgeMs: 0, lastCheckedAt: new Date(NOW).toISOString() };
+  const cached = preparedAircraftSnapshot(payload, { now: NOW + 121000 });
+  assert.equal(cached.sourceAgeMs, 121000); assert.equal(cached.captureAgeMs, 121000); assert.equal(cached.stale, true);
+  assert.equal(cached.lastCheckedAt, payload.lastCheckedAt); assert.equal(cached.records[0].positionTimeMs, NOW - 1000);
+  const header = preparedAircraftSnapshot(payload, { now: NOW, cacheAgeMs: 125000 });
+  assert.equal(header.sourceAgeMs, 125000); assert.equal(header.stale, true);
+  assert.equal(preparedAircraftSnapshot({ ...payload, sourceState: { cache: 'STALE' } }, { now: NOW }).stale, true);
 });

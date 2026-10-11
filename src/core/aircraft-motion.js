@@ -165,27 +165,28 @@ export function createAircraftMotion({ predictionEnabled = false, horizonMs = AI
   if (!Number.isFinite(horizonMs) || horizonMs < 1000 || horizonMs > 120000 || !Number.isFinite(correctionMs) || correctionMs < 0 || correctionMs > 5000 ||
     !Number.isFinite(maxInterpolationGapMs) || maxInterpolationGapMs < 1000 || maxInterpolationGapMs > 120000 || !['endpoint-motion', 'geodesic'].includes(interpolationMethod) || !Number.isFinite(diagnosticHorizonMs) || diagnosticHorizonMs < 1000 || diagnosticHorizonMs > 120000) throw new TypeError('Aircraft motion policy must be finite and bounded');
   let anchor = null, anchorQualified = false, fixes = [], curve = null, correction = null, lastError = null, diagnosticError = null, lastAdmission = null;
-  function sample(atMs, { wallTimeMs } = {}) {
+  function sample(atMs, { wallTimeMs, allowPlayback = true } = {}) {
     if (!anchor || !Number.isFinite(atMs)) return null;
     const observed = observedPosition(anchor), reported = anchorQualified;
-    const validUntilMs = anchorQualified && eligible(anchor) ? expiry(anchor, horizonMs) : null;
-    let position = observed, mode = 'observed', active = false, correctionRemainingM = 0, model = null, bufferState = 'unqualified', nextActivationMs = null;
+    const playback = predictionEnabled && allowPlayback;
+    const validUntilMs = playback && anchorQualified && eligible(anchor) ? expiry(anchor, horizonMs) : null;
+    let position = observed, mode = 'observed', active = false, correctionRemainingM = 0, model = null, bufferState = predictionEnabled && !allowPlayback ? 'stale-observation' : 'unqualified', nextActivationMs = null;
     let displayObservedAtMs = reported ? anchor.positionTimeMs : null;
     // Interpolation is confined to two actual retained fixes and is derived state.
-    if (predictionEnabled && curve && atMs < curve.startAtMs) {
+    if (playback && curve && atMs < curve.startAtMs) {
       // A new early fix must not move the waiting marker ahead of its cursor,
       // then send it backwards when buffered playback reaches the first fix.
       position = curve.position(curve.startAtMs); displayObservedAtMs = curve.startAtMs;
       bufferState = 'awaiting-buffer'; nextActivationMs = curve.startAtMs;
-    } else if (predictionEnabled && curve && atMs >= curve.startAtMs && atMs < curve.endAtMs) {
+    } else if (playback && curve && atMs >= curve.startAtMs && atMs < curve.endAtMs) {
       position = curve.position(atMs); mode = 'estimated'; model = curve.model; active = curve.moving; bufferState = 'interpolating';
-    } else if (predictionEnabled && anchorQualified && eligible(anchor) && atMs >= anchor.positionTimeMs) {
+    } else if (playback && anchorQualified && eligible(anchor) && atMs >= anchor.positionTimeMs) {
       const modelAtMs = Math.min(atMs, validUntilMs);
       position = projectAircraftObservation(anchor, modelAtMs, { horizonMs }) || observed;
       mode = atMs >= validUntilMs ? 'expired' : atMs > anchor.positionTimeMs ? 'estimated' : 'observed';
       active = atMs < validUntilMs && (anchor.speedMps > 0 || rate(anchor) !== 0); model = AIRCRAFT_MOTION_MODEL;
       bufferState = mode === 'expired' ? 'expired' : 'edge-prediction';
-    } else if (predictionEnabled && anchorQualified) {
+    } else if (playback && anchorQualified) {
       bufferState = fixes.length === 2 && !curve ? 'observation-gap' : 'awaiting-buffer';
       nextActivationMs = curve && atMs < curve.startAtMs ? curve.startAtMs : eligible(anchor) && atMs < anchor.positionTimeMs ? anchor.positionTimeMs : null;
     }
@@ -206,7 +207,7 @@ export function createAircraftMotion({ predictionEnabled = false, horizonMs = AI
       correctionRemainingM, bufferState, nextActivationMs,
       basisObservedAtMs: curve && ['interpolating', 'awaiting-buffer'].includes(bufferState) ? fixes.map((fix) => fix.positionTimeMs) : reported ? [anchor.positionTimeMs] : [] };
   }
-  function admit(record, receivedAtMs, { displayAtMs = receivedAtMs } = {}) {
+  function admit(record, receivedAtMs, { displayAtMs = receivedAtMs, correctionEnabled = true, allowPlayback = true, previousPlaybackAllowed = allowPlayback } = {}) {
     if (!record?.id || !coordinates(record) || !Number.isFinite(receivedAtMs) || !Number.isFinite(displayAtMs) || displayAtMs > receivedAtMs) return { accepted: false, reason: 'invalid-observation', reset: false };
     const incoming = copyObservation(record);
     const previous = anchor, previousReported = anchorQualified;
@@ -214,7 +215,7 @@ export function createAircraftMotion({ predictionEnabled = false, horizonMs = AI
     const reported = incoming.positionTimeQuality === 'reported' && time(incoming.positionTimeMs);
     if (previous && previous.id === incoming.id && previousRawTime && reported && (incoming.positionTimeMs === previous.positionTimeMs || (previousReported && incoming.positionTimeMs < previous.positionTimeMs)))
       return { accepted: false, reason: incoming.positionTimeMs === previous.positionTimeMs ? 'duplicate-observation' : 'out-of-order', reset: false };
-    const beforeDisplay = sample(displayAtMs, { wallTimeMs: receivedAtMs });
+    const beforeDisplay = sample(displayAtMs, { wallTimeMs: receivedAtMs, allowPlayback: previousPlaybackAllowed });
     const predicted = previousReported && previous?.id === incoming.id && reported ? projectAircraftObservation(previous, incoming.positionTimeMs, { horizonMs }) : null;
     lastError = predicted ? aircraftObservationError(predicted, incoming) : null;
     if (lastError) lastError = { ...lastError, forecastHorizonMs: incoming.positionTimeMs - previous.positionTimeMs, productionHorizonMs: horizonMs };
@@ -237,8 +238,8 @@ export function createAircraftMotion({ predictionEnabled = false, horizonMs = AI
     if (reset) fixes = [];
     if (reported && incoming.positionTimeMs <= receivedAtMs) fixes = [...fixes, incoming].slice(-2);
     curve = fixes.length === 2 ? interpolation(fixes[0], fixes[1], { method: interpolationMethod, maxInterpolationGapMs }) : null;
-    const targetDisplay = sample(displayAtMs, { wallTimeMs: receivedAtMs });
-    if (predictionEnabled && !reset && correctionMs > 0 && beforeDisplay && targetDisplay?.model && displayAtMs < targetDisplay.validUntilMs && beforeDisplay.position.altitudeType === targetDisplay.position.altitudeType) {
+    const targetDisplay = sample(displayAtMs, { wallTimeMs: receivedAtMs, allowPlayback });
+    if (predictionEnabled && correctionEnabled && !reset && correctionMs > 0 && beforeDisplay && targetDisplay?.model && displayAtMs < targetDisplay.validUntilMs && beforeDisplay.position.altitudeType === targetDisplay.position.altitudeType) {
       const target = targetDisplay.position, offset = inverse(target, beforeDisplay.position), altitudeDeltaM = beforeDisplay.position.altitudeM - target.altitudeM;
       if (Math.hypot(offset.distanceM, altitudeDeltaM) <= MAX_CORRECTION_M)
         correction = { startedAtMs: receivedAtMs, clockOffsetMs: receivedAtMs - displayAtMs, durationMs: Math.min(correctionMs, targetDisplay.validUntilMs - displayAtMs), distanceM: offset.distanceM, bearingDeg: offset.bearingDeg, altitudeDeltaM };

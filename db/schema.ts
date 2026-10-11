@@ -20,3 +20,18 @@ export const collectionRevision = sqliteTable('earth_collection_revision', {
   recordCount: integer('record_count').notNull(),
   revision: text('revision').notNull(),
 });
+
+// Aircraft captures have their own protocol and must not enter report history queries.
+export const aircraftObservations = sqliteTable('earth_aircraft_observations', {
+  scopeId: text('scope_id').notNull(),
+  collectedAt: text('collected_at').notNull(),
+  snapshotId: text('snapshot_id').notNull(),
+  recordCount: integer('record_count').notNull(),
+  scopeType: text('scope_type').notNull(),
+  scopeJson: text('scope_json').notNull(),
+  observedAtMs: integer('observed_at_ms'),
+  observedAtSource: text('observed_at_source').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.scopeId, table.collectedAt] }),
+  index('earth_aircraft_observations_collected_at').on(table.collectedAt),
+]);

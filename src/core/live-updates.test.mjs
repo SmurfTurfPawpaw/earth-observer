@@ -10,7 +10,7 @@ function fixture() {
     constructor(url) { super(); this.url = url; this.readyState = 0; streams.push(this); }
     close() { this.closed = true; }
     open() { this.readyState = 1; this.dispatchEvent(new Event('open')); }
-    send(value) { this.dispatchEvent(new MessageEvent('collection', { data: JSON.stringify(value) })); }
+    send(value, kind = 'collection') { this.dispatchEvent(new MessageEvent(kind, { data: JSON.stringify(value) })); }
     fail(terminal = false) { this.readyState = terminal ? 2 : 0; this.dispatchEvent(new Event('error')); }
   }
   doc.hidden = false;
@@ -49,4 +49,22 @@ test('hidden/offline/destroy dispose transports and reject late events; terminal
   const retry = [...f.timers.values()][0]; f.timers.clear(); retry.fn(); assert.equal(f.streams.length, 4);
   f.updates.destroy(); f.reconnect(); f.doc.dispatchEvent(new Event('visibilitychange'));
   assert.equal(f.streams.length, 4); assert.equal(f.streams[3].closed, true); assert.equal(f.timers.size, 0);
+});
+
+test('aircraft revisions have independent monotonic dates and bounds without refreshing intelligence consumers', () => {
+  const f = fixture(), seen = [];
+  f.updates.subscribe((event) => seen.push(event)); f.updates.start();
+  const stream = f.streams[0]; stream.open(); stream.send(revision());
+  const earlier = { ...revision('2026-10-11T12:59:00.000Z'), recordCount: 1200 };
+  stream.send(earlier, 'aircraft'); stream.send(earlier, 'aircraft');
+  stream.send({ ...earlier, inputDigest: 'b'.repeat(64), revision: `${earlier.collectedAt}:${'b'.repeat(64)}` }, 'aircraft');
+  stream.send({ ...revision('2026-10-11T12:58:00.000Z'), recordCount: 1200 }, 'aircraft');
+  stream.send({ ...revision('2026-10-11T13:02:00.000Z'), recordCount: 2001 }, 'aircraft');
+  assert.equal(seen.filter(({ type }) => type === 'collection').length, 1);
+  assert.equal(seen.filter(({ type }) => type === 'aircraft').length, 1);
+  const resumed = []; f.updates.subscribe((event) => resumed.push(event));
+  assert.deepEqual(resumed.map(({ type }) => type), ['status', 'collection', 'aircraft']);
+  assert.equal(resumed[2].collectedAt, earlier.collectedAt);
+  assert.equal(f.updates.getState().aircraft.recordCount, 1200);
+  f.updates.destroy();
 });

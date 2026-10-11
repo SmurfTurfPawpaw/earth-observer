@@ -1,6 +1,7 @@
 const SELECT = 'SELECT collected_at, input_digest, record_count, revision FROM earth_collection_revision WHERE id = ?';
+const SELECT_ALL = 'SELECT id, collected_at, input_digest, record_count, revision FROM earth_collection_revision WHERE id IN (1, 2)';
 const UPSERT = `INSERT INTO earth_collection_revision (id, collected_at, input_digest, record_count, revision)
-  VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET collected_at = excluded.collected_at,
+  VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET collected_at = excluded.collected_at,
   input_digest = excluded.input_digest, record_count = excluded.record_count, revision = excluded.revision
   WHERE excluded.collected_at > earth_collection_revision.collected_at`;
 const encoder = new TextEncoder();
@@ -10,15 +11,16 @@ const json = (value, status, headers = {}) => Response.json(value, { status, hea
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers,
 } });
 
-export function collectionRevision(value) {
+export function collectionRevision(value, kind = 'collection') {
+  if (!['collection', 'aircraft'].includes(kind)) throw new TypeError('Unknown collection revision kind');
   const collectedAt = value?.collectedAt ?? value?.at, inputDigest = value?.inputDigest ?? value?.digest;
-  if (!iso(collectedAt) || !/^[a-f0-9]{64}$/.test(inputDigest || '') || !Number.isInteger(value?.recordCount) || value.recordCount < 0 || value.recordCount > 500)
+  if (!iso(collectedAt) || !/^[a-f0-9]{64}$/.test(inputDigest || '') || !Number.isInteger(value?.recordCount) || value.recordCount < 0 || value.recordCount > (kind === 'aircraft' ? 2000 : 500))
     throw new TypeError('Invalid bounded collection revision');
   return Object.freeze({ schemaVersion: 1, revision: `${collectedAt}:${inputDigest}`, collectedAt, inputDigest, recordCount: value.recordCount });
 }
-function rowRevision(row) {
+function rowRevision(row, kind = 'collection') {
   if (!row) return null;
-  const value = collectionRevision({ collectedAt: row.collected_at, inputDigest: row.input_digest, recordCount: row.record_count });
+  const value = collectionRevision({ collectedAt: row.collected_at, inputDigest: row.input_digest, recordCount: row.record_count }, kind);
   if (row.revision !== value.revision) throw new Error('Stored collection revision is invalid');
   return value;
 }
@@ -35,11 +37,12 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
   const states = new WeakMap();
   function stateFor(db) {
     let state = states.get(db);
-    if (!state) { state = { latest: null, loaded: false, clients: 0, epoch: 0, readToken: null, nextReadAt: 0, failures: 0, unavailable: false }; states.set(db, state); }
+    if (!state) { state = { latest: null, aircraft: null, loaded: false, clients: 0, epoch: 0, readToken: null, nextReadAt: 0, failures: 0, unavailable: false }; states.set(db, state); }
     return state;
   }
-  function remember(state, value) {
-    if (value && (!state.latest || value.collectedAt > state.latest.collectedAt || value.revision === state.latest.revision)) state.latest = value;
+  function remember(state, value, kind = 'collection') {
+    const key = kind === 'aircraft' ? 'aircraft' : 'latest';
+    if (value && (!state[key] || value.collectedAt > state[key].collectedAt || value.revision === state[key].revision)) state[key] = value;
   }
   async function bounded(task, signal, settled = () => {}) {
     if (signal?.aborted) throw new Error('Update read canceled');
@@ -58,11 +61,15 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     const token = Symbol(), epoch = state.epoch;
     state.readToken = token; state.nextReadAt = now() + pollMs; countQuery();
     try {
-      const row = await bounded(() => primary(db).prepare(SELECT).bind(1).first(), signal, () => {
+      const rows = await bounded(() => primary(db).prepare(SELECT_ALL).bind().all(), signal, () => {
         if (state.readToken === token) state.readToken = null;
       });
       if (!signal.aborted && state.epoch === epoch && state.clients) {
-        remember(state, rowRevision(row)); state.loaded = true; state.failures = 0; state.unavailable = false;
+        for (const row of rows.results || []) {
+          const kind = row.id === 2 ? 'aircraft' : 'collection';
+          remember(state, rowRevision(row, kind), kind);
+        }
+        state.loaded = true; state.failures = 0; state.unavailable = false;
       }
     } catch {
       if (!signal.aborted && state.epoch === epoch && state.clients) {
@@ -74,15 +81,15 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     // actually settles, preventing overlapping reads; its late result is ignored.
   }
 
-  async function publishCollectionRevision(env, input) {
-    const incoming = collectionRevision(input);
+  async function publishCollectionRevision(env, input, kind = 'collection') {
+    const incoming = collectionRevision(input, kind), id = kind === 'aircraft' ? 2 : 1;
     if (Date.parse(incoming.collectedAt) > now() + 300000) throw new TypeError('Collection revision is in the future');
     if (!configured(env)) return { configured: false, stored: false };
     const db = env.EARTH_DB;
-    await bounded(() => db.prepare(UPSERT).bind(incoming.collectedAt, incoming.inputDigest, incoming.recordCount, incoming.revision).run());
-    const current = rowRevision(await bounded(() => primary(db).prepare(SELECT).bind(1).first()));
+    await bounded(() => db.prepare(UPSERT).bind(id, incoming.collectedAt, incoming.inputDigest, incoming.recordCount, incoming.revision).run());
+    const current = rowRevision(await bounded(() => primary(db).prepare(SELECT).bind(id).first()), kind);
     if (!current) throw new Error('Durable collection revision is unavailable');
-    const state = stateFor(db); remember(state, current); state.loaded = true; state.unavailable = false;
+    const state = stateFor(db); remember(state, current, kind); state.loaded = true; state.unavailable = false;
     return { configured: true, stored: true, superseded: current.revision !== incoming.revision, ...current };
   }
 
@@ -95,7 +102,8 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     if (state.clients >= maxClients) return json({ error: 'Update connection limit reached' }, 429, { 'retry-after': '15' });
     state.clients++;
     const epoch = state.epoch, internal = new AbortController(), beganAt = now();
-    let open = true, controller, waitTimer, releaseWait, lastRevision = '', lastKeepaliveAt = beganAt, checks = 0, sentReady = false, lastAvailability = null;
+    let open = true, controller, waitTimer, releaseWait, lastKeepaliveAt = beganAt, checks = 0, sentReady = false, lastAvailability = null;
+    const lastRevisions = { collection: '', aircraft: '' };
     function stop(close = true) {
       if (!open) return; open = false;
       unschedule(waitTimer); releaseWait?.(); internal.abort(); request.signal.removeEventListener('abort', aborted);
@@ -125,10 +133,14 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
               send(`event: status\ndata: ${JSON.stringify({ schemaVersion: 1, available })}\n\n`);
             }
           }
-          if (state.latest && state.latest.revision !== lastRevision) {
-            lastRevision = state.latest.revision;
-            send(`id: ${lastRevision}\nevent: collection\ndata: ${JSON.stringify(state.latest)}\n\n`);
-          } else if (!state.latest && !sentReady && (state.loaded || state.unavailable)) {
+          for (const kind of ['collection', 'aircraft']) {
+            const latest = kind === 'aircraft' ? state.aircraft : state.latest;
+            if (latest && latest.revision !== lastRevisions[kind]) {
+              lastRevisions[kind] = latest.revision;
+              send(`id: ${kind === 'aircraft' ? 'aircraft:' : ''}${latest.revision}\nevent: ${kind}\ndata: ${JSON.stringify(latest)}\n\n`);
+            }
+          }
+          if (!state.latest && !state.aircraft && !sentReady && (state.loaded || state.unavailable)) {
             sentReady = true;
             send(`event: ready\ndata: ${JSON.stringify({ schemaVersion: 1, available: false })}\n\n`);
           }
@@ -150,12 +162,14 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
   }
   function status(env) {
     const state = env?.EARTH_DB && states.get(env.EARTH_DB);
-    return { clients: state?.clients || 0, reading: Boolean(state?.readToken), revision: state?.latest?.revision || null };
+    return { clients: state?.clients || 0, reading: Boolean(state?.readToken), revision: state?.latest?.revision || null,
+      aircraftRevision: state?.aircraft?.revision || null };
   }
   return { publishCollectionRevision, handleUpdates, closeUpdates, status };
 }
 
 const channel = createCollectionUpdates();
 export const publishCollectionRevision = (env, value) => channel.publishCollectionRevision(env, value);
+export const publishAircraftRevision = (env, value) => channel.publishCollectionRevision(env, value, 'aircraft');
 export const handleUpdates = (request, env) => channel.handleUpdates(request, env);
 export const closeUpdates = (env) => channel.closeUpdates(env);

@@ -24,7 +24,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     meta, requested: false, enabled: false, initialized: false,
     status: 'disabled', error: null, module: null, loading: null,
     queue: Promise.resolve(), revision: 0, controller: new AbortController(),
-    timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false,
+    timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false, preparedDirty: false,
   }]));
   const listeners = new Set([onStateChange]);
   let servicesPromise, services, destroyed = false, publishQueued = false, timelinePaused = false;
@@ -151,6 +151,10 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     const owner = entry.controller;
     publish();
     try {
+      if (entry.preparedDirty) {
+        entry.preparedDirty = false;
+        entry.module.invalidatePreparedSnapshot?.();
+      }
       const updated = await entry.module.update?.(viewer, { signal: owner.signal });
       if (owner.signal.aborted) return false;
       entry.error = null;
@@ -313,6 +317,17 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
 
   const manager = {
     viewer, getState, setEnabled, restore, destroy, refresh, preload, setTimelineMode,
+    requestRefresh(id) {
+      const entry = requireEntry(id);
+      if (destroyed) return false;
+      // Retain one invalidation through lazy loading, hidden/history pauses and
+      // disabled layers. The next permitted update must bypass an older HIT.
+      entry.preparedDirty = true;
+      if (timelinePaused || documentRef?.hidden || !entry.requested || !entry.enabled) return false;
+      if (entry.refreshing) entry.revalidated = true;
+      else void refresh(id);
+      return true;
+    },
     isTimelinePaused: () => timelinePaused,
     getLocalArea: () => localArea ? { ...localArea } : null,
     setLocalArea(value) {

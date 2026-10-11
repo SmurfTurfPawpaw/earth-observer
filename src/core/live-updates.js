@@ -1,9 +1,10 @@
 /** A durable collection revision, never a source observation or a visitor identifier. */
-export function collectionRevision(value) {
+export function collectionRevision(value, kind = 'collection') {
+  if (!['collection', 'aircraft'].includes(kind)) return null;
   if (!value || value.schemaVersion !== 1 || typeof value.collectedAt !== 'string' ||
       !Number.isFinite(Date.parse(value.collectedAt)) || new Date(value.collectedAt).toISOString() !== value.collectedAt ||
       !/^[a-f0-9]{64}$/.test(value.inputDigest || '') || !Number.isInteger(value.recordCount) ||
-      value.recordCount < 0 || value.recordCount > 500 || value.revision !== `${value.collectedAt}:${value.inputDigest}`) return null;
+      value.recordCount < 0 || value.recordCount > (kind === 'aircraft' ? 2000 : 500) || value.revision !== `${value.collectedAt}:${value.inputDigest}`) return null;
   return { schemaVersion: 1, revision: value.revision, collectedAt: value.collectedAt,
     inputDigest: value.inputDigest, recordCount: value.recordCount };
 }
@@ -15,6 +16,7 @@ export function createLiveUpdates({ url = `${import.meta.env?.BASE_URL || '/'}ap
   setTimeoutImpl = globalThis.setTimeout, clearTimeoutImpl = globalThis.clearTimeout } = {}) {
   const listeners = new Set();
   let started = false, destroyed = false, source, retryTimer, retryMs = 1000, status = 'connecting', latest;
+  let aircraft;
   const notify = (value) => { for (const listener of listeners) { try { listener(value); } catch {} } };
   const state = () => ({ type: 'status', status, revision: latest?.revision || null });
   const setStatus = (value) => { if (status === value) return; status = value; notify(state()); };
@@ -36,11 +38,13 @@ export function createLiveUpdates({ url = `${import.meta.env?.BASE_URL || '/'}ap
       if (source !== current || destroyed) return;
       retryMs = 1000; setStatus('connected');
     });
-    current.addEventListener('collection', (event) => {
+    for (const kind of ['collection', 'aircraft']) current.addEventListener(kind, (event) => {
       if (source !== current || destroyed || typeof event.data !== 'string' || event.data.length > 1024) return;
-      let revision; try { revision = collectionRevision(JSON.parse(event.data)); } catch { return; }
-      if (!revision || latest?.revision === revision.revision || latest?.collectedAt > revision.collectedAt) return;
-      latest = revision; notify({ type: 'collection', ...revision });
+      let revision; try { revision = collectionRevision(JSON.parse(event.data), kind); } catch { return; }
+      const previous = kind === 'aircraft' ? aircraft : latest;
+      if (!revision || previous?.revision === revision.revision || previous?.collectedAt >= revision.collectedAt) return;
+      if (kind === 'aircraft') aircraft = revision; else latest = revision;
+      notify({ type: kind, ...revision });
     });
     current.addEventListener('status', (event) => {
       if (source !== current || destroyed || typeof event.data !== 'string' || event.data.length > 256) return;
@@ -65,11 +69,12 @@ export function createLiveUpdates({ url = `${import.meta.env?.BASE_URL || '/'}ap
   const offline = () => { disconnect(); setStatus('offline'); };
   const reconnect = () => connect();
   return {
-    getState: () => ({ ...state(), latest: latest ? { ...latest } : null }),
+    getState: () => ({ ...state(), latest: latest ? { ...latest } : null, aircraft: aircraft ? { ...aircraft } : null }),
     subscribe(listener) {
       if (destroyed) return () => {};
       listeners.add(listener); listener(state());
       if (latest) listener({ type: 'collection', ...latest });
+      if (aircraft) listener({ type: 'aircraft', ...aircraft });
       return () => listeners.delete(listener);
     },
     start() {

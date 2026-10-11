@@ -185,6 +185,10 @@ export async function start() {
       onNavigate(report) { setCameraView(viewer, { ...cameraView(viewer), lat: report.lat, lon: report.lon, alt: 200000, pitch: -90 }, true); },
     });
     disposers.push(() => timeline.destroy());
+    disposers.push(updates.subscribe((event) => {
+      if (event.type !== 'aircraft') return;
+      for (const id of ['flights', 'military']) manager.requestRefresh(id);
+    }));
     updates.start();
     const locateButton = document.getElementById('locate'); locateButton.disabled = false; locateButton.addEventListener('click', locate); disposers.push(() => locateButton.removeEventListener('click', locate));
     const radius = document.getElementById('local-radius');

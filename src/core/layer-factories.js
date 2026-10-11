@@ -44,23 +44,75 @@ export function preloadLayer(id) {
   return codeCache.get(group);
 }
 
+const PREPARED_AIRCRAFT_BYTES = 2 * 1024 * 1024;
+async function aircraftJson(response, signal) {
+  signal?.throwIfAborted();
+  if (Number(response.headers.get('content-length')) > PREPARED_AIRCRAFT_BYTES) throw new Error('Aircraft response exceeds its bounded payload');
+  const reader = response.body?.getReader();
+  if (!reader) { const payload = await response.json(); signal?.throwIfAborted(); return payload; }
+  const chunks = []; let length = 0;
+  const abort = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener('abort', abort, { once: true });
+  try {
+    for (;;) {
+      signal?.throwIfAborted(); const { done, value } = await reader.read(); signal?.throwIfAborted();
+      if (done) break;
+      length += value.byteLength;
+      if (length > PREPARED_AIRCRAFT_BYTES) { abort(); throw new Error('Aircraft response exceeds its bounded payload'); }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(length); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } finally { signal?.removeEventListener('abort', abort); reader.releaseLock(); }
+}
+const aircraftRequest = (signal, revalidate) => ({ signal, ...(revalidate ? { cache: 'no-cache', headers: { 'Cache-Control': 'no-cache' } } : {}) });
+
 /** Shared live aircraft adapter; receipt clocks never qualify a position fix. */
-export function createAircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities }) {
+export function createAircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities, preparedAircraftSnapshot }) {
   const endpoint = military ? '/api/military' : '/api/flights';
-  const read = async (query = {}, { signal } = {}) => {
+  const read = async (query = {}, { signal, revalidate = false } = {}) => {
     const params = new URLSearchParams();
     if (!military && Number.isFinite(query.latitude) && Number.isFinite(query.longitude)) {
       params.set('lat', query.latitude.toFixed(4));
       params.set('lon', query.longitude.toFixed(4));
-      if (Number.isFinite(query.radiusKm)) params.set('radiusKm', String(query.radiusKm));
+      params.set('radiusKm', String(query.radiusKm ?? 50));
     }
-    const response = await fetchImpl(`${endpoint}${params.size ? '?' + params : ''}`, { signal });
+    signal?.throwIfAborted();
+    const response = await fetchImpl(`${endpoint}${params.size ? '?' + params : ''}`, aircraftRequest(signal, revalidate));
+    signal?.throwIfAborted();
     if (!response.ok) throw new Error(`adsb.lol HTTP ${response.status}`);
-    return { response, payload: await response.json() };
+    const payload = await response.json(); signal?.throwIfAborted(); return { response, payload };
+  };
+  const readPrepared = async (query = {}, { signal, revalidate = false } = {}) => {
+    const params = new URLSearchParams();
+    if (military) params.set('military', '1');
+    else {
+      if (!Number.isFinite(query.latitude) || !Number.isFinite(query.longitude)) return null;
+      params.set('lat', query.latitude.toFixed(4)); params.set('lon', query.longitude.toFixed(4));
+      params.set('radiusKm', String(query.radiusKm ?? 50));
+    }
+    signal?.throwIfAborted();
+    const response = await fetchImpl('/api/aircraft/observations?' + params, aircraftRequest(signal, revalidate));
+    signal?.throwIfAborted();
+    // An absent route is an explicit unsupported host; other failures remain
+    // errors unless the prepared service specifically declares fallback safe.
+    if (response.status === 404) return null;
+    const payload = await aircraftJson(response, signal);
+    if (response.status === 503 && payload?.prepared === false && payload.available === false &&
+      ['not-configured', 'unavailable', 'not-covered'].includes(payload.code)) return null;
+    if (!response.ok) throw new Error(`Prepared aircraft HTTP ${response.status}`);
+    const ageHeader = response.headers.get('x-feed-age-ms'), headerAgeMs = ageHeader == null ? null : Number(ageHeader);
+    const cacheAgeMs = Number.isFinite(headerAgeMs) && headerAgeMs >= 0 ? headerAgeMs : null;
+    const snapshot = preparedAircraftSnapshot(payload, { now: Date.now(), cacheAgeMs, stale: response.headers.get('x-feed-cache') === 'STALE' });
+    return { ...snapshot, coverage: military ? snapshot.coverage : snapshot.coverage + ' · requested radius ' + (query.radiusKm ?? 50) + 'km',
+      status: response.status, browserCache: response.headers.get('x-browser-cache') || null };
   };
   return {
     label: 'adsb.lol',
     async getSnapshot(query, options) {
+      const prepared = await readPrepared(query, options);
+      if (prepared) return prepared;
       const { response, payload } = await read(query, options);
       const now = Date.now();
       const upstreamTime = payload?.now;
@@ -74,7 +126,8 @@ export function createAircraftSource(fetchImpl, military, { readsbSnapshot, read
       const observedAtSource = hasSourceTime ? 'source' : observedAtMs == null ? 'unknown' : 'receipt';
       return { ...readsbSnapshot(payload, {
         source: 'adsb.lol', now,
-        coverage: military ? 'military receiver snapshot' : 'bounded view near the requested coordinates',
+        coverage: military ? 'military receiver snapshot' : Number.isFinite(query?.latitude) && Number.isFinite(query?.longitude)
+          ? 'Receiver observations within ' + (query.radiusKm ?? 50) + 'km of the requested view center' : 'legacy receiver snapshot',
         observedAtMs,
         observedAtSource,
         stale: response.headers.get('x-feed-cache') === 'STALE' || cacheAgeMs > 120000 || (observedAtMs != null && now - observedAtMs > 120000),
@@ -98,6 +151,8 @@ export async function createLayer(id, { services = {}, fetchImpl, getLocalArea, 
       horizonMs: aircraftMotion.horizonMs,
       correctionMs: aircraftMotion.correctionMs,
       presentationDelayMs: aircraftMotion.presentationDelayMs,
+      maxInterpolationGapMs: aircraftMotion.maxInterpolationGapMs,
+      interpolationMethod: aircraftMotion.interpolationMethod,
     });
   }
   if (id.startsWith('weather-') && id !== 'weather-cyclones') {

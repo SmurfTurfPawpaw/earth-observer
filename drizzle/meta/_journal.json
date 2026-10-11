@@ -15,6 +15,13 @@
       "when": 1791725238200,
       "tag": "0001_collection_revision",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791728406832,
+      "tag": "0002_aircraft_observations",
+      "breakpoints": true
     }
   ]
 }

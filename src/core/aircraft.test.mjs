@@ -138,6 +138,47 @@ test('an early receiver refresh keeps the waiting marker stable and selected lat
   layer.destroy(); assert.equal(timing.holds.size, 0); assert.equal(timing.timers.size, 0);
 });
 
+test('prepared genuine history starts an immediately supported bracket before first presentation and invalidations revalidate once', async () => {
+  const initial = snapshot(), prior = { ...initial.records[0], positionTimeQuality: 'reported' }, origin = prior.positionTimeMs;
+  const latest = { ...prior, ...aircraftGeodesic(prior, 90, 6600), positionTimeMs: origin + 30000 };
+  const timing = harness(origin + 31000), viewer = globe(), calls = [];
+  const prepared = { ...initial, prepared: true, observedAtMs: latest.positionTimeMs, ageMs: 1000, records: [latest], history: [
+    { ...prior, id: 'not-latest' }, { ...prior, positionTimeQuality: 'unknown' }, prior] };
+  const layer = createObservedAircraftLayer({ ...timing, predictionEnabled: true, source: { async getSnapshot(query, options) { calls.push({ query, options }); return prepared; } } });
+  layer.init(viewer); layer.enable(); await layer.update(viewer);
+  const entity = viewer.source.entities.getById('flights:abc123'); viewer.selectedEntity = entity;
+  assert.equal(viewer.source.entities.values.length, 1); assert.equal(timing.holds.size, 1); assert.equal(layer.getStats().interpolatingCount, 1);
+  const supported = interpolateAircraftObservations(prior, latest, origin + 6000).position;
+  assert.ok(Cesium.Cartesian3.distance(entity.position.getValue(), Cesium.Cartesian3.fromDegrees(supported.longitude, supported.latitude, supported.altitudeM)) < .1);
+  assert.equal(entity.properties.correctionRemainingM.getValue(), undefined, 'Backfilled facts are not played as receipt corrections');
+  assert.equal(entity.properties.positionObservedAt.getValue(), new Date(latest.positionTimeMs).toISOString());
+  assert.equal(entity.properties.estimatedAt.getValue(), new Date(origin + 6000).toISOString());
+  assert.equal(entity.properties.bufferObservedAt.getValue(), new Date(origin).toISOString() + ' → ' + new Date(latest.positionTimeMs).toISOString());
+  assert.equal(calls[0].query.radiusKm, 50); assert.equal(calls[0].options.revalidate, false);
+  const before = Cesium.Cartesian3.clone(entity.position.getValue()); timing.advance(1000); viewer.scene.preRender.raiseEvent();
+  assert.ok(Cesium.Cartesian3.distance(before, entity.position.getValue()) > 200); assert.equal(calls.length, 1);
+  layer.invalidatePreparedSnapshot(); await layer.update(viewer); assert.equal(calls[1].options.revalidate, true);
+  await layer.update(viewer); assert.equal(calls[2].options.revalidate, false); assert.equal(viewer.selectedEntity, entity);
+  layer.destroy();
+});
+
+test('stale prepared history cannot start or restart animation and original cached fixes remain dated', async () => {
+  const initial = snapshot(), prior = { ...initial.records[0], positionTimeQuality: 'reported' }, origin = prior.positionTimeMs;
+  const latest = { ...prior, ...aircraftGeodesic(prior, 90, 6600), positionTimeMs: origin + 30000 };
+  const timing = harness(origin + 31000), viewer = globe();
+  const preserved = { ...initial, prepared: true, stale: true, freshness: 'stale', records: [latest], history: [prior] };
+  const layer = createObservedAircraftLayer({ ...timing, predictionEnabled: true, source: { getSnapshot: async () => preserved } });
+  layer.init(viewer); layer.enable(); await layer.update(viewer);
+  const entity = viewer.source.entities.getById('flights:abc123'), fixed = Cesium.Cartesian3.clone(entity.position.getValue());
+  assert.equal(timing.holds.size, 0); assert.equal(timing.timers.size, 0); assert.equal(entity.properties.bufferState.getValue(), 'stale-observation');
+  assert.equal(entity.properties.freshness.getValue(), 'Preserved source observations');
+  assert.equal(entity.properties.positionObservedAt.getValue(), new Date(latest.positionTimeMs).toISOString());
+  timing.advance(60000); await layer.update(viewer); viewer.scene.preRender.raiseEvent();
+  assert.equal(timing.holds.size, 0); assert.equal(timing.timers.size, 0); assert.ok(Cesium.Cartesian3.equals(fixed, entity.position.getValue()));
+  assert.equal(entity.properties.estimatedAt.getValue(), undefined); assert.equal(layer.getStats().stale, true);
+  layer.destroy();
+});
+
 test('disabling an aircraft layer cancels its request and rejects a late response', async () => {
   const viewer = globe();
   let resolve, signal;

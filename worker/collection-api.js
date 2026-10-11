@@ -4,7 +4,8 @@ import { intelligenceQuery } from '../server/hosted/intelligence.js';
 import { createDiscoveryIndex } from '../src/core/discovery-index.js';
 import { groupReports } from '../src/core/intelligence-grouping.js';
 import { publishLocalCollection, heartbeatCollection, readLocalAnalysis, collectionFactsDigest } from './collection-publication.js';
-import { publishCollectionRevision } from './collection-updates.js';
+import { publishCollectionRevision, publishAircraftRevision } from './collection-updates.js';
+import { publishAircraftObservations } from './aircraft-observations.js';
 
 const json = (payload, status = 200, headers = {}) => Response.json(payload, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers,
@@ -31,7 +32,7 @@ async function actionBody(request) {
       chunks += decoder.decode(value, { stream: true });
     }
     const value = JSON.parse(chunks + decoder.decode());
-    const fields = { collect: ['action'], publish: ['action', 'packet', 'analysis'], heartbeat: ['action', 'collectedAt', 'sources', 'inputDigest'] };
+    const fields = { collect: ['action'], publish: ['action', 'packet', 'analysis'], heartbeat: ['action', 'collectedAt', 'sources', 'inputDigest'], aircraft: ['action', 'packet'] };
     return value && !Array.isArray(value) && Object.hasOwn(fields, value.action) && Object.keys(value).length === fields[value.action].length &&
       Object.keys(value).every((key) => fields[value.action].includes(key)) ? value : false;
   } catch { await reader.cancel().catch(() => {}); return false; }
@@ -57,12 +58,18 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
   const body = await actionBody(request);
   if (!body) return json({ error: 'Use a bounded collection, publication or heartbeat action' }, 400);
   try {
-    const result = body.action === 'publish' ? await publishLocalCollection(env, body.packet, body.analysis, { now }) :
+    const result = body.action === 'aircraft' ? await publishAircraftObservations(env, body.packet, { now }) :
+      body.action === 'publish' ? await publishLocalCollection(env, body.packet, body.analysis, { now }) :
       body.action === 'heartbeat' ? await heartbeatCollection(env, body, { now }) : await collectEarthSources(env, ctx, { now, fetchImpl });
     if (result.conflict) return json({ error: 'Prepared baseline changed; publish the retained full packet' }, 409);
     const accepted = Boolean(result.stored && !result.failures?.length);
     let revision;
-    if (accepted && env.EARTH_DB?.prepare) {
+    if (accepted && env.EARTH_DB?.prepare && body.action === 'aircraft') {
+      if (!result.indexed) throw new Error('Aircraft durable history index is unavailable');
+      // Repeating a durable packet also repairs a failed prior notification.
+      // The retained factual capture/date and monotonic row keep retries quiet.
+      revision = await publishAircraftRevision(env, result);
+    } else if (accepted && env.EARTH_DB?.prepare) {
       // Announce the actual retained current pointer, including when an older
       // writer was superseded. Durable facts/history precede notification.
       const current = await readPreparedIntelligence(env, { now });

@@ -34,6 +34,7 @@ async function database(t) {
     prepare(sql) { return { bind(...values) {
       return {
         async first() { counters.reads++; if (binding.failReads) throw new Error('private database failure details'); return sqlite.prepare(sql).get(...values) || null; },
+        async all() { counters.reads++; if (binding.failReads) throw new Error('private database failure details'); return { results: sqlite.prepare(sql).all(...values) }; },
         async run() { counters.writes++; return sqlite.prepare(sql).run(...values); },
       };
     } }; },
@@ -140,14 +141,14 @@ test('slow consumers have bounded queued bytes and free their connection slot', 
 
 test('a timed-out D1 read remains coalesced and its late completion cannot mutate a closed watcher', async () => {
   const clock = scheduler(); let resolveRead, reads = 0;
-  const db = { prepare() { return { bind() { return { first() { reads++; return new Promise((resolve) => { resolveRead = resolve; }); } }; } }; } };
+  const db = { prepare() { return { bind() { return { all() { reads++; return new Promise((resolve) => { resolveRead = resolve; }); } }; } }; } };
   const env = { EARTH_DB: db }, channel = createCollectionUpdates({ ...clock, readTimeoutMs: 1000 });
   const a = connect(channel, env), b = connect(channel, env); await flush();
   await clock.advance(4000); assert.equal(reads, 1); assert.equal(channel.status(env).reading, true);
   a.abort.abort(); b.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
   const value = collectionRevision(input());
-  resolveRead({ collected_at: value.collectedAt, input_digest: value.inputDigest, record_count: value.recordCount, revision: value.revision });
-  await flush(); assert.deepEqual(channel.status(env), { clients: 0, reading: false, revision: null });
+  resolveRead({ results: [{ id: 1, collected_at: value.collectedAt, input_digest: value.inputDigest, record_count: value.recordCount, revision: value.revision }] });
+  await flush(); assert.deepEqual(channel.status(env), { clients: 0, reading: false, revision: null, aircraftRevision: null });
 });
 
 test('cached revision stays bounded while status reports database failure and unchanged-data recovery', async (t) => {
@@ -164,5 +165,26 @@ test('cached revision stays bounded while status reports database failure and un
   db.failReads = false; await clock.advance(1000);
   assert.deepEqual((await nextEvent(client.reader, 'status')).value, { schemaVersion: 1, available: true });
   assert.equal(channel.status(env).revision, published.revision);
+  client.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
+});
+
+test('aircraft and intelligence publish independently and reconnect share one durable read slot', async (t) => {
+  const db = await database(t), clock = scheduler(), writer = createCollectionUpdates(clock), reader = createCollectionUpdates(clock), env = { EARTH_DB: db };
+  const metadata = await writer.publishCollectionRevision(env, input());
+  const aircraft = await writer.publishCollectionRevision(env, { ...input(-10000, 'b'), recordCount: 1600 }, 'aircraft');
+  assert.equal(aircraft.stored, true);
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_collection_revision').get().n, 2);
+  await assert.rejects(writer.publishCollectionRevision(env, { ...input(), recordCount: 2001 }, 'aircraft'), TypeError);
+  db.counters.reads = 0;
+  const client = connect(reader, env); await flush();
+  assert.equal((await nextEvent(client.reader)).value.revision, metadata.revision);
+  const event = await nextEvent(client.reader, 'aircraft');
+  assert.equal(event.value.revision, aircraft.revision); assert.match(event.frame, /^id: aircraft:/m);
+  assert.equal(db.counters.reads, 1, 'Both streams use the same D1 query');
+  const later = await writer.publishCollectionRevision(env, { ...input(1000, 'c'), recordCount: 1600 }, 'aircraft');
+  await clock.advance(1000);
+  assert.equal((await nextEvent(client.reader, 'aircraft')).value.revision, later.revision);
+  assert.equal(reader.status(env).revision, metadata.revision);
+  assert.equal(db.counters.reads, 3, 'One writer verification plus one shared read');
   client.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
 });

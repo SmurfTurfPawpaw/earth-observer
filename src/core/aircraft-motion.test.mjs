@@ -177,3 +177,18 @@ test('an explicit diagnostic horizon preserves raw 45-second replay without exte
   const production = createAircraftMotion({ predictionEnabled: true }); production.admit(fix(), at);
   assert.equal(production.sample(at + 6000).mode, 'expired'); assert.equal(production.getState().horizonMs, 5000);
 });
+
+test('prepared observation admission can bootstrap a current bracket without replay correction and stale display suppression keeps source dates', () => {
+  const motion = createAircraftMotion({ predictionEnabled: true });
+  const latest = fix({ ...aircraftGeodesic(fix(), 90, 6600), positionTimeMs: at + 30000 });
+  motion.admit(fix(), at + 31000, { displayAtMs: at + 6000, correctionEnabled: false });
+  motion.admit(latest, at + 31000, { displayAtMs: at + 6000, correctionEnabled: false });
+  const ready = motion.sample(at + 6000, { wallTimeMs: at + 31000 });
+  assert.equal(ready.bufferState, 'interpolating'); assert.equal(ready.active, true); assert.equal(ready.correctionRemainingM, 0);
+  close(aircraftObservationError(ready.position, fix()).residualHorizontalM, 1320, .1);
+  const preserved = motion.sample(at + 6000, { wallTimeMs: at + 31000, allowPlayback: false });
+  assert.equal(preserved.mode, 'observed'); assert.equal(preserved.bufferState, 'stale-observation'); assert.equal(preserved.active, false);
+  assert.equal(preserved.position.longitude, latest.longitude); assert.equal(preserved.observedAtMs, at + 30000);
+  assert.equal(preserved.validUntilMs, null); assert.equal(preserved.nextActivationMs, null);
+  assert.deepEqual(motion.getState().fixes.map((record) => record.positionTimeMs), [at, at + 30000]);
+});

@@ -12,6 +12,7 @@ import { handleDemand } from './demand.js';
 import { createHistoryHandler } from './history.js';
 import { handleCollection, preparedIntelligenceResponse } from './collection-api.js';
 import { handleUpdates } from './collection-updates.js';
+import { handleAircraftObservations } from './aircraft-observations.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -57,6 +58,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (updates) return secured(updates);
         const collection = await handleCollection(internal, env, ctx, { now, fetchImpl: providerFetch });
         if (collection) return secured(collection);
+        const aircraft = await handleAircraftObservations(internal, env, { now });
+        if (aircraft) return secured(aircraft);
         const history = await createHistoryHandler({ env, now })(internal);
         if (history) return secured(history);
         // Aggregate actions own their methods and never enter public provider caches.

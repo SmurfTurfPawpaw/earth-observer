@@ -21,6 +21,30 @@ test('explicit live revalidation bypasses a fresh snapshot and persists the newe
   cached.destroy();
 });
 
+test('a producer check waits out the pre-publication transport and coalesces one subsequent generation', async () => {
+  let clock = 10000, calls = 0;
+  const old = Promise.withResolvers(), began = Promise.withResolvers(), newer = Promise.withResolvers(), nextBegan = Promise.withResolvers();
+  const endpoint = '/api/aircraft/observations?lat=50.85&lon=4.35&radiusKm=50';
+  const cached = createCachedFetch({ store: createBrowserStore(null), now: () => clock, fetchImpl: async (_url, init) => {
+    calls++;
+    if (calls === 1) return response('initial');
+    if (calls === 2) { began.resolve(); return old.promise; }
+    assert.equal(init.cache, 'no-cache'); nextBegan.resolve(); return newer.promise;
+  } });
+  await cached(endpoint); clock += 10001;
+  assert.equal((await (await cached(endpoint)).json()).value, 'initial'); await began.promise;
+  const forced = cached(endpoint, { cache: 'no-cache', headers: { 'Cache-Control': 'no-cache' } });
+  const shared = cached(endpoint, { cache: 'no-cache', headers: { 'Cache-Control': 'no-cache' } });
+  await new Promise((resolve) => setImmediate(resolve)); assert.equal(calls, 2);
+  old.resolve(response('old')); await nextBegan.promise;
+  await new Promise((resolve) => setImmediate(resolve)); assert.equal(calls, 3);
+  newer.resolve(response('new'));
+  assert.equal((await (await forced).json()).value, 'new');
+  assert.equal((await (await shared).json()).value, 'new');
+  assert.equal((await (await cached(endpoint)).json()).value, 'new');
+  assert.equal(calls, 3); cached.destroy();
+});
+
 test('offline live checks preserve the saved copy instead of discarding it or contacting upstream', async () => {
   let connected = true, calls = 0;
   const cached = createCachedFetch({ store: createBrowserStore(null), online: () => connected,

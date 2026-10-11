@@ -4,6 +4,7 @@ import {
   coordinates,
   epoch,
   finite,
+  LiveSourceError,
 } from './contract.js';
 
 function boundedReportedNumber(value, min, max, integer = false) {
@@ -162,6 +163,67 @@ export function readsbSnapshot(
     ageMs,
     stale,
     freshness: stale ? 'stale' : observedAtSource !== 'source' ? 'unknown' : 'current',
+  };
+}
+
+const reportedEpoch = (value) => typeof value === 'number' ? epoch(value) : null;
+const reportedNumber = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/** Prepared storage contains observations in SI units, never rebased receipts. */
+function normalizePreparedAircraft(row, { sourceQualified = true } = {}) {
+  const id = cleanText(row?.id);
+  if (!id || id.length > 128 || !coordinates(row.latitude, row.longitude)) return null;
+  const positionTimeMs = sourceQualified && row.positionTimeQuality === 'reported' ? reportedEpoch(row.positionTimeMs) : null;
+  return {
+    id, reference: cleanText(row.reference) || id, latitude: row.latitude, longitude: row.longitude,
+    callsign: cleanText(row.callsign).slice(0, 128), originCountry: cleanText(row.originCountry).slice(0, 128) || null,
+    positionTimeMs, positionTimeQuality: positionTimeMs == null ? 'unknown' : 'reported',
+    contactTimeMs: sourceQualified ? reportedEpoch(row.contactTimeMs) : null,
+    baroAltitudeM: reportedNumber(row.baroAltitudeM), ellipsoidAltitudeM: reportedNumber(row.ellipsoidAltitudeM),
+    onGround: row.onGround === true, speedMps: reportedNumber(row.speedMps), courseDeg: reportedNumber(row.courseDeg),
+    verticalRateMps: reportedNumber(row.verticalRateMps),
+    verticalRateAltitudeType: ['geometric', 'barometric'].includes(row.verticalRateAltitudeType) ? row.verticalRateAltitudeType : null,
+    accuracy: row.accuracy ? {
+      nic: boundedReportedNumber(row.accuracy.nic, 0, 11, true), rcM: boundedReportedNumber(row.accuracy.rcM, 0, 1000000),
+      nacP: boundedReportedNumber(row.accuracy.nacP, 0, 11, true), nacV: boundedReportedNumber(row.accuracy.nacV, 0, 4, true),
+      sil: boundedReportedNumber(row.accuracy.sil, 0, 3, true),
+      silType: ['unknown', 'perhour', 'persample'].includes(row.accuracy.silType) ? row.accuracy.silType : null,
+    } : null,
+    category: row.category ?? null, typeCode: cleanText(row.typeCode).slice(0, 128),
+    registration: cleanText(row.registration).slice(0, 128), operator: cleanText(row.operator).slice(0, 128),
+  };
+}
+
+/** Validate a bounded genuine history envelope without inventing fix dates. */
+export function preparedAircraftSnapshot(payload, { now = Date.now(), stale: deliveryStale = false, cacheAgeMs = null } = {}) {
+  const sourceQualified = payload?.observedAtSource === 'source';
+  if (payload?.schemaVersion !== 1 || payload.source !== 'adsb.lol' || payload.prepared !== true ||
+    payload.delivery !== 'prepared-aircraft-observations' || !['source', 'unknown'].includes(payload.observedAtSource) ||
+    (sourceQualified ? reportedEpoch(payload.observedAtMs) == null : payload.observedAtMs !== null) ||
+    !Array.isArray(payload.records) || payload.records.length > 2000 || !Array.isArray(payload.history) || payload.history.length > 4000)
+    throw new LiveSourceError('malformed', 'Malformed prepared aircraft observations');
+  const normalize = (row) => normalizePreparedAircraft(row, { sourceQualified });
+  const admitted = admitRecords(payload.records, normalize, 'prepared aircraft');
+  const latest = new Map(admitted.records.map((record) => [record.id, record]));
+  const history = payload.history.map(normalize).filter((record) => record && record.positionTimeQuality === 'reported' &&
+    record.positionTimeMs <= now && latest.get(record.id)?.positionTimeQuality === 'reported' && record.positionTimeMs < latest.get(record.id).positionTimeMs);
+  const observedAtMs = payload.observedAtMs, observedAtSource = payload.observedAtSource;
+  const knownAge = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  const ages = [sourceQualified ? Math.max(0, now - observedAtMs) : null, knownAge(payload.sourceAgeMs), knownAge(cacheAgeMs)].filter((value) => value != null);
+  const ageMs = ages.length ? Math.max(...ages) : null;
+  const collectedAt = cleanText(payload.collectedAt) || null, collectedAtMs = Date.parse(collectedAt);
+  const captureAges = [Number.isFinite(collectedAtMs) ? Math.max(0, now - collectedAtMs) : null, knownAge(payload.captureAgeMs)].filter((value) => value != null);
+  const captureAgeMs = captureAges.length ? Math.max(...captureAges) : null;
+  const stale = deliveryStale || payload.stale === true || payload.freshness === 'stale' || payload.sourceState?.freshness === 'stale' ||
+    payload.sourceState?.cache === 'STALE' || (ageMs != null && ageMs > 120000) || (captureAgeMs != null && captureAgeMs > 120000);
+  return {
+    ...admitted, complete: false, history, source: 'adsb.lol', prepared: true, delivery: 'prepared-aircraft-observations',
+    observedAtMs, observedAtSource, ageMs, sourceAgeMs: ageMs,
+    collectedAt, lastCheckedAt: cleanText(payload.lastCheckedAt) || null, retrievedAt: cleanText(payload.retrievedAt) || null,
+    captureAgeMs,
+    coverage: cleanText(payload.coverage) || 'Prepared observations inside advertised receiver coverage',
+    coverageScopes: Array.isArray(payload.coverageScopes) ? payload.coverageScopes.slice(0, 32) : [],
+    stale, freshness: stale ? 'stale' : !sourceQualified || payload.freshness === 'unknown' ? 'unknown' : 'current',
   };
 }
 

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "Bounded display candidate; separate browser continuity proof required; not an accuracy guarantee",
-  "generatedAt": "2026-10-11T14:06:59.375Z",
+  "generatedAt": "2026-10-11T14:31:46.144Z",
   "source": {
     "source": "adsb.lol readsb-staging-0",
     "release": "v2026.10.10-planes-readsb-staging-0",
@@ -15,12 +15,12 @@
     "licenseUrl": "https://opendatacommons.org/licenses/odbl/1-0/"
   },
   "evidence": {
-    "fullReport": ".qa/aircraft-replay-report.json",
-    "fullReportSha256": "8769b2f1d29724c7b1f256ef0a35094f38614d72224d7eef95f40e534a0a8236",
-    "reproduce": "node scripts/aircraft-replay.mjs --input .qa/aircraft-history-sample.json --output .qa/aircraft-replay-report.json --fixture .qa/aircraft-browser-fixture.json",
+    "fullReport": ".qa/aircraft-warm-replay-report.json",
+    "fullReportSha256": "4a1430bbf82a23b9cbebd5274d337f75ba79c48567c8a9ab53204160233161c9",
+    "reproduce": "node scripts/aircraft-replay.mjs --input .qa/aircraft-history-sample.json --output .qa/aircraft-warm-replay-report.json --fixture .qa/aircraft-browser-fixture.json",
     "implementation": {
-      "modelSha256": "cd4e545ad75bab925e41859d5f1b9d15511364364d30d15104e1e626c341d99b",
-      "normalizerSha256": "b7bd68854a8d1aaa364e7711e9f76ebadaf9daa1382018173cfc8ffac12f9446",
+      "modelSha256": "e8d6ccd04a38a5c818dcf6afebe4622c883c9efc64d93c2da96d70cfebb92b1b",
+      "normalizerSha256": "6336f71f8dc6b391b1497a344adc7c6302a0e58ffd4f1f38f06fc8eb45d23c34",
       "replaySha256": "e00da1e10af479c431c9d8420d2071ca165d60d90e99e019a60009f3ab181a48"
     }
   },
@@ -93,7 +93,14 @@
     {
       "nominalSeconds": 5,
       "matchingToleranceSeconds": 1,
-      "actualElapsedSeconds": {"count":56390,"p50":5,"p90":5.67,"p95":5.84,"p99":5.97,"max":6},
+      "actualElapsedSeconds": {
+        "count": 56390,
+        "p50": 5,
+        "p90": 5.67,
+        "p95": 5.84,
+        "p99": 5.97,
+        "max": 6
+      },
       "denominators": {
         "allAdmittedAnchors": 139650,
         "eligibleAnchors": 122343,
@@ -117,20 +124,55 @@
         "ground-transition": 210
       },
       "primaryErrors": {
-        "horizontalM": {"count":56390,"p50":13.336,"p90":72.76,"p95":96.158,"p99":150.482,"max":739.984},
-        "verticalAbsoluteM": {"count":56390,"p50":7.62,"p90":38.1,"p95":60.96,"p99":97.646,"max":529.416},
+        "horizontalM": {
+          "count": 56390,
+          "p50": 13.336,
+          "p90": 72.76,
+          "p95": 96.158,
+          "p99": 150.482,
+          "max": 739.984
+        },
+        "verticalAbsoluteM": {
+          "count": 56390,
+          "p50": 7.62,
+          "p90": 38.1,
+          "p95": 60.96,
+          "p99": 97.646,
+          "max": 529.416
+        },
         "verticalSignedBiasM": 1.759
       },
       "allMatchedBeforeBoundaryExclusions": {
-        "horizontalM": {"count":56683,"p50":13.415,"p90":72.843,"p95":96.212,"p99":151.102,"max":739.984},
-        "verticalAbsoluteM": {"count":56444,"p50":7.62,"p90":38.1,"p95":60.96,"p99":99.06,"max":4297.68},
+        "horizontalM": {
+          "count": 56683,
+          "p50": 13.415,
+          "p90": 72.843,
+          "p95": 96.212,
+          "p99": 151.102,
+          "max": 739.984
+        },
+        "verticalAbsoluteM": {
+          "count": 56444,
+          "p50": 7.62,
+          "p90": 38.1,
+          "p95": 60.96,
+          "p99": 99.06,
+          "max": 4297.68
+        },
         "verticalSignedBiasM": 1.877
       }
     },
     {
       "nominalSeconds": 10,
       "matchingToleranceSeconds": 1,
-      "actualElapsedSeconds": {"count":54877,"p50":10,"p90":10.69,"p95":10.85,"p99":10.98,"max":11},
+      "actualElapsedSeconds": {
+        "count": 54877,
+        "p50": 10,
+        "p90": 10.69,
+        "p95": 10.85,
+        "p99": 10.98,
+        "max": 11
+      },
       "denominators": {
         "allAdmittedAnchors": 139650,
         "eligibleAnchors": 122343,
@@ -154,20 +196,55 @@
         "ground-transition": 444
       },
       "primaryErrors": {
-        "horizontalM": {"count":54877,"p50":28.094,"p90":225.186,"p95":284.299,"p99":442.191,"max":2613.904},
-        "verticalAbsoluteM": {"count":54877,"p50":13.013,"p90":68.58,"p95":121.92,"p99":182.88,"max":548.169},
+        "horizontalM": {
+          "count": 54877,
+          "p50": 28.094,
+          "p90": 225.186,
+          "p95": 284.299,
+          "p99": 442.191,
+          "max": 2613.904
+        },
+        "verticalAbsoluteM": {
+          "count": 54877,
+          "p50": 13.013,
+          "p90": 68.58,
+          "p95": 121.92,
+          "p99": 182.88,
+          "max": 548.169
+        },
         "verticalSignedBiasM": 3.279
       },
       "allMatchedBeforeBoundaryExclusions": {
-        "horizontalM": {"count":55422,"p50":28.547,"p90":224.959,"p95":284.262,"p99":444.003,"max":2613.904},
-        "verticalAbsoluteM": {"count":54954,"p50":13.053,"p90":68.58,"p95":121.92,"p99":190.5,"max":12900.66},
+        "horizontalM": {
+          "count": 55422,
+          "p50": 28.547,
+          "p90": 224.959,
+          "p95": 284.262,
+          "p99": 444.003,
+          "max": 2613.904
+        },
+        "verticalAbsoluteM": {
+          "count": 54954,
+          "p50": 13.053,
+          "p90": 68.58,
+          "p95": 121.92,
+          "p99": 190.5,
+          "max": 12900.66
+        },
         "verticalSignedBiasM": 3.76
       }
     },
     {
       "nominalSeconds": 15,
       "matchingToleranceSeconds": 1,
-      "actualElapsedSeconds": {"count":52589,"p50":14.99,"p90":15.7,"p95":15.85,"p99":15.97,"max":16},
+      "actualElapsedSeconds": {
+        "count": 52589,
+        "p50": 14.99,
+        "p90": 15.7,
+        "p95": 15.85,
+        "p99": 15.97,
+        "max": 16
+      },
       "denominators": {
         "allAdmittedAnchors": 139650,
         "eligibleAnchors": 122343,
@@ -192,20 +269,55 @@
         "ground-transition": 667
       },
       "primaryErrors": {
-        "horizontalM": {"count":52589,"p50":50.107,"p90":445.75,"p95":559.306,"p99":814.996,"max":3925.933},
-        "verticalAbsoluteM": {"count":52589,"p50":19.105,"p90":106.68,"p95":182.88,"p99":281.94,"max":577.901},
+        "horizontalM": {
+          "count": 52589,
+          "p50": 50.107,
+          "p90": 445.75,
+          "p95": 559.306,
+          "p99": 814.996,
+          "max": 3925.933
+        },
+        "verticalAbsoluteM": {
+          "count": 52589,
+          "p50": 19.105,
+          "p90": 106.68,
+          "p95": 182.88,
+          "p99": 281.94,
+          "max": 577.901
+        },
         "verticalSignedBiasM": 5.75
       },
       "allMatchedBeforeBoundaryExclusions": {
-        "horizontalM": {"count":53503,"p50":51.371,"p90":445.135,"p95":559.546,"p99":815.598,"max":80676.602},
-        "verticalAbsoluteM": {"count":52818,"p50":19.132,"p90":106.68,"p95":182.88,"p99":281.94,"max":4465.32},
+        "horizontalM": {
+          "count": 53503,
+          "p50": 51.371,
+          "p90": 445.135,
+          "p95": 559.546,
+          "p99": 815.598,
+          "max": 80676.602
+        },
+        "verticalAbsoluteM": {
+          "count": 52818,
+          "p50": 19.132,
+          "p90": 106.68,
+          "p95": 182.88,
+          "p99": 281.94,
+          "max": 4465.32
+        },
         "verticalSignedBiasM": 5.951
       }
     },
     {
       "nominalSeconds": 30,
       "matchingToleranceSeconds": 1,
-      "actualElapsedSeconds": {"count":46208,"p50":30,"p90":30.7,"p95":30.84,"p99":30.97,"max":31},
+      "actualElapsedSeconds": {
+        "count": 46208,
+        "p50": 30,
+        "p90": 30.7,
+        "p95": 30.84,
+        "p99": 30.97,
+        "max": 31
+      },
       "denominators": {
         "allAdmittedAnchors": 139650,
         "eligibleAnchors": 122343,
@@ -231,20 +343,55 @@
         "ground-transition": 1690
       },
       "primaryErrors": {
-        "horizontalM": {"count":46208,"p50":163.695,"p90":1351.987,"p95":1693.121,"p99":2191.523,"max":7366.074},
-        "verticalAbsoluteM": {"count":46208,"p50":38.424,"p90":228.6,"p95":358.14,"p99":541.02,"max":1028.7},
+        "horizontalM": {
+          "count": 46208,
+          "p50": 163.695,
+          "p90": 1351.987,
+          "p95": 1693.121,
+          "p99": 2191.523,
+          "max": 7366.074
+        },
+        "verticalAbsoluteM": {
+          "count": 46208,
+          "p50": 38.424,
+          "p90": 228.6,
+          "p95": 358.14,
+          "p99": 541.02,
+          "max": 1028.7
+        },
         "verticalSignedBiasM": 12.812
       },
       "allMatchedBeforeBoundaryExclusions": {
-        "horizontalM": {"count":48664,"p50":175.731,"p90":1344.412,"p95":1684.9,"p99":2191.523,"max":80669.642},
-        "verticalAbsoluteM": {"count":47063,"p50":38.264,"p90":228.6,"p95":358.14,"p99":548.64,"max":12915.9},
+        "horizontalM": {
+          "count": 48664,
+          "p50": 175.731,
+          "p90": 1344.412,
+          "p95": 1684.9,
+          "p99": 2191.523,
+          "max": 80669.642
+        },
+        "verticalAbsoluteM": {
+          "count": 47063,
+          "p50": 38.264,
+          "p90": 228.6,
+          "p95": 358.14,
+          "p99": 548.64,
+          "max": 12915.9
+        },
         "verticalSignedBiasM": 12.258
       }
     },
     {
       "nominalSeconds": 45,
       "matchingToleranceSeconds": 1,
-      "actualElapsedSeconds": {"count":41072,"p50":45,"p90":45.73,"p95":45.86,"p99":45.97,"max":46},
+      "actualElapsedSeconds": {
+        "count": 41072,
+        "p50": 45,
+        "p90": 45.73,
+        "p95": 45.86,
+        "p99": 45.97,
+        "max": 46
+      },
       "denominators": {
         "allAdmittedAnchors": 139650,
         "eligibleAnchors": 122343,
@@ -270,13 +417,41 @@
         "ground-transition": 2865
       },
       "primaryErrors": {
-        "horizontalM": {"count":41072,"p50":365.647,"p90":2453.863,"p95":3034.994,"p99":4133.011,"max":9545.25},
-        "verticalAbsoluteM": {"count":41072,"p50":61.421,"p90":373.38,"p95":533.4,"p99":800.145,"max":1250.485},
+        "horizontalM": {
+          "count": 41072,
+          "p50": 365.647,
+          "p90": 2453.863,
+          "p95": 3034.994,
+          "p99": 4133.011,
+          "max": 9545.25
+        },
+        "verticalAbsoluteM": {
+          "count": 41072,
+          "p50": 61.421,
+          "p90": 373.38,
+          "p95": 533.4,
+          "p99": 800.145,
+          "max": 1250.485
+        },
         "verticalSignedBiasM": 21.7
       },
       "allMatchedBeforeBoundaryExclusions": {
-        "horizontalM": {"count":45243,"p50":398.601,"p90":2399.013,"p95":2994.059,"p99":4114.411,"max":80679.585},
-        "verticalAbsoluteM": {"count":42541,"p50":60.96,"p90":373.38,"p95":526.592,"p99":811.861,"max":8145.78},
+        "horizontalM": {
+          "count": 45243,
+          "p50": 398.601,
+          "p90": 2399.013,
+          "p95": 2994.059,
+          "p99": 4114.411,
+          "max": 80679.585
+        },
+        "verticalAbsoluteM": {
+          "count": 42541,
+          "p50": 60.96,
+          "p90": 373.38,
+          "p95": 526.592,
+          "p99": 811.861,
+          "max": 8145.78
+        },
         "verticalSignedBiasM": 20.335
       }
     }
@@ -304,7 +479,14 @@
       "samplesWithRecordedTruthWithinOneSecond": 234733,
       "samplesWithoutRecordedTruthWithinOneSecond": 2312315
     },
-    "actualFixAgeAtChangedDeliveryMs": {"count":31512,"p50":5240,"p90":16170,"p95":18390,"p99":24610,"max":29990},
+    "actualFixAgeAtChangedDeliveryMs": {
+      "count": 31512,
+      "p50": 5240,
+      "p90": 16170,
+      "p95": 18390,
+      "p99": 24610,
+      "max": 29990
+    },
     "sharedCoverageForBothMethods": {
       "denominators": {
         "actualTruthRows": 139650,
@@ -338,23 +520,79 @@
     "methods": {
       "geodesic": {
         "primaryErrors": {
-          "horizontalM": {"count":68339,"p50":22.114,"p90":229.782,"p95":314.385,"p99":456.456,"max":977.157},
-          "verticalAbsoluteM": {"count":68339,"p50":6.328,"p90":25.492,"p95":35.471,"p99":66.108,"max":487.68},
+          "horizontalM": {
+            "count": 68339,
+            "p50": 22.114,
+            "p90": 229.782,
+            "p95": 314.385,
+            "p99": 456.456,
+            "max": 977.157
+          },
+          "verticalAbsoluteM": {
+            "count": 68339,
+            "p50": 6.328,
+            "p90": 25.492,
+            "p95": 35.471,
+            "p99": 66.108,
+            "max": 487.68
+          },
           "verticalSignedBiasM": -0.082
         },
         "interpolationErrors": {
-          "horizontalM": {"count":59679,"p50":26.371,"p90":247.457,"p95":328.885,"p99":466.204,"max":977.157},
-          "verticalAbsoluteM": {"count":59679,"p50":6.396,"p90":25.527,"p95":35.127,"p99":65.881,"max":306.757},
+          "horizontalM": {
+            "count": 59679,
+            "p50": 26.371,
+            "p90": 247.457,
+            "p95": 328.885,
+            "p99": 466.204,
+            "max": 977.157
+          },
+          "verticalAbsoluteM": {
+            "count": 59679,
+            "p50": 6.396,
+            "p90": 25.527,
+            "p95": 35.127,
+            "p99": 65.881,
+            "max": 306.757
+          },
           "verticalSignedBiasM": -0.184
         },
         "edgePredictionErrors": {
-          "horizontalM": {"count":8660,"p50":9.084,"p90":38.275,"p95":50.163,"p99":90.511,"max":476.667},
-          "verticalAbsoluteM": {"count":8660,"p50":5.885,"p90":24.82,"p95":38.1,"p99":68.58,"max":487.68},
+          "horizontalM": {
+            "count": 8660,
+            "p50": 9.084,
+            "p90": 38.275,
+            "p95": 50.163,
+            "p99": 90.511,
+            "max": 476.667
+          },
+          "verticalAbsoluteM": {
+            "count": 8660,
+            "p50": 5.885,
+            "p90": 24.82,
+            "p95": 38.1,
+            "p99": 68.58,
+            "max": 487.68
+          },
           "verticalSignedBiasM": 0.619
         },
         "allAvailableWithheldBeforeEligibilityAndBoundaryExclusions": {
-          "horizontalM": {"count":106871,"p50":40.553,"p90":1074.819,"p95":3145.814,"p99":4732.284,"max":3314240.137},
-          "verticalAbsoluteM": {"count":105927,"p50":5.907,"p90":32.767,"p95":57.995,"p99":129.54,"max":13525.5},
+          "horizontalM": {
+            "count": 106871,
+            "p50": 40.553,
+            "p90": 1074.819,
+            "p95": 3145.814,
+            "p99": 4732.284,
+            "max": 3314240.137
+          },
+          "verticalAbsoluteM": {
+            "count": 105927,
+            "p50": 5.907,
+            "p90": 32.767,
+            "p95": 57.995,
+            "p99": 129.54,
+            "max": 13525.5
+          },
           "verticalSignedBiasM": -0.606,
           "worstDisplayedMode": "expired",
           "worstAvailableFixAgeSeconds": 14229.18
@@ -362,23 +600,79 @@
       },
       "endpoint-motion": {
         "primaryErrors": {
-          "horizontalM": {"count":68339,"p50":9.829,"p90":48.461,"p95":81.168,"p99":393.387,"max":977.157},
-          "verticalAbsoluteM": {"count":68339,"p50":6.328,"p90":25.492,"p95":35.471,"p99":66.108,"max":487.68},
+          "horizontalM": {
+            "count": 68339,
+            "p50": 9.829,
+            "p90": 48.461,
+            "p95": 81.168,
+            "p99": 393.387,
+            "max": 977.157
+          },
+          "verticalAbsoluteM": {
+            "count": 68339,
+            "p50": 6.328,
+            "p90": 25.492,
+            "p95": 35.471,
+            "p99": 66.108,
+            "max": 487.68
+          },
           "verticalSignedBiasM": -0.082
         },
         "interpolationErrors": {
-          "horizontalM": {"count":59679,"p50":9.949,"p90":50.566,"p95":89.916,"p99":404.735,"max":977.157},
-          "verticalAbsoluteM": {"count":59679,"p50":6.396,"p90":25.527,"p95":35.127,"p99":65.881,"max":306.757},
+          "horizontalM": {
+            "count": 59679,
+            "p50": 9.949,
+            "p90": 50.566,
+            "p95": 89.916,
+            "p99": 404.735,
+            "max": 977.157
+          },
+          "verticalAbsoluteM": {
+            "count": 59679,
+            "p50": 6.396,
+            "p90": 25.527,
+            "p95": 35.127,
+            "p99": 65.881,
+            "max": 306.757
+          },
           "verticalSignedBiasM": -0.184
         },
         "edgePredictionErrors": {
-          "horizontalM": {"count":8660,"p50":9.084,"p90":38.275,"p95":50.163,"p99":90.511,"max":476.667},
-          "verticalAbsoluteM": {"count":8660,"p50":5.885,"p90":24.82,"p95":38.1,"p99":68.58,"max":487.68},
+          "horizontalM": {
+            "count": 8660,
+            "p50": 9.084,
+            "p90": 38.275,
+            "p95": 50.163,
+            "p99": 90.511,
+            "max": 476.667
+          },
+          "verticalAbsoluteM": {
+            "count": 8660,
+            "p50": 5.885,
+            "p90": 24.82,
+            "p95": 38.1,
+            "p99": 68.58,
+            "max": 487.68
+          },
           "verticalSignedBiasM": 0.619
         },
         "allAvailableWithheldBeforeEligibilityAndBoundaryExclusions": {
-          "horizontalM": {"count":106871,"p50":17.144,"p90":1074.819,"p95":3145.814,"p99":4732.284,"max":3314240.137},
-          "verticalAbsoluteM": {"count":105927,"p50":5.907,"p90":32.767,"p95":57.995,"p99":129.54,"max":13525.5},
+          "horizontalM": {
+            "count": 106871,
+            "p50": 17.144,
+            "p90": 1074.819,
+            "p95": 3145.814,
+            "p99": 4732.284,
+            "max": 3314240.137
+          },
+          "verticalAbsoluteM": {
+            "count": 105927,
+            "p50": 5.907,
+            "p90": 32.767,
+            "p95": 57.995,
+            "p99": 129.54,
+            "max": 13525.5
+          },
           "verticalSignedBiasM": -0.606,
           "worstDisplayedMode": "expired",
           "worstAvailableFixAgeSeconds": 14229.18

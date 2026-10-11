@@ -6,7 +6,7 @@ function viewQuery(viewer) {
   const canvas = viewer.canvas;
   const center = viewer.camera.pickEllipsoid(new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2));
   const position = center ? Cesium.Cartographic.fromCartesian(center) : viewer.camera.positionCartographic;
-  return { latitude: Cesium.Math.toDegrees(position.latitude), longitude: Cesium.Math.toDegrees(position.longitude) };
+  return { latitude: Cesium.Math.toDegrees(position.latitude), longitude: Cesium.Math.toDegrees(position.longitude), radiusKm: 50 };
 }
 const iso = (at) => Number.isFinite(at) && at > 0 && at <= 8640000000000000 ? new Date(at).toISOString() : 'Unknown';
 const meaning = (mode) => mode === 'estimated' ? 'Estimated position' : mode === 'expired' ? 'Expired estimate' : 'Receiver observation';
@@ -20,7 +20,7 @@ export function createObservedAircraftLayer({ id = 'flights', source, render, do
   createAircraftMotion({ predictionEnabled, horizonMs, correctionMs, maxInterpolationGapMs, interpolationMethod });
   if (!Number.isFinite(presentationDelayMs) || presentationDelayMs < 0 || presentationDelayMs > 60000) throw new TypeError('Aircraft presentation delay must be finite and bounded');
   let viewer, dataSource, request, removeMoveEnd, manager, viewTimer, expiryTimer, removeFrame;
-  let localArea, contextLost = false, holding = false, destroyed = false;
+  let localArea, contextLost = false, holding = false, destroyed = false, nextPreparedRead = false, prepared = false;
   let enabled = false, count = 0, lastUpdate = null, observedAtMs = null, ageMs = null, stale = false, coverage = null, error = null;
   const military = id === 'military', owner = 'aircraft:' + id, entries = new Map(), moving = new Set();
   const observedColor = Cesium.Color.fromCssColorString(military ? '#e8bd80' : '#93cde3');
@@ -39,7 +39,7 @@ export function createObservedAircraftLayer({ id = 'flights', source, render, do
     entry.styledMode = mode;
   }
   function present(entry, atMs) {
-    const state = entry.motion.sample(atMs - presentationDelayMs, { wallTimeMs: atMs }); if (!state) return false;
+    const state = entry.motion.sample(atMs - presentationDelayMs, { wallTimeMs: atMs, allowPlayback: !entry.deliveryStale }); if (!state) return false;
     entry.display = state;
     const { position } = state;
     Cesium.Cartesian3.fromDegrees(position.longitude, position.latitude, position.altitudeM, undefined, entry.cartesian);
@@ -73,6 +73,7 @@ export function createObservedAircraftLayer({ id = 'flights', source, render, do
     const dynamic = (read) => new Cesium.CallbackProperty(() => read(entry.display), false);
     return {
       source: snapshot.source || 'adsb.lol', icao24: record.id,
+      delivery: snapshot.prepared ? 'Prepared source observations' : undefined,
       positionType: dynamic((state) => state?.bufferState === 'awaiting-buffer' && state.basisObservedAtMs.length > 1 ? 'Buffered receiver observation' : meaning(state?.mode)),
       positionObservedAt: iso(record.positionTimeMs), positionTimeQuality: record.positionTimeQuality || 'unknown',
       displayObservedAt: dynamic((state) => state?.displayObservedAtMs ? iso(state.displayObservedAtMs) : undefined),
@@ -101,7 +102,7 @@ export function createObservedAircraftLayer({ id = 'flights', source, render, do
       ...(Number.isFinite(record.courseDeg) ? { reportedCourseDegrees: record.courseDeg } : {}),
       ...(Number.isFinite(record.verticalRateMps) ? { reportedVerticalRateMps: record.verticalRateMps, verticalRateAltitudeType: record.verticalRateAltitudeType || 'unknown' } : {}),
       ...(record.accuracy ? Object.fromEntries(Object.entries(record.accuracy).filter(([, value]) => value !== null && value !== undefined).map(([key, value]) => ['reportedAccuracy' + key[0].toUpperCase() + key.slice(1), value])) : {}),
-      onGround: Boolean(record.onGround), ...(snapshot.stale ? { freshness: 'Older feed' } : {}),
+      onGround: Boolean(record.onGround), freshness: dynamic(() => entry.deliveryStale ? 'Preserved source observations' : undefined),
     };
   }
   function add(record) {
@@ -113,7 +114,7 @@ export function createObservedAircraftLayer({ id = 'flights', source, render, do
         style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(9, -8), horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
         distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 150000) },
     });
-    const entry = { entity, cartesian: new Cesium.Cartesian3(), motion: createAircraftMotion({ predictionEnabled, horizonMs, correctionMs, maxInterpolationGapMs, interpolationMethod }), display: null };
+    const entry = { entity, cartesian: new Cesium.Cartesian3(), motion: createAircraftMotion({ predictionEnabled, horizonMs, correctionMs, maxInterpolationGapMs, interpolationMethod }), display: null, deliveryStale: false };
     entries.set(record.id, entry); dataSource.entities.add(entity); return entry;
   }
   function remove(key, entry) {
@@ -128,6 +129,7 @@ export function createObservedAircraftLayer({ id = 'flights', source, render, do
   const lost = () => { contextLost = true; request?.abort(); clearTimeoutImpl(viewTimer); stopMotion(); };
   const layer = {
     id, updateInterval: 30000,
+    invalidatePreparedSnapshot() { if (!destroyed) nextPreparedRead = true; },
     attachDataManager(nextManager) { manager = nextManager; }, setLocalArea(value) { localArea = validateArea(value); },
     init(nextViewer) {
       viewer = nextViewer; dataSource = new Cesium.CustomDataSource(id + '-observations'); dataSource.show = false; viewer.dataSources.add(dataSource);
@@ -151,32 +153,50 @@ export function createObservedAircraftLayer({ id = 'flights', source, render, do
       const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
       try {
         const query = localArea ? { latitude: localArea.lat, longitude: localArea.lon, radiusKm: localArea.radiusKm } : viewQuery(viewer);
-        const snapshot = await source.getSnapshot(query, { signal: combined }); combined.throwIfAborted();
+        const revalidate = nextPreparedRead; nextPreparedRead = false;
+        const snapshot = await source.getSnapshot(query, { signal: combined, revalidate }); combined.throwIfAborted();
         if (!available() || request !== controller) return false;
         if (!Array.isArray(snapshot.records)) throw new Error('Aircraft observations are invalid');
-        const seen = new Set(), current = now();
+        const seen = new Set(), current = now(), history = new Map(), deliveryStale = snapshot.stale === true || snapshot.freshness === 'stale';
+        if (snapshot.prepared === true && !deliveryStale && Array.isArray(snapshot.history)) {
+          for (const fix of snapshot.history.slice(0, 4000)) {
+            if (!fix?.id || fix.positionTimeQuality !== 'reported' || !Number.isFinite(fix.positionTimeMs) || fix.positionTimeMs <= 0 || fix.positionTimeMs > current ||
+              !Number.isFinite(fix.latitude) || !Number.isFinite(fix.longitude) || Math.abs(fix.latitude) > 90 || Math.abs(fix.longitude) > 180 || !inLocalArea(fix.latitude, fix.longitude, localArea)) continue;
+            if (!history.has(fix.id)) history.set(fix.id, []); history.get(fix.id).push(fix);
+          }
+        }
         for (const record of snapshot.records.slice(0, 5000)) {
           if (!record.id || seen.has(record.id) || !Number.isFinite(record.latitude) || !Number.isFinite(record.longitude) || Math.abs(record.latitude) > 90 || Math.abs(record.longitude) > 180 || !inLocalArea(record.latitude, record.longitude, localArea)) continue;
-          seen.add(record.id); const entry = entries.get(record.id) || add(record);
-          const admission = entry.motion.admit(record, current, { displayAtMs: current - presentationDelayMs });
-          if (!admission.accepted) continue;
+          seen.add(record.id); const existing = entries.get(record.id), entry = existing || add(record), previousPlaybackAllowed = !entry.deliveryStale;
+          if (!existing && record.positionTimeQuality === 'reported' && record.positionTimeMs <= current) {
+            const earlier = (history.get(record.id) || []).filter((fix) => fix.positionTimeMs < record.positionTimeMs).sort((a, b) => a.positionTimeMs - b.positionTimeMs).slice(-2);
+            for (const fix of earlier) entry.motion.admit(fix, current, { displayAtMs: current - presentationDelayMs, correctionEnabled: false });
+          }
+          const admission = entry.motion.admit(record, current, { displayAtMs: current - presentationDelayMs, correctionEnabled: Boolean(existing),
+            allowPlayback: !deliveryStale, previousPlaybackAllowed });
+          entry.deliveryStale = deliveryStale;
+          if (!admission.accepted) {
+            const canonical = entry.motion.getState().observation;
+            if (canonical) entry.entity.properties = properties(entry, canonical, snapshot);
+            continue;
+          }
           entry.entity.name = String(record.callsign || record.registration || record.id); entry.entity.label.text = entry.entity.name;
           present(entry, current); entry.entity.properties = properties(entry, record, snapshot);
         }
         for (const [key, entry] of entries) if (!seen.has(key)) remove(key, entry);
         count = entries.size; lastUpdate = current; observedAtMs = snapshot.observedAtMs ?? null; ageMs = snapshot.ageMs ?? null;
-        stale = snapshot.stale === true; coverage = snapshot.coverage || null; error = null; refreshMotion(); viewer.scene.requestRender(); return true;
+        stale = deliveryStale; prepared = snapshot.prepared === true; coverage = snapshot.coverage || null; error = null; refreshMotion(); viewer.scene.requestRender(); return true;
       } catch (failure) {
         if (combined.aborted) return false; error = failure.message || 'Aircraft source unavailable'; stale = count > 0; return false;
       } finally { if (request === controller) request = null; }
     },
     getStats() {
       const states = [...entries.values()].map((entry) => entry.display);
-      return { count, lastUpdate, refreshedAt: lastUpdate, observedAtMs, ageMs, stale, coverage, error, predictionEnabled: Boolean(predictionEnabled), horizonMs, presentationDelayMs, maxInterpolationGapMs, interpolationMethod,
+      return { count, lastUpdate, refreshedAt: lastUpdate, observedAtMs, ageMs, stale, prepared, coverage, error, predictionEnabled: Boolean(predictionEnabled), horizonMs, presentationDelayMs, maxInterpolationGapMs, interpolationMethod,
         interpolatingCount: states.filter((state) => state?.bufferState === 'interpolating').length, edgePredictionCount: states.filter((state) => state?.bufferState === 'edge-prediction').length,
         estimatedCount: states.filter((state) => state?.mode === 'estimated').length, expiredCount: states.filter((state) => state?.mode === 'expired').length, motionActiveCount: moving.size };
     },
-    getRowControls: () => ({ info: (coverage || (military ? 'Public military receiver observations.' : 'Receiver observations near the center of the current view.')) + ' ' +
+    getRowControls: () => ({ info: (coverage || (military ? 'Public military receiver observations.' : 'Receiver observations within ' + (localArea?.radiusKm || 50) + 'km of the current view center.')) + ' ' +
       (predictionEnabled ? 'Outlined dots use a ' + presentationDelayMs / 1000 + 's observation buffer and at most ' + horizonMs / 1000 + 's edge prediction. Select a dot for original measured coordinates and dates.' : 'Positions stay at their reported coordinates.') }),
     destroy() {
       if (destroyed) return; layer.disable(); destroyed = true; removeMoveEnd?.(); documentRef?.removeEventListener?.('visibilitychange', visibility);

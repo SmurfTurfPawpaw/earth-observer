@@ -7,6 +7,7 @@ import { collectEarthSources } from './collector.js';
 import { collectionFactsDigest } from './collection-publication.js';
 import { factsDigest } from '../scripts/local-intelligence-pipeline.mjs';
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
+import { readsbSnapshot } from '../src/sources/live/aircraft.js';
 
 function bucket() {
   const records = new Map(); let serial = 0;
@@ -21,6 +22,59 @@ function bucket() {
     },
   };
 }
+
+test('private aircraft captures survive a new runtime, warm history serves without providers, and retries repair notification', async (t) => {
+  const sqlite = new DatabaseSync(':memory:');
+  for (const filename of ['0000_glossy_overlord.sql', '0001_collection_revision.sql', '0002_aircraft_observations.sql'])
+    sqlite.exec(await readFile(new URL(`../drizzle/${filename}`, import.meta.url), 'utf8'));
+  let failRevision = false;
+  const database = { withSession() { return this; }, prepare(sql) {
+    const statement = sqlite.prepare(sql);
+    return { bind(...values) { return {
+      async first() { return statement.get(...values) || null; },
+      async all() { return { results: statement.all(...values) }; },
+      async run() { if (failRevision && sql.includes('INSERT INTO earth_collection_revision')) throw new Error('Transient notification failure'); return statement.run(...values); },
+    }; } };
+  } };
+  let at = Date.now() - 1000, sourceRequests = 0;
+  const now = () => at, env = { EARTH_STORE: bucket(), EARTH_DB: database, EARTH_COLLECTOR_TOKEN: 'e'.repeat(64) };
+  const options = { cache: null, now, fetchImpl: async () => { sourceRequests++; throw new Error('Prepared readers cannot acquire providers'); } };
+  const runtime = createEarthRuntime(options); t.after(() => { runtime.close(); sqlite.close(); });
+  const packet = (captured, latitude) => {
+    const normalized = readsbSnapshot({ now: captured / 1000, ac: [{ hex: 'abcdef', flight: 'TEST', lat: latitude, lon: 4.35,
+      seen_pos: 0, seen: 0, gs: 300, track: 0, alt_baro: 10000, baro_rate: 0 }] },
+    { now: captured, observedAtMs: captured, observedAtSource: 'source' });
+    return { schemaVersion: 1, source: 'adsb.lol', collectedAt: new Date(captured).toISOString(),
+      scope: { id: 'brussels-250km', type: 'area', latitude: 50.85, longitude: 4.35, radiusKm: 250 },
+      observedAtMs: captured, observedAtSource: 'source', records: normalized.records,
+      sourceState: { freshness: 'current', cache: 'MISS', cacheAgeMs: 0, ageMs: 0, complete: true, rejectedCount: 0 } };
+  };
+  const post = (value, authorized = true) => runtime.fetch(new Request('https://example.com/earth/api/collector', { method: 'POST',
+    headers: { 'content-type': 'application/json', ...(authorized ? { authorization: `Bearer ${env.EARTH_COLLECTOR_TOKEN}` } : {}) },
+    body: JSON.stringify({ action: 'aircraft', packet: value }) }), env);
+  const first = packet(at - 30000, 50.8), second = packet(at, 50.84);
+  assert.equal((await post(first, false)).status, 401);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM earth_aircraft_observations').get().n, 0);
+  assert.equal((await post(first)).status, 200);
+  failRevision = true; assert.equal((await post(second)).status, 503); failRevision = false;
+  const retried = await post(second); assert.equal(retried.status, 200);
+  const acknowledgment = await retried.json(); assert.equal(acknowledgment.changed, false); assert.equal(acknowledgment.updatesPublished, true);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM earth_aircraft_observations').get().n, 2);
+  assert.equal(sqlite.prepare('SELECT collected_at FROM earth_collection_revision WHERE id=2').get().collected_at, second.collectedAt);
+  assert.equal(sqlite.prepare('SELECT * FROM earth_collection_revision WHERE id=1').get(), undefined);
+  const freshRuntime = createEarthRuntime(options); t.after(() => freshRuntime.close());
+  const response = await freshRuntime.fetch(new Request('https://example.com/earth/api/aircraft/observations?lat=50.85&lon=4.35&radiusKm=50'), env);
+  assert.equal(response.status, 200); const warm = await response.json();
+  assert.equal(warm.prepared, true); assert.equal(warm.records[0].positionTimeMs, at);
+  assert.equal(warm.history[0].positionTimeMs, at - 30000); assert.equal(warm.records[0].latitude, 50.84);
+  assert.equal(warm.stale, false); assert.match(response.headers.get('cache-control'), /public/);
+  const outside = await freshRuntime.fetch(new Request('https://example.com/earth/api/aircraft/observations?lat=10&lon=10&radiusKm=50'), env);
+  assert.equal(outside.status, 503); assert.equal((await outside.json()).code, 'not-covered');
+  assert.equal(sourceRequests, 0);
+  at += 121000;
+  const stale = await (await freshRuntime.fetch(new Request('https://example.com/earth/api/aircraft/observations?lat=50.85&lon=4.35&radiusKm=50'), env)).json();
+  assert.equal(stale.stale, true); assert.equal(stale.records[0].positionTimeMs, second.observedAtMs);
+});
 
 test('private ingestion persists history; a fresh runtime serves prepared data with zero source requests', async () => {
   const at = Date.parse('2026-10-11T12:00:00Z'), now = () => at, env = { EARTH_STORE: bucket(), EARTH_COLLECTOR_TOKEN: 'a'.repeat(64) };

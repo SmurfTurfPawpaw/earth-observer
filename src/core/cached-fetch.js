@@ -48,7 +48,7 @@ async function snapshotBody(response, signal) {
 export function responseCachePolicy(url) {
   const path = url.pathname;
   if (url.username || url.password || /\/(?:frame|track|history)\//.test(path)) return null;
-  if (path === '/api/flights' || path === '/api/military' || path.startsWith('/api/transit/vehicles/')) return { fresh: 10_000, expire: 300_000 };
+  if (path === '/api/flights' || path === '/api/military' || path === '/api/aircraft/observations' || path.startsWith('/api/transit/vehicles/')) return { fresh: 10_000, expire: 300_000 };
   if (path.startsWith('/api/gbfs/')) return { fresh: 30_000, expire: 300_000 };
   if (path === '/api/cctv/sources') return { fresh: 300_000, expire: 3_600_000 };
   if (path === '/api/intelligence') return { fresh: 60_000, expire: 3_600_000 };
@@ -162,6 +162,10 @@ export function createCachedFetch({ fetchImpl = (...args) => fetch(...args), sto
     const policy = (!init.method || init.method.toUpperCase() === 'GET') && init.credentials !== 'include' && init.cache !== 'no-store' &&
       !headers.has('authorization') && !headers.has('cookie') && !headers.has('range') ? responseCachePolicy(url) : null;
     if (!policy || (url.origin !== origin && url.origin !== 'https://earthquake.usgs.gov')) return fetchImpl(input, init);
+    // A producer-triggered check must start after any transport that was
+    // already pending when it arrived. Joining that older read can miss the
+    // published generation even though local storage was bypassed.
+    const revalidationBarrier = init.cache === 'no-cache' ? pending.get(url.href) : null;
     let record;
     const signal = init.signal ? AbortSignal.any([init.signal, lifetime.signal]) : lifetime.signal;
     try { record = await whileActive(Promise.resolve().then(() => store.get(`response:${url.href}`)), signal); } catch {}
@@ -171,7 +175,12 @@ export function createCachedFetch({ fetchImpl = (...args) => fetch(...args), sto
     // A visible feed's automatic check must reach the shared server cache even
     // at the exact local freshness boundary. Offline/default opens retain the
     // immediate snapshot path; successful revalidation still updates storage.
-    if (init.cache === 'no-cache' && online() && visible()) return network(url.href, init, policy);
+    if (init.cache === 'no-cache' && online() && visible()) {
+      if (revalidationBarrier && !revalidationBarrier.settled)
+        await whileActive(revalidationBarrier.work.catch(() => {}), signal);
+      signal.throwIfAborted();
+      return network(url.href, init, policy);
+    }
     if (age <= policy.expire) {
       const mode = !online() ? 'OFFLINE' : age <= policy.fresh ? 'HIT' : 'STALE';
       try {

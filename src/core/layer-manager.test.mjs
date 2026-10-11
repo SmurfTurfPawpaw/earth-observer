@@ -90,6 +90,37 @@ test('imports only on enable, initializes once, polls only while enabled and cle
   assert.equal(calls.at(-1), 'destroy');
 });
 
+test('producer revisions coalesce one follow-up during an active refresh and respect hidden/history/disabled state', async () => {
+  const calls = [], pending = Promise.withResolvers(); let count = 0, invalidations = 0;
+  const env = environment(async () => ({ ...engine(calls),
+    invalidatePreparedSnapshot() { invalidations++; },
+    update() { count++; return count === 2 ? pending.promise : undefined; },
+  }));
+  assert.equal(env.manager.requestRefresh('test'), false);
+  await env.manager.setEnabled('test', true);
+  const refreshing = env.manager.refresh('test'); await settle();
+  for (let i = 0; i < 8; i++) assert.equal(env.manager.requestRefresh('test'), true);
+  assert.equal(count, 2); assert.equal(invalidations, 1);
+  pending.resolve(); await refreshing; await settle(); assert.equal(count, 3); assert.equal(invalidations, 2);
+  env.document.hidden = true; assert.equal(env.manager.requestRefresh('test'), false);
+  env.document.hidden = false; await env.manager.setTimelineMode('history');
+  assert.equal(env.manager.requestRefresh('test'), false);
+  await env.manager.destroy(); assert.equal(env.manager.requestRefresh('test'), false);
+});
+
+test('producer revision survives lazy loading and historical pause until an allowed refresh', async () => {
+  const loading = Promise.withResolvers(); let invalidations = 0, updates = 0;
+  const env = environment(() => loading.promise);
+  const enabling = env.manager.setEnabled('test', true); await settle();
+  assert.equal(env.manager.requestRefresh('test'), false);
+  loading.resolve({ ...engine([]), invalidatePreparedSnapshot() { invalidations++; }, update() { updates++; } });
+  await enabling; assert.equal(invalidations, 1); assert.equal(updates, 1);
+  await env.manager.setTimelineMode('history'); assert.equal(env.manager.requestRefresh('test'), false);
+  assert.equal(invalidations, 1); assert.equal(updates, 1);
+  await env.manager.setTimelineMode('live'); assert.equal(invalidations, 2); assert.equal(updates, 2);
+  await env.manager.destroy();
+});
+
 test('a newer disable supersedes a pending import without activating the layer', async () => {
   const calls = [];
   const loaded = Promise.withResolvers();
