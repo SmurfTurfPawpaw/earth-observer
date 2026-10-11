@@ -1,119 +1,105 @@
-# Dedicated collection timer
+# Independent minute collection timer
 
-This standalone Cloudflare Worker invokes the hosted Earth's authenticated
-collection endpoint once per minute, including when no browser is open. Its
-deployment is **not active merely because these files exist**. Cloudflare
-account access, the shared server secret, deployment and actual scheduled
-execution still require verification.
+`minute-trigger.js` is the deployment entry point in `wrangler.example.jsonc`.
+It sends one signed collect-only request per Cron invocation to the compiled target
+`https://giovannicallebaut.com/earth/api/collector/trigger`. Source acquisition and
+durable data publication stay on the existing hosted Earth service.
 
-The only write action is the Worker `scheduled()` handler's fixed HTTPS POST
-to `https://giovannicallebaut.com/earth/api/collector`, with
-`Authorization: Bearer <EARTH_COLLECTOR_TOKEN>` and body `{ "action": "collect" }`.
-The one other explicitly allowed origin is the user's existing generated host,
-`https://giovanni-callebaut.giovanni-callebautt.chatgpt.site`. Origin configuration
-rejects other hosts, paths, credentials, queries and fragments; request inputs
-cannot change the target. Redirects are rejected and secrets never appear in
-the public status or configuration example.
+The timer requires only `EARTH_TRIGGER_HMAC_KEY`, separately provisioned on the
+hosted service and this Worker. The broad collector/publication credential stays
+on the hosted service. There are no KV, database or object-storage bindings and no
+timer state writes. No request or environment value can replace the fixed target,
+action or body; redirects, cookies and arbitrary source URLs are not admitted.
 
-## Configuration and deployment
+## Ready code, pending activation
 
-Use a current Wrangler CLI and an authenticated Cloudflare account. Run from
-this directory. These instructions do not install, create resources or deploy
-anything automatically.
+No Cloudflare account was connected, Worker deployed or secret provisioned by this
+change. These files alone do not establish unattended collection. The current
+GitHub `hosted-collector.yml` workflow remains the explicit five-minute fallback;
+minute execution needs independent account access and actual runtime verification.
 
-1. Copy `wrangler.example.jsonc` to your own `wrangler.jsonc`. The example's
-   `* * * * *` is a valid every-minute Cron Trigger. If another existing Worker
-   uses the same name, choose an unused name in your account before deploying.
-2. Set the same strong, random, 32-or-more-character `EARTH_COLLECTOR_TOKEN`
-   secret in the hosted Sites application's server environment and this
-   dedicated Worker. Do not put it in `vars`, a Git commit or browser code.
-   Wrangler's interactive `wrangler secret put EARTH_COLLECTOR_TOKEN` avoids
-   passing the value in command history. Tokens may use standard bearer-token
-   characters; a random base64url or hexadecimal token is suitable.
-3. For retry state across instances, create a Workers KV namespace and add its
-   actual ID under binding `COLLECTOR_STATE`. It stores a small normalized
-   status/attempt policy, never visitors, source bodies or the secret.
-4. Deploy the configured Worker with `wrangler deploy`. Cron configuration
-   changes can take time to propagate; inspect a real scheduled invocation and
-   the hosted collection/source status before calling the timer active.
+1. Use an authenticated Cloudflare account with permission to deploy this Worker,
+   manage its Cron Trigger and set its secret. Obtain account selection through the
+   normal Cloudflare login/API-token flow; no credential is written in this repo.
+2. Copy the example to local `wrangler.jsonc`, select a free unused Worker name and
+   the actual account. To stage it without collection, set
+   `EARTH_MINUTE_TIMER_ENABLED` to `"0"` and `triggers.crons` to `[]`.
+3. Using the current Wrangler/dashboard secret workflow, provision the existing
+   dedicated `EARTH_TRIGGER_HMAC_KEY` as a secret binding. Do not supply its value
+   in command arguments, Git, browser code or plaintext `vars`. The example's
+   `secrets.required` declaration prevents deployment with a missing key.
+4. Deploy the timer with `EARTH_MINUTE_TIMER_ENABLED: "1"` and
+   `triggers.crons: ["* * * * *"]`. `workers_dev:false` means no public HTTP route
+   is needed. The Worker still handles scheduled events.
+5. Verify at least two actual consecutive unattended Cron runs with no laptop or
+   browser dependency. Read the hosted source/world receipts and original source
+   dates, inspect Cron outcomes/logs, and measure CPU against the selected plan.
+   A manual trigger or configuration health response alone does not pass this gate.
+6. After minute execution is proven reliable, disable the five-minute GitHub
+   trigger to avoid competing timers. Retain it as a documented fallback rather
+   than silently running two acquisition schedules.
 
-Official references: [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/),
-[Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/),
-[KV bindings](https://developers.cloudflare.com/kv/concepts/kv-bindings/).
+`wrangler secret put EARTH_TRIGGER_HMAC_KEY` is an interactive provisioning option;
+it also deploys a new Worker version. Stage the disabled configuration first and
+use that command only when account access and activation are approved. A modern
+Wrangler version is needed for required-secret validation. No CLI installation,
+account creation, resource purchase or deployment was performed here.
+[Cloudflare secret provisioning](https://developers.cloudflare.com/workers/configuration/secrets/).
 
-## Bounded execution and status
+## Bounds and cancellation
 
-One invocation performs at most one authenticated POST, with a 25-second
-deadline, no redirect or cookies, and a 16 KiB response-body limit. No immediate
-retry or extra provider call is made. Failure backoff starts at one minute and
-increases to an hour; HTTP Retry-After can extend it up to 24 hours. Configured
-KV reads/writes have one-second deadlines and failures before acquisition
-prevent the POST. Same-instance invocations coalesce. A 60-second attempt lease
-and retry policy survive through KV when available.
+Each invocation signs the same canonical protocol as the existing hosted client:
+method/path/fixed body, current request timestamp and random 128-bit nonce. It
+performs at most one POST and streams at most 4 KiB of JSON within a 55-second
+wall deadline. Network or response failures never trigger an immediate retry.
+The next regular minute remains the next attempt. Aborted or uncertain requests
+report `stored:null`; late storage may still finish on the hosted service.
 
-KV is eventually consistent and its lease is **not atomic**. It cannot prove
-that distributed or duplicate Cron executions cause exactly one global POST.
-The hosted collector must retain its own atomic R2/provider admission and
-backoff. Without KV, this timer's memory policy lasts only for that instance.
-Neither the lease nor a successful trigger guarantees any provider's freshness.
+Scheduled handling awaits that single operation and calls `controller.noRetry()`
+when the runtime provides it. This avoids retry fan-out after an uncertain write.
+The timer has no global lock or durable last-success state; server admission,
+provider cadence/backoff and exact publication gates remain authoritative. It does
+not guarantee exactly one distributed execution or make a slow source update
+every minute. A `busy` result is an explicit skipped collection opportunity.
 
-The attempt lease and completed status use separate KV keys, each written at
-most once by an invocation, to avoid the provider's one-write-per-second limit
-for a fast response. A continuously successful minute schedule uses about
-2,880 KV writes per day; the published Workers Free KV allowance is 1,000/day,
-so that binding needs adequate allowance or a different persistent scheduler
-design. The example leaves KV unbound and never purchases a plan.
-[KV write rules](https://developers.cloudflare.com/kv/api/write-key-value-pairs/),
-[KV allowances](https://developers.cloudflare.com/kv/platform/pricing/).
+To stop collection, deploy `EARTH_MINUTE_TIMER_ENABLED: "0"` and explicitly set
+`triggers.crons: []`. Removing/commenting out the Cron field does not remove an
+already deployed trigger. Configuration propagation can take up to 15 minutes;
+already admitted hosted storage may still settle. Revoking the dedicated key on
+the hosted service also stops future authenticated admission, while affecting
+other runners using that same scoped key.
+[Cloudflare Cron configuration and removal](https://developers.cloudflare.com/workers/configuration/cron-triggers/).
 
-`GET /status` (also `GET /`) reads last attempt/success, response status and retry
-times. It does not collect, refresh providers or write KV. POST and other methods
-on these public routes return 405. Success means the authenticated target
-accepted the trigger and returned bounded JSON; it does not claim every feed
-was fetched or every source succeeded. Dated per-source results remain on the
-hosted Earth API. A scheduled invocation logs only this compact status, never
-authentication headers or target JSON. An unavailable/missing configuration
-remains explicit. Without KV, a public status request may reach a different
-instance whose local history is empty.
+Public HTTP handlers, if deliberately exposed later, provide read-only
+configuration health at `/`, `/healthz` or `/status`. They never collect or write.
+They do not report shared last-success timestamps from isolate memory. Logs contain
+only the allowlisted status/count summary, never credentials, signatures, source
+text, raw responses or error stacks. Failed runs become safe scheduled errors;
+paused and busy outcomes remain explicit skips.
 
-This timer moves routine triggering away from GitHub Actions and visitors.
-Actual source acquisition, normalization, persistent snapshots and freshness
-remain in the hosted Sites endpoint. Existing Node-based GKG ZIP ingestion and
-its scheduled artifact are a separate pipeline: this Worker does not decode
-GKG, copy publisher pages or make all world reporting an exact real-time feed.
+## Free-plan capacity
 
-## Focused verification
+Official Cloudflare documentation checked on 12 October 2026 lists 100,000 daily
+requests, five account Cron Triggers, 50 subrequests per invocation and 10 ms CPU
+per Free-plan Cron invocation. The minute timer uses one Cron and approximately
+1,440 invocations/one outbound request daily. Network wait does not count as CPU,
+so its 55-second wall deadline is distinct from that 10 ms CPU limit. These numbers
+suggest a small fit; local Node checks do not prove hosted CPU or shared account
+headroom. The hosted Sites application's storage/CPU allowances are separate.
+[Cloudflare Worker limits](https://developers.cloudflare.com/workers/platform/limits/).
 
-From the repository root:
+## Focused verification and compatibility
 
 ```sh
-node --test collector-worker/index.test.mjs
+node --test collector-worker/minute-trigger.test.mjs collector-worker/index.test.mjs worker/collector-trigger.test.mjs
 ```
 
-This test injects synthetic responses and storage. It makes no production,
-Cloudflare or provider requests and does not establish a deployed schedule.
+The checks exercise existing server HMAC interoperability, fixed target/action,
+no broad-token/KV access, bounded and stalled responses, misleading success bodies,
+cancelled/paused Cron, deadlines and credential-free logs. They use injected
+synthetic HTTP responses; they make no provider/Cloudflare request or deployment.
 
-## Temporary laptop pipeline
-
-[`scripts/collector-daemon.mjs`](../scripts/collector-daemon.mjs) is the separate
-temporary local bridge while Cloudflare account configuration is pending. Its
-default invokes the local pipeline: fixed-source acquisition, changed/revised
-metadata analysis, then authenticated `{ action: "publish", packet, analysis }`
-publication to the hosted endpoint. The credential is passed through process
-environment in memory as `EARTH_COLLECTION_SECRET` (or `EARTH_COLLECTOR_TOKEN`)
-and must be hexadecimal with at least 32 characters. No secret file is created
-or logged. Launch it only after the authenticated publish endpoint is deployed.
-
-The daemon serializes minute cycles and propagates a 30-second deadline to
-their HTTP requests. SIGINT/SIGTERM clears its wait and aborts active requests.
-The local pipeline owns per-source cadence, provider Retry-After, bounded
-state/outbox and change-based inference. A completed or accepted cycle does
-not mean every source is fresh. No full target response or source records enter
-the daemon's compact logs. The laptop must remain awake, connected and running
-this process; it is not a verified 24/7 cloud deployment.
-
-`--once` performs one cycle. The explicit `--trigger-only` compatibility option
-calls the existing hosted collection action and skips laptop analysis; it is
-not the default path and does not satisfy inference-before-publication. No
-arbitrary target URL argument is accepted. This local process and the prepared
-Cloudflare scheduled Worker are separate deployment modes.
+The old `index.js` module is retained only for the already-existing local
+`scripts/collector-daemon.mjs` compatibility import. It is not the Wrangler entry
+point. Its legacy broad-credential/KV deployment recipe has been removed from this
+README; new external runners use the narrow stateless timer above.

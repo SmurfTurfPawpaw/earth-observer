@@ -1,5 +1,8 @@
 import { sqliteTable, text, integer, primaryKey, index } from 'drizzle-orm/sqlite-core';
 
+export { archiveChunks, archiveMembership, archiveCoverage, archiveHeads } from './world-archive-schema';
+export { investigationJobs, investigationHeads, investigationAttempts } from './investigation-schema';
+
 // Immutable source observations index private R2 content-addressed snapshots.
 export const observations = sqliteTable('earth_observations', {
   source: text('source').notNull(),

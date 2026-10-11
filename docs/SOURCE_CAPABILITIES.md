@@ -3,7 +3,7 @@
 Reviewed 11 October 2026 against foundation baseline `822d73a`. This is a source and
 code audit, not a deployment, freshness, completeness or uptime assertion. The
 machine-readable ledger is [source-capabilities.js](../src/core/source-capabilities.js),
-schema 1, revision 1. `getSourceCapability(id)` returns a frozen reviewed entry or
+schema 1, revision 2. `getSourceCapability(id)` returns a frozen reviewed entry or
 `null`; it does not enable an adapter. The existing public-hosting provider policy
 still governs admission. Actual manifests, outages and retained evidence restrict
 the ledger further at query time.
@@ -12,7 +12,7 @@ the ledger further at query time.
 
 | Source | Current implementation | Source cadence versus checks | Geography and temporal meaning | History and rights |
 | --- | --- | --- | --- | --- |
-| USGS | Fixed M4.5+ seven-day summary; at most 100 normalized records | Official summary regenerates every minute; current acquisition policy checks at most once/minute with backoff | Source hypocenter point, origin date and source revision date; no authoritative country code is supplied | Retained snapshots start at actual collection. Catalog date-range backfill is possible but unimplemented; current catalog results do not reproduce past revisions. USGS-produced data are public domain; credit USGS and respect marked third-party content. |
+| USGS | Fixed M4.5+ seven-day summary; at most 100 normalized live records. Separate fixed catalog archive admits independently counted unsliced intervals of at most 500 records | Official summary regenerates every minute; current acquisition policy checks at most once/minute with backoff | Source hypocenter point, origin date and source revision date; no authoritative country code is supplied | Retained snapshots start at actual collection. The isolated archive/import and scene contracts are implemented; completed hosted receipts alone establish actual archive coverage. Current catalog results do not reproduce every past source revision. USGS-produced data are public domain; credit USGS and respect marked third-party content. |
 | GDACS | Seven-day EQ/TC/FL/VO/WF/DR query; at most 100 notices | Episodes/notices have no fixed delivery guarantee; checks use a shared minute policy and backoff | Indicative points/countries and modeled impacts; start/end and modification dates differ from publication/capture | API documents historical date ranges; episode completeness is unverified. Integration is supported with GDACS credit; external resources have separate rights. |
 | NASA EONET | Seven-day, three-category curated sample; at most 60 references | Curation has no guaranteed incident cadence; current live checks are bounded to once/minute | Current adapter excludes coordinates, descriptions and inferred countries. Geometry/end dates can be approximate and older than the query window | API supports date ranges/open/closed status. Our archive retains selected reference metadata only; linked publisher content is not copied. |
 | GDELT | Owned bounded metadata release; at most 240 topic/link records | GKG has 15-minute batches; Worker revalidates the release at most once/minute. Release acquisition is a separate runtime | Index/batch date is not original publication or incident time. A mentioned country is context, not an event point | Released datasets allow redistribution with citation/link. Publisher articles/images have separate rights. Latest-batch processing does not provide archive backfill or missed-batch catch-up. |

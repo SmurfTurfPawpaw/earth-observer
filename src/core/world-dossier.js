@@ -31,16 +31,25 @@ export function createWorldDossier(entity, time, { documentRef = globalThis.docu
   field('Source revised', stamp(event.sourceTimes?.updatedAt));
   field('First retained', stamp(event.knowledge?.firstRecordedAt));
   dossier.append(facts);
-  dossier.append(node('p', 'world-dossier-note', 'Location and measurements come from USGS. The report may be revised as evidence develops.'));
+  const context = entity?.properties?.getValue?.(time)?._worldScene;
+  dossier.append(node('p', 'world-dossier-note', context?.mode === 'reconstruction' ?
+    'Historical reconstruction uses retained USGS corrections. The event date and the date this platform retained evidence are separate.' :
+    context?.mode === 'as-known' ? 'This historical scene includes only evidence this platform published by the selected UTC.' :
+    'Location and measurements come from USGS. The report may be revised as evidence develops.'));
   const evidence = node('details', 'world-evidence'); evidence.append(node('summary', '', 'Evidence and dates'));
   const dates = node('dl', 'world-facts');
   for (const [label, value] of [['Source retrieved', stamp(event.sourceTimes?.retrievedAt)],
     ['First captured', stamp(event.knowledge?.firstCapturedAt)], ['Selected capture', stamp(event.capture?.capturedAt)],
-    ['Capture published', stamp(event.capture?.publishedAt)]]) {
+    ['Capture published', stamp(event.capture?.publishedAt)], ['Archive retrieved', stamp(event.archive?.capturedAt)],
+    ['Archive published', stamp(event.archive?.publishedAt)]]) {
     if (value) dates.append(node('dt', '', label), node('dd', '', value));
   }
   dates.append(node('dt', '', 'Source revision'), node('dd', 'world-evidence-id', event.evidence.revision),
     node('dt', '', 'Retained snapshot'), node('dd', 'world-evidence-id', event.evidence.snapshotId));
+  if (event.archive) {
+    dates.append(node('dt', '', 'Dataset'), node('dd', 'world-evidence-id', event.archive.scopeId));
+    if (event.archive.conflictCount > 0) dates.append(node('dt', '', 'Source conflicts'), node('dd', '', `${event.archive.conflictCount} alternative retained revision${event.archive.conflictCount === 1 ? '' : 's'} share the provider update date.`));
+  }
   evidence.append(dates, node('p', 'world-dossier-note', 'A missing item in a limited feed does not establish that it ended or was disproved.'));
   dossier.append(evidence); return dossier;
 }

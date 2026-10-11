@@ -199,11 +199,15 @@ export async function start() {
     disposers.push(manager.subscribe(rememberWorkspace));
     disposers.push(shell.subscribePanels(handlePanel));
     disposers.push(installScenePreview(viewer, { store, cameraView, getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
-    timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch, subscribeUpdates: updates.subscribe,
+    let appliedSceneMode = 'live';
+    timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch,
       async onTimeChange(state) {
-        if (state.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
-        await manager.setTimelineMode(state.mode);
-        intelligence?.setSceneMode(state.mode);
+        const changed = appliedSceneMode !== state.mode;
+        appliedSceneMode = state.mode;
+        if (changed && state.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
+        if (changed) await manager.setTimelineMode(state.mode);
+        if (appliedSceneMode !== state.mode) return;
+        if (changed) intelligence?.setSceneMode(state.mode);
         void worldDossiers.refresh();
         window.dispatchEvent(new CustomEvent('earth-observer:timechange', { detail: state }));
       },

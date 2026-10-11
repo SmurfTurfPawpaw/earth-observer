@@ -149,3 +149,96 @@ execution before activating owner collection, without adding paid accounts.
 Decisions: D009 compact heartbeat is a check, not a factual capture; D010 readability
 is a bounded solar cartographic treatment; D011 warm by intent instead of importing
 all engines; D012 retain explicit runtime/coverage gaps and adapt downstream phases.
+
+## 2026-10-11T22:35Z first published package and next gates
+
+- App revision 6ba6e7eb8777f19e175deb1f4ae1c62886b2bda8 is pushed. Site source
+  33261f6ea373345ee3abf51cfbf5fac936b2f0cb is saved and published as version 26,
+  deployment appgdep_6acc0dae322481919972c23af0d6ef84, runtime revision 4.
+  The previous version 25 remains the rollback boundary. The Windows packaging
+  helper needed process-local Git Bash/Node paths and TAR_OPTIONS=--force-local;
+  the tested build was reused without modifying the helper or source afterward.
+- The package passed 104 focused checks and the combined host build/route checks.
+  Actual production browser review now shows the new interface, readable night
+  globe, working zoom and second-by-second UTC. One refresh was needed after an
+  earlier shell was observed during release propagation; initial metadata status
+  alone did not establish that the browser was using the new assets.
+- A manual signed collector call stored four source snapshots, 360 records and
+  completed world publication. Hosted SQL/R2 readback shows 100 retained USGS
+  events, captured 22:30:39Z and published 22:30:42Z. Source health is separate:
+  the GDELT producer sample is older and explicitly contains missing intervals.
+- The new scoped key is installed in the existing public GitHub repository and
+  its optional collector workflow is enabled. Independent dispatch run 38180737793
+  completed successfully on exact app revision 6ba6e7e; hosted checkedAt/collectedAt
+  advanced to 22:31:13Z. This proves one cloud acquisition without a local collector,
+  not scheduled reliability. Two scheduled stored checks remain an open gate.
+- Site MCP is provisioned with a generated OAuth endpoint/plugin. Public requests
+  to that endpoint, including the view-bypass trial, return 401. Owner identity and
+  ingress stripping are unverified, so owner writes and native schedules remain off.
+  No paid resource, new account, or identity bootstrap was introduced.
+- Re-examination: the free GitHub wake is nominally five minutes and can be delayed
+  or dropped. It is a fallback, not the required permanent continuous acquisition
+  runtime. Four source transfer caps imply a 1.97 GiB/day worst-case bound; actual
+  bytes, conditional transfer and source-specific due times need optimization.
+- Next independently reviewable slice: one small USGS historical catalog interval,
+  separate archive receipts/coverage/heads, stored event-time scenes and a corrected
+  timeline/dossier lens. Default reconstruction and optional knowledge replay stay
+  distinct; no two-year coverage until completed intervals justify it. A bounded
+  fixed-source research queue is developed in parallel, with SQL leases/fencing and
+  cited official scientific detail, before broader analysis or model inference.
+- Generated 0004_world_archive_investigations.sql is local only. No archive import,
+  scene API, research queue or new migration has been deployed in this next slice.
+
+Decisions: D013 keep GitHub collection as a measured fallback; D014 gate historical
+expansion on one complete interval and an honest failure; D015 reuse existing source
+identities, D1/R2 and Cesium, with isolated archive and research budgets.
+
+## 2026-10-11T22:52Z historical delivery and recovery re-examination
+
+- Archive publication and scene selection pass 21 focused checks. A rich 500-record
+  archive requires 28 D1 statements including five schema probes, below the earlier
+  per-record approach. Stored source corrections precede time/geography filtering;
+  exact raw and canonical evidence remain traceable. These are local measurements.
+- Re-examination rejected fetching at every event entry/expiry during fast playback.
+  Reconstruction now supports a bounded seven-day point buffer and exact local
+  `(scene UTC - 7d, scene UTC]` filtering. Neighboring chunks can prefetch. Known-then
+  replay retains its separate publication eligibility; future observed points are
+  never manufactured. Frontend integration is still underway.
+- A real USGS catalog interval, 1–8 October 2025, was acquired with an independent
+  count of 184 and 132,328 original response bytes. Real FDSN GeoJSON lacks the
+  summary feed's metadata.count; the protocol now admits that actual format while
+  requiring count-query and full feature membership agreement. No source body was
+  edited to manufacture compatibility. This interval is prepared, not yet hosted.
+- Transport/importer review found checkpoint recovery gaps. Resume now recomputes
+  canonical candidate identities from intact raw evidence, verifies contiguous
+  bounded interval accounting, accepts only an exact primary-storage absence or
+  completion receipt, and keeps acquisition versus retained capture dates distinct.
+  Eight focused checks include signed API → generated migrations → immutable store,
+  an HTTP timeout followed by commit, and restart without duplicate acquisition or
+  publication. Runtime mounting adds a provider-free routing check.
+- The first investigation runner had a canonical identity mismatch: stored IDs are
+  `usgs:providerId`, whereas its detail URL requires the bare provider ID. This was
+  corrected before hooks/deployment. Twelve checks now start through the real
+  normalizer, source journal and world publisher; a read-only hosted inventory
+  confirms 100/100 current identities are compatible. Queue/runtime integration is
+  still local and not an operating research claim.
+- Runtime environment revision 5 adds a distinct secret for the fixed USGS archive
+  import capability and removes the temporary MCP identity probe. It takes effect
+  only with the next saved-version deployment. Owner MCP writes remain disabled.
+- No scheduled GitHub collector run has appeared beyond the verified manual dispatch
+  at the latest observation. The dedicated minute timer is being prepared without KV
+  writes or a broad publication token; deploying it still requires connected account
+  access and measured CPU/unattended execution. Existing Sites scheduling does not
+  establish a verified minute HTTP runner.
+
+Decisions: D016 buffer factual time chunks for continuous presentation; D017 test
+against actual provider response formats and canonical identities; D018 require exact
+durable readback before import recovery; D019 preserve unresolved runtime access as
+a dependency while advancing historical storage, delivery and design independently.
+
+The next coherent package has passed 131 focused local checks across archive/research,
+temporal presentation, collection/runtime compatibility, timer interoperability and
+capability contracts. The timeline's manually selected gap test also verifies that
+unrelated completed periods cannot imply local coverage. Its app commit, combined
+build, actual deployed assets, one-week import and browser journey remain release
+gates; these results do not yet establish hosted historical playback.

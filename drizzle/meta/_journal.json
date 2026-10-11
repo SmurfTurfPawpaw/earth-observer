@@ -29,6 +29,20 @@
       "when": 1791756215163,
       "tag": "0003_world_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791758034813,
+      "tag": "0004_world_archive_investigations",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791758590597,
+      "tag": "0005_investigation_queue_index",
+      "breakpoints": true
     }
   ]
 }

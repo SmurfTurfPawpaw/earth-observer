@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installWorldDossierBridge, matchingWorldEvent } from './world-dossier-bridge.js';
 import { worldHash } from './world-model.js';
+import { WORLD_SCENE_SCOPE } from './world-scene-controller.js';
 
 const at = '2026-10-11T10:00:00.000Z';
 const selection = { usgsId: 'us7000test', mag: 5.1, time: Date.parse(at), lat: 10, lon: 20 };
@@ -45,4 +46,44 @@ test('a late response cannot attach evidence to a replaced selection', async () 
   const pending = bridge.refresh(); await begun;
   viewer.selectedEntity = undefined; await bridge.refresh(); release(response());
   assert.equal(await pending, false); assert.equal(values.size, 0); bridge.destroy();
+});
+
+const historicalAt = '2025-06-01T12:00:00.000Z', retainedAt = '2026-10-12T02:00:00.000Z';
+function archiveFixture(mode = 'reconstruction') {
+  const f = fixture();
+  const context = { schemaVersion: 1, scopeId: WORLD_SCENE_SCOPE, window: '7d', mode, knownMode: mode === 'as-known' ? 'scene' : 'none', version: 'archive:1',
+    revision: event.evidence.revision, sourceRecordId: event.evidence.sourceRecordId, eventId: id };
+  f.entity.selection = { ...selection, time: Date.parse(historicalAt), _worldScene: context };
+  f.viewer.earthTime.getState = () => ({ mode: 'history', at: historicalAt });
+  const archived = { ...event, eventTime: { at: historicalAt }, knowledge: { firstRecordedAt: retainedAt }, capture: undefined,
+    archive: { scopeId: WORLD_SCENE_SCOPE, chunkId: 'c'.repeat(64), publishedAt: retainedAt, capturedAt: retainedAt } };
+  return { ...f, context, archived };
+}
+
+test('Reconstruction can cite an older event retained today through the scoped scene route and exact revision', async () => {
+  const f = archiveFixture(); let calls = 0;
+  const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: (entity) => entity?.selection, fetchImpl: async (url) => {
+    calls++; const request = new URL(url, 'https://example.test');
+    assert.equal(request.pathname, `/api/world/scene/events/${id}`); assert.equal(request.searchParams.get('at'), historicalAt);
+    assert.equal(request.searchParams.get('revision'), event.evidence.revision); assert.equal(request.searchParams.has('knownAt'), false); assert.equal(request.searchParams.has('knownMode'), false);
+    return Response.json({ schemaVersion: 1, configured: true, available: true, scope: { id: WORLD_SCENE_SCOPE }, at: historicalAt, mode: 'reconstruction', knownMode: 'none', version: 'archive:1', event: f.archived });
+  } });
+  assert.equal(await bridge.refresh(), true); assert.equal(f.values.get('_worldEvent').knowledge.firstRecordedAt, retainedAt); assert.equal(calls, 1); bridge.destroy();
+});
+
+test('already admitted full archive projections bypass recent live membership and preserve their original dates', async () => {
+  const f = archiveFixture(); f.entity.selection._worldEvent = f.archived; f.values.set('_worldEvent', f.archived);
+  const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: (entity) => entity?.selection, fetchImpl() { throw new Error('The scene already supplied this projection'); } });
+  assert.equal(await bridge.refresh(), true); assert.equal(f.values.get('_worldEvent'), f.archived); bridge.destroy();
+});
+
+test('a Known then archive selection cannot use later retained evidence, and Reconstruction cannot silently replace its point revision', async () => {
+  for (const knownThen of [true, false]) {
+    const f = archiveFixture(knownThen ? 'as-known' : 'reconstruction');
+    const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: (entity) => entity?.selection, fetchImpl: async () => Response.json({
+      schemaVersion: 1, configured: true, available: true, scope: { id: WORLD_SCENE_SCOPE }, at: historicalAt,
+      knownAt: knownThen ? historicalAt : null, knownMode: knownThen ? 'scene' : 'none', mode: f.context.mode, version: 'archive:1',
+      event: knownThen ? f.archived : { ...f.archived, evidence: { ...f.archived.evidence, revision: 'd'.repeat(64) } } }) });
+    assert.equal(await bridge.refresh(), false); assert.equal(f.values.has('_worldEvent'), false); bridge.destroy();
+  }
 });

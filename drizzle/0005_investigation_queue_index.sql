@@ -1,0 +1,1 @@
+CREATE INDEX `earth_investigation_jobs_created` ON `earth_investigation_jobs` (`created_at`,`job_id`);

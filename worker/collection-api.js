@@ -6,6 +6,7 @@ import { groupReports } from '../src/core/intelligence-grouping.js';
 import { publishLocalCollection, heartbeatCollection, readLocalAnalysis, collectionFactsDigest } from './collection-publication.js';
 import { publishCollectionRevision, publishAircraftRevision } from './collection-updates.js';
 import { publishAircraftObservations } from './aircraft-observations.js';
+import { startInvestigationPipeline } from './investigation-pipeline.js';
 
 const json = (payload, status = 200, headers = {}) => Response.json(payload, { status, headers: {
   'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers,
@@ -79,7 +80,14 @@ export async function handleCollection(request, env, ctx, { now = Date.now, fetc
         revision = await publishCollectionRevision(env, { at: result.prepared.collectedAt,
           digest: result.prepared.inputDigest, recordCount: result.prepared.recordCount });
     }
-    return json({ ...result, stored: accepted, updatesConfigured: Boolean(env.EARTH_DB?.prepare), updatesPublished: Boolean(revision?.stored) },
+    // Research is separately budgeted retained work. Its availability never changes
+    // the factual publication outcome or blocks the collector's HTTP response.
+    let research;
+    if (accepted && result.world?.stored && ['collect', 'publish'].includes(body.action)) {
+      try { research = startInvestigationPipeline(env, ctx, { workerId: 'hosted-collector' }, { now, fetchImpl, signal: request.signal }); }
+      catch { research = { scheduled: false, status: 'unavailable' }; }
+    }
+    return json({ ...result, ...(research ? { research } : {}), stored: accepted, updatesConfigured: Boolean(env.EARTH_DB?.prepare), updatesPublished: Boolean(revision?.stored) },
       accepted ? 200 : 503, accepted ? {} : { 'retry-after': '60' });
   } catch (error) {
     if (error instanceof PreparedBaselineConflict) return json({ error: 'Prepared baseline changed; publish the retained full packet' }, 409);

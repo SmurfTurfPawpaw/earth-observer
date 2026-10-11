@@ -238,6 +238,30 @@ No account, secret, variable, workflow run or deployment was changed by this
 package's implementation. The current one-minute prepared-data staleness policy
 must not be silently presented as guaranteed fresh between five-minute wakes.
 
+### Root activation evidence after the package
+
+Root reports Site v26/app `6ba6e7e` published, runtime environment revision 4, and
+one signed manual hosted collection at 2026-10-11 22:30:39 UTC. It stored 360
+records/four source snapshots, with world and update publication accepted. A
+hosted database readback returned 100 retained USGS events, with projection
+availability at 22:30:42 UTC. These prove the signed hosted write/read path, not
+scheduled reliability or comprehensive world coverage. The GDELT producer was
+still at its 21:45 publication with declared missing intervals.
+
+Root provisioned the new GitHub secret and enable variable and dispatched
+workflow run `38180737793`. Its result and two actual scheduled captures still
+need to be observed. Root owns all activation and credentials. A cloud gate
+requires run IDs/event types/commit SHAs, source check/capture/publication times
+and persisted status/history readback with no laptop/manual acquisition between
+scheduled runs. Identical source facts need not create a new factual revision.
+Storage success does not establish every provider is fresh: inspect individual
+provider status, original source dates, retry/backoff and GDELT batch coverage.
+
+The public custom `/mcp` returned 404; the generated origin returned 401 even
+with Site-view service access. The native owner identity/write path remains
+unverified and disabled. Provisioned plugin metadata and cloud schedule creation
+alone do not bypass that gate. No native schedule was created by this audit.
+
 No connected Cloudflare deployment tool/account was verified. Native plugin search
 found Render, Railway and Vercel as uninstalled candidates; their appearance is not
 evidence of account authorization, free capacity or an active deployment. The

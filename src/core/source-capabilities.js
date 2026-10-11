@@ -5,7 +5,7 @@
  * Existing provider-policy.json remains the source-admission authority.
  */
 export const SOURCE_CAPABILITY_SCHEMA_VERSION = 1;
-export const SOURCE_CAPABILITY_REVISION = 1;
+export const SOURCE_CAPABILITY_REVISION = 2;
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const WEATHER_BASE = 'https://nowcoast.noaa.gov/geoserver/observations/';
@@ -19,7 +19,7 @@ function freeze(value) {
 }
 
 function retainedFeed(spec) {
-  const { paths, archive, ...fields } = spec;
+  const { paths, archive, archiveScope, ...fields } = spec;
   return {
     ...fields,
     implementation: {
@@ -32,9 +32,10 @@ function retainedFeed(spec) {
     history: {
       current: 'retained-knowledge-snapshots',
       firstAvailableAt: 'Read the hosted history index; no static start date is promised.',
-      asKnownThen: 'Captured source snapshots only; not a complete historical story dossier.',
+      asKnownThen: archiveScope ? 'Completed hosted archive receipts at the selected cutoff; not a reproduction of all provider knowledge at that date.' : 'Captured source snapshots only; not a complete historical story dossier.',
       upstreamArchive: archive,
-      backfillImplemented: false,
+      backfillImplemented: Boolean(archiveScope),
+      ...(archiveScope ? { archiveScope, reconstruction: 'Current retained source corrections selected by earthquake origin time; actual completed coverage and gaps come from /api/world/scene.' } : {}),
       future: 'unsupported',
     },
     interpolation: {
@@ -112,9 +113,10 @@ const sources = [
     cadence: { providerIntervalMs: MINUTE, providerMeaning: 'Summary regeneration, not earthquake occurrence or scientific review frequency.', checkIntervalMs: MINUTE, sourceLatencyMs: null, guaranteed: false },
     bounds: { maxRecords: 100, windowDays: 7, minimumMagnitude: 4.5 },
     archive: 'Official catalog supports date-range queries; older revision/knowledge state requires retained evidence.',
+    archiveScope: 'usgs-catalog-m4.5-v1',
     rights: { status: 'reviewed-public-display', policyProvider: 'usgs', scope: 'USGS-produced data; marked third-party content is separate.', attribution: 'U.S. Geological Survey', evidence: ['https://www.usgs.gov/faqs/are-usgs-reportspublications-copyrighted'] },
     documentation: ['https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php', 'https://earthquake.usgs.gov/fdsnws/event/1/'],
-    paths: ['server/hosted/intelligence-sources.js'],
+    paths: ['server/hosted/intelligence-sources.js', 'worker/world-archive.js', 'worker/world-scene.js', 'scripts/usgs-archive-import.mjs'],
     gaps: ['Magnitude threshold and 100-record limit exclude events.', 'Catalog backfill today is a reconstruction, not proof of what was known then.', 'Missing from a bounded sample is not a retraction.'],
   }),
   retainedFeed({

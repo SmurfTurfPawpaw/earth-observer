@@ -45,6 +45,19 @@ test('runtime leaves portfolio routes alone and serves /earth assets without con
   assert.equal((await runtime.fetch(request('/earth/healthz'))).status, 200); assert.equal(fetched, 0); runtime.close();
 });
 
+test('archive and scene paths precede generic world routing and cannot enter provider acquisition', async () => {
+  let fetched = 0;
+  const runtime = createEarthRuntime({ fetchImpl: async () => { fetched++; throw new Error('Unexpected provider acquisition'); } });
+  const scene = await runtime.fetch(request('/earth/api/world/scene?at=2025-10-08T00:00:00.000Z'));
+  assert.equal(scene.status, 503); assert.equal((await scene.json()).configured, false);
+  const archive = await runtime.fetch(request('/earth/api/world/archive/import', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }));
+  assert.equal(archive.status, 503);
+  const receipt = await runtime.fetch(request('/earth/api/world/archive/chunks/' + 'a'.repeat(64)));
+  assert.equal(receipt.status, 503); assert.equal((await receipt.json()).configured, false);
+  const badScene = await runtime.fetch(request('/earth/api/world/scene?at=2025-10-08T00:00:00.000Z&provider=https://unreviewed.example'));
+  assert.equal(badScene.status, 400); assert.equal(fetched, 0); runtime.close();
+});
+
 test('Worker adapters preserve shared aircraft records and NASA archive without unrelated upstream fetches', async () => {
   const urls = [];
   const runtime = createEarthRuntime({ fetchImpl: async (url) => { urls.push(String(url)); return new Response('{"ac":[{"hex":"123abc","lat":4,"lon":5}]}', { headers: { 'content-type': 'application/json' } }); } });

@@ -15,6 +15,9 @@ import { handleUpdates } from './collection-updates.js';
 import { handleAircraftObservations } from './aircraft-observations.js';
 import { createWorldModelHandler } from './world-model.js';
 import { createCollectorTriggerHandler } from './collector-trigger.js';
+import { createArchiveApiHandler } from './archive-api.js';
+import { createWorldSceneHandler } from './world-scene.js';
+import { createInvestigationApiHandler } from './investigation-api.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -30,6 +33,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
   if (!/^\/[a-z0-9/_-]*\/$/i.test(prefix)) throw new TypeError('A directory prefix is required');
   const providerFetch = createWorkerFetch(fetchImpl);
   const handleTrigger = createCollectorTriggerHandler({ now, fetchImpl: providerFetch });
+  const handleArchive = createArchiveApiHandler({ now });
+  const handleInvestigations = createInvestigationApiHandler({ now });
   let state;
   const admit = makeRateLimiter({ windowMs: 60000, max: 240, globalMax: 4000 });
   const services = (env) => state ||= {
@@ -67,6 +72,12 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (aircraft) return secured(aircraft);
         const history = await createHistoryHandler({ env, now })(internal);
         if (history) return secured(history);
+        const archive = await handleArchive(internal, env, ctx);
+        if (archive) return secured(archive);
+        const scene = await createWorldSceneHandler({ env, now })(internal);
+        if (scene) return secured(scene);
+        const investigations = await handleInvestigations(internal, env);
+        if (investigations) return secured(investigations);
         const world = await createWorldModelHandler({ env, now })(internal);
         if (world) return secured(world);
         // Aggregate actions own their methods and never enter public provider caches.

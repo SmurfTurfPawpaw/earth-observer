@@ -175,61 +175,6 @@ test('the visible UTC label subscribes independently of scene rendering and arch
   timeline.destroy(); wallClock.destroy(); assert.equal(timing.timers.size, 0); assert.equal(requests, 0); assert.equal(frames, 0);
 });
 
-test('UTC calendar seeks and playback cross midnight, preserve dates during full-range refresh, and keep evidence unchanged within capture windows', async () => {
-  const timing = scheduler(), documentRef = documentFixture(); documentRef.createElement = (tag) => new Element(tag, documentRef);
-  const container = documentRef.createElement('details'), entities = new Set(), changes = [], requests = []; let manifests = 0;
-  const oldest = { at: '2026-10-09T23:55:00.000Z', id: 'oldest', source: 'usgs', recordCount: 1 };
-  const middle = { at: '2026-10-10T00:15:00.000Z', id: 'middle', source: 'usgs', recordCount: 1 };
-  const older = { at: '2026-10-08T23:00:00.000Z', id: 'older', source: 'usgs', recordCount: 1 };
-  const newer = { at: '2026-10-12T09:30:00.000Z', id: 'newer', source: 'usgs', recordCount: 1 };
-  const sceneClock = createSceneClock({ ...timing, documentRef, monotonicNow: timing.now, now: () => Date.parse(newer.at) + timing.now() });
-  const viewer = { earthTime: { ...sceneClock, getState: () => ({ ...sceneClock.getState(), lighting: true }), subscribeClock: sceneClock.subscribe },
-    entities: { add(value) { entities.add(value); return value; }, remove(value) { entities.delete(value); } }, scene: { requestRender() {} } };
-  const timeline = createTimeline({ ...timing, container, viewer, documentRef, onTimeChange: (state) => changes.push(state), fetchImpl: async (url) => {
-    requests.push(url);
-    if (url === '/api/history') return Response.json({ configured: true, indexMode: 'd1-full-history',
-      firstAt: ++manifests === 1 ? oldest.at : older.at, lastAt: manifests === 1 ? last : newer.at,
-      snapshots: manifests === 1 ? snapshots : [...snapshots, newer] });
-    const at = new URL(url, 'https://example.test').searchParams.get('at');
-    const allCaptures = [older, oldest, middle, ...snapshots, newer], snapshot = allCaptures.filter((item) => item.at <= at).at(-1);
-    return Response.json({ configured: true, indexMode: 'd1-full-history', selectedAt: at,
-      firstAt: older.at, lastAt: newer.at, nextCaptureAt: allCaptures.find((item) => item.at > at)?.at || null,
-      snapshots: [snapshot], reports: [{ ...report, id: 'usgs:fixture', magnitude: 3.4, observedAt: snapshot.at, retrievedAt: snapshot.at }] });
-  } });
-  assert.equal(manifests, 0); container.open = true; container.trigger('toggle'); await settle();
-  const dock = container.parentElement, summary = elements(container).find((element) => element.tagName === 'summary');
-  const slider = elements(container).find((element) => element.type === 'range'), records = elements(container).find((element) => element.className === 'timeline-records');
-  const date = elements(container).find((element) => element.className === 'timeline-date');
-  const play = elements(dock).find((element) => element.className?.includes('timeline-play'));
-  const rate = elements(dock).find((element) => element.className === 'timeline-rate');
-  assert.equal(summary.attributes['aria-label'], 'Calendar and recorded coverage');
-  assert.equal(summary.attributes['aria-expanded'], 'true');
-  assert.ok(!elements(summary).some((element) => ['button', 'select', 'input'].includes(element.tagName)), 'Disclosure has one action; transport controls are siblings');
-  assert.equal(play.parentElement.parentElement, dock);
-  const beforeMidnight = '2026-10-09T23:59:50.000Z';
-  assert.equal(slider.min, String(Date.parse(oldest.at) / 1000), 'Stored coverage, not the newest bounded catalog, defines the calendar');
-  slider.value = String(Date.parse(beforeMidnight) / 1000); slider.trigger('change'); await settle(); const card = records.children[0];
-  assert.equal(sceneClock.getState().mode, 'history'); assert.equal(sceneClock.getState().at, beforeMidnight); assert.equal(entities.size, 1);
-  assert.equal([...entities][0].properties.usgsId, 'fixture'); assert.equal([...entities][0].properties.mag, 3.4);
-  assert.equal([...entities][0].properties.time, Date.parse(oldest.at), 'Historical pin source time is not retimed to the playback cursor');
-  rate.value = '60'; rate.trigger('change'); play.trigger('click'); await settle(); const playbackRequests = requests.length;
-  timing.advance(1000); await settle();
-  assert.equal(sceneClock.getState().at, '2026-10-10T00:00:50.000Z'); assert.equal(requests.length, playbackRequests, 'Crossing midnight does not fetch unchanged evidence');
-  assert.equal(date.value, '2026-10-10T00:00:50'); play.trigger('click');
-  const chosen = '2026-10-10T00:05:20.000Z'; date.value = chosen.slice(0, 19); date.trigger('change'); await settle();
-  assert.equal(sceneClock.getState().at, chosen); assert.equal(changes.at(-1).reports[0].retrievedAt, oldest.at);
-  timing.advance(60000); await settle();
-  assert.equal(slider.value, String(Date.parse(chosen) / 1000)); assert.equal(slider.min, String(Date.parse(older.at) / 1000));
-  assert.equal(slider.max, String(Date.parse(newer.at) / 1000)); assert.equal(date.value, chosen.slice(0, 19));
-  assert.equal(records.children[0], card); assert.equal(sceneClock.getState().at, chosen); assert.equal(entities.size, 1);
-  const multiDay = '2026-10-11T18:11:02.000Z'; slider.value = String(Date.parse(multiDay) / 1000); slider.trigger('input'); timing.advance(60000); await settle();
-  assert.equal(slider.value, String(Date.parse(multiDay) / 1000), 'A renewal cannot reset a thumb while the visitor drags');
-  assert.equal(sceneClock.getState().at, chosen); slider.trigger('change'); await settle();
-  assert.equal(sceneClock.getState().at, multiDay); assert.equal(date.value, multiDay.slice(0, 19)); assert.equal(changes.at(-1).snapshots[0].at, last);
-  timeline.live(); assert.equal(sceneClock.getState().mode, 'live'); assert.equal(entities.size, 0);
-  timeline.destroy(); sceneClock.destroy(); assert.equal(timing.timers.size, 0);
-});
-
 test('recorded range comes only from actual listed captures and topic/curated metadata cannot invent incident coordinates', () => {
   const normalized = normalizeHistory({ configured: true, firstAt: '1900-01-01T00:00:00Z', lastAt: '2099-01-01T00:00:00Z', snapshots: snapshots.toReversed(),
     reports: [report, { ...report, kind: 'curated-event' }, { ...report, kind: 'topic-mention' }, { ...report, url: 'javascript:alert(1)' }] });

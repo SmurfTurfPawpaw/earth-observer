@@ -1,0 +1,149 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { worldHash } from './world-model.js';
+import { createWorldSceneController, normalizeWorldScene, WORLD_SCENE_SCOPE, WORLD_SCENE_REFRESH_MS } from './world-scene-controller.js';
+
+const DAY = 86400000, start = '2025-06-01T12:00:00.000Z', today = '2026-10-12T02:00:00.000Z';
+const after = (at, distance) => new Date(Date.parse(at) + distance).toISOString();
+const range = { from: '2024-10-12T00:00:00.000Z', to: today };
+const coverage = { availableRange: range, segments: [range], gaps: [], complete: true, truncated: false, status: 'complete' };
+async function point(name, originAt = start) {
+  const key = await worldHash(['usgs', `usgs:${name}`]);
+  return { id: `event:usgs:${key}`, itemId: `item:${key}`, sourceId: 'usgs', sourceRecordId: `usgs:${name}`,
+    revision: 'a'.repeat(64), snapshotId: 'b'.repeat(64), lat: 50, lon: 4, magnitude: 5.2, originAt, title: name,
+    url: `https://earthquake.usgs.gov/earthquakes/eventpage/${name}` };
+}
+function payload(at = null, points = [], extra = {}) {
+  return { schemaVersion: 1, configured: true, available: true, mode: 'reconstruction', knownMode: 'none', knownAt: null,
+    scope: { id: WORLD_SCENE_SCOPE, sourceId: 'usgs' }, at, window: '7d', version: 'archive:1', currentVersion: 'archive:1', events: [],
+    counts: { returned: points.length, eligible: at ? points.length : null, omitted: at ? 0 : null },
+    complete: true, membershipComplete: true, truncated: false, cursor: null, coverage,
+    validFrom: at, validTo: at ? after(at, 7 * DAY) : null, nextSceneChangeAt: at ? after(at, 7 * DAY) : null,
+    ...(at ? { points, bufferFrom: at, bufferTo: after(at, 7 * DAY), bufferWindowFrom: after(at, -7 * DAY) } : {}), ...extra };
+}
+function documentFixture() {
+  const listeners = new Map();
+  return { hidden: false, addEventListener(type, fn) { listeners.set(type, fn); }, removeEventListener(type) { listeners.delete(type); },
+    visibility() { listeners.get('visibilitychange')?.(); }, listeners };
+}
+function scheduler() {
+  let time = 0, id = 0; const timers = new Map();
+  return { timers, now: () => time, setTimeoutImpl(fn, delay) { timers.set(++id, { fn, at: time + delay }); return id; },
+    clearTimeoutImpl(id) { timers.delete(id); }, advance(ms) { time += ms; for (const [id, item] of [...timers]) if (item.at <= time && timers.delete(id)) item.fn(); } };
+}
+const settle = async () => { await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setImmediate(resolve)); };
+
+test('a stored seven-day buffer gives exact local origin/expiry scenes, without a request per changing event', async () => {
+  const old = await point('old', after(start, -6 * DAY)), next = await point('new', after(start, 3600000)); let requests = 0;
+  const controller = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async (url) => {
+    requests++; const query = new URL(url, 'https://example.test').searchParams;
+    return Response.json(query.has('metadata') ? payload() : payload(query.get('at'), [old, next]));
+  } });
+  assert.equal(requests, 0); await controller.open(); await controller.select(start);
+  assert.deepEqual(controller.getState().selection.points.map((item) => item.title), ['old']);
+  assert.equal(controller.advance(after(start, 3599999)), true); assert.deepEqual(controller.getState().selection.points.map((item) => item.title), ['old']);
+  assert.equal(controller.advance(after(start, 3600000)), true); assert.deepEqual(controller.getState().selection.points.map((item) => item.title), ['old', 'new']);
+  assert.equal(controller.advance(after(start, DAY)), true); assert.deepEqual(controller.getState().selection.points.map((item) => item.title), ['new']);
+  assert.equal(controller.peek(after(start, 7 * DAY)), null, 'The exact exclusive buffer seam needs the next buffer');
+  assert.equal(requests, 2); controller.destroy();
+});
+
+test('all bounded pages are consumed before a marker buffer can be reused, and unfinished membership stays explicit', async () => {
+  const points = await Promise.all(['a', 'b', 'c'].map((name) => point(name))); let requests = 0;
+  const controller = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async (url) => {
+    requests++; const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) return Response.json(payload());
+    const second = query.has('cursor');
+    return Response.json(payload(start, second ? points.slice(2) : points.slice(0, 2), {
+      counts: { returned: second ? 1 : 2, eligible: 3, omitted: second ? 2 : 1 }, complete: false, truncated: true, cursor: second ? null : 'YQ' }));
+  } });
+  await controller.open(); await controller.select(start);
+  assert.equal(controller.getState().selection.points.length, 3); assert.equal(controller.getState().selection.counts.omitted, 0);
+  assert.equal(controller.getState().selection.complete, true); assert.equal(controller.advance(after(start, 1)), true); assert.equal(requests, 3);
+  controller.destroy();
+  const limited = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async (url) => Response.json(new URL(url, 'https://example.test').searchParams.has('metadata') ? payload() :
+    payload(start, [points[0]], { membershipComplete: false, counts: { returned: 1, eligible: null, omitted: null }, truncated: true })) });
+  await limited.open(); await limited.select(start); assert.equal(limited.getState().selection.truncated, true); assert.equal(limited.peek(after(start, 1)), null); limited.destroy();
+});
+
+test('Known then preserves advertised origin dates but cannot admit or prefetch evidence published later', async () => {
+  let calls = 0;
+  const controller = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async (url) => {
+    calls++; const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) return Response.json(payload());
+    assert.equal(query.get('knownMode'), 'scene'); assert.equal(query.has('points'), false);
+    const at = query.get('at');
+    return Response.json(payload(at, [], { mode: 'as-known', knownMode: 'scene', knownAt: at, version: 'archive:0', points: undefined,
+      coverage: { ...coverage, segments: [], gaps: [{ from: after(at, -7 * DAY + 1), to: at, status: 'unavailable-at-cutoff' }], complete: false, status: 'unavailable-at-cutoff' }, complete: false }));
+  } });
+  await controller.open(); await controller.select(start, 'known-then');
+  assert.deepEqual(controller.getState().metadata.coverage.availableRange, range); assert.equal(controller.getState().selection.coverage.status, 'unavailable-at-cutoff');
+  assert.equal(await controller.prefetch(), false); assert.equal(calls, 2); controller.destroy();
+  const p = await point('future'), key = p.id.slice('event:usgs:'.length);
+  const event = { schemaVersion: 1, id: p.id, kind: 'earthquake', source: { id: 'usgs', url: p.url }, place: { lat: p.lat, lon: p.lon }, eventTime: { at: start },
+    reportedFacts: { magnitude: p.magnitude }, evidence: { sourceId: 'usgs', sourceRecordId: p.sourceRecordId, itemId: `item:${key}`, revision: p.revision, snapshotId: p.snapshotId },
+    knowledge: { firstRecordedAt: today }, archive: { scopeId: WORLD_SCENE_SCOPE, chunkId: 'c'.repeat(64), publishedAt: today } };
+  await assert.rejects(normalizeWorldScene(payload(start, [], { mode: 'as-known', knownMode: 'scene', knownAt: start, events: [event], points: undefined, counts: { returned: 1, eligible: 1, omitted: 0 } }), { at: start, lens: 'known-then' }), /disagrees/);
+});
+
+test('rapid seeks, Live and hidden tabs cancel both the owned body and future prefetch', async () => {
+  const first = await point('first'), documentRef = documentFixture(), body = Promise.withResolvers(), began = Promise.withResolvers(); let signal;
+  const controller = createWorldSceneController({ documentRef, fetchImpl: async (url, init) => {
+    const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) return Response.json(payload());
+    signal = init.signal; began.resolve(); return body.promise;
+  } });
+  await controller.open(); const pending = controller.select(start); await began.promise;
+  controller.live(); assert.equal(signal.aborted, true); body.resolve(Response.json(payload(start, [first])));
+  assert.equal(await pending, false); assert.equal(controller.getState().selection, null); controller.destroy(); assert.equal(documentRef.listeners.size, 0);
+  const prefetchBody = Promise.withResolvers(), prefetchBegan = Promise.withResolvers(); let calls = 0, prefetchedSignal;
+  const prefetch = createWorldSceneController({ documentRef, fetchImpl: async (url, init) => {
+    calls++; const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) return Response.json(payload());
+    if (query.get('at') === start) return Response.json(payload(start, [first]));
+    prefetchedSignal = init.signal; prefetchBegan.resolve(); return prefetchBody.promise;
+  } });
+  await prefetch.open(); await prefetch.select(start); const upcoming = prefetch.prefetch(); await prefetchBegan.promise;
+  assert.equal(calls, 3); documentRef.hidden = true; documentRef.visibility(); assert.equal(prefetchedSignal.aborted, true);
+  prefetchBody.resolve(Response.json(payload(after(start, 7 * DAY), []))); assert.equal(await upcoming, false); prefetch.destroy();
+});
+
+test('coverage revision checks preserve the selected UTC and renew unchanged buffers without more scene transfers', async () => {
+  const timing = scheduler(), first = await point('stable'); let scenes = 0, metadataCalls = 0;
+  const controller = createWorldSceneController({ ...timing, documentRef: documentFixture(), fetchImpl: async (url) => {
+    const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) { metadataCalls++; return Response.json(payload()); }
+    scenes++; return Response.json(payload(query.get('at'), [first]));
+  } });
+  await controller.open(); await controller.select(start); controller.advance(after(start, 1000));
+  timing.advance(WORLD_SCENE_REFRESH_MS); await settle();
+  assert.equal(metadataCalls, 2); assert.equal(scenes, 1); assert.equal(controller.getState().selectedAt, after(start, 1000));
+  assert.equal(controller.advance(after(start, DAY)), true); controller.destroy(); assert.equal(timing.timers.size, 0);
+});
+
+test('an invalid date, another scope, or a forged point identity never becomes historical geography', async () => {
+  const p = await point('identity');
+  await assert.rejects(normalizeWorldScene(payload(start, [{ ...p, id: `event:usgs:${'d'.repeat(64)}` }]), { at: start, buffered: true }), /identity/);
+  await assert.rejects(normalizeWorldScene(payload(start, [p], { scope: { id: 'today', sourceId: 'usgs' } }), { at: start, buffered: true }), /does not match/);
+  const controller = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async () => Response.json(payload()) });
+  await controller.open(); assert.equal(await controller.select('2025-02-30T12:00:00.000Z'), false); controller.destroy();
+});
+
+test('one thousand retained points support accelerated frame-local scenes through one bounded transfer sequence', async (t) => {
+  const points = await Promise.all(Array.from({ length: 1000 }, (_, index) => point(`stress${index}`, after(start, -7 * DAY + (index + 1) * 14 * DAY / 1000)))); let requests = 0;
+  const controller = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async (url) => {
+    requests++; const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) return Response.json(payload());
+    const page = query.has('cursor') ? Number(atob(query.get('cursor'))) : 0, slice = points.slice(page * 100, (page + 1) * 100);
+    return Response.json(payload(start, slice, { counts: { returned: slice.length, eligible: points.length, omitted: points.length - slice.length },
+      complete: false, truncated: true, cursor: page === 9 ? null : btoa(String(page + 1)).replace(/=+$/, '') }));
+  } });
+  await controller.open(); await controller.select(start); assert.equal(controller.getState().selection.truncated, false); assert.equal(requests, 11);
+  const began = performance.now();
+  for (let frame = 0; frame < 600; frame++) {
+    const at = after(start, frame / 600 * 6 * DAY), scene = controller.frame(at);
+    assert.ok(scene); assert.ok(scene.points.every((item) => item.originAt <= at && Date.parse(item.originAt) > Date.parse(at) - 7 * DAY));
+  }
+  t.diagnostic(`600 accelerated local membership frames including assertions: ${(performance.now() - began).toFixed(1)} ms; browser/GPU timing is separate.`);
+  assert.equal(requests, 11); controller.destroy();
+});
