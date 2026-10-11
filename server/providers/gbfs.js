@@ -114,7 +114,7 @@ export async function fetchGbfsUpstream(
  *
  * @returns {import('vite').Plugin}
  */
-export function gbfsProxy() {
+export function gbfsProxy({ fetchImpl = (...args) => globalThis.fetch(...args) } = {}) {
   const installMiddleware = (server) => {
     server.middlewares.use('/api/gbfs', async (req, res) => {
       try {
@@ -196,7 +196,7 @@ export function gbfsProxy() {
           return;
         }
 
-        const upstream = await fetchGbfsUpstream(upstreamUrl.toString());
+        const upstream = await fetchGbfsUpstream(upstreamUrl.toString(), { fetchImpl });
         res.writeHead(upstream.status, {
           'Content-Type': upstream.contentType,
           'Cache-Control': gbfsCacheControl(upstreamUrl.pathname),

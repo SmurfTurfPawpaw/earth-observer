@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { stageEntities, replaceEntities } from './entity-batches.js';
+import { inLocalArea, validateArea } from './local-area.js';
 
 /** Static mapped locations; outline geometries become explicitly approximate points. */
 export function createInfrastructureLayer({ id, source, documentRef = globalThis.document } = {}) {
@@ -10,9 +11,11 @@ export function createInfrastructureLayer({ id, source, documentRef = globalThis
   const credit = `${dams ? 'Open Infrastructure Map · ' : ''}© OpenStreetMap contributors · ODbL`;
   const coverage = 'Bundled mapped locations; completeness varies. Outline features use an approximate representative point.';
   let viewer, dataSource, request, onChange;
+  let localArea;
   let enabled = false, loaded = false, count = 0, approximateCount = 0, lastUpdate = null, error = null;
   return {
     id, updateInterval: 0,
+    setLocalArea(value) { const next = validateArea(value); if (JSON.stringify(next) !== JSON.stringify(localArea)) { localArea = next; loaded = false; } },
     init(nextViewer) {
       viewer = nextViewer;
       dataSource = new Cesium.CustomDataSource(id); dataSource.show = false;
@@ -34,7 +37,7 @@ export function createInfrastructureLayer({ id, source, documentRef = globalThis
         const records = await source.getRecords(id, { signal: combined });
         combined.throwIfAborted();
         if (!Array.isArray(records)) throw new Error('Infrastructure records are invalid');
-        const valid = records.filter((record) => Number.isFinite(record.lat) && Number.isFinite(record.lon) && Math.abs(record.lat) <= 90 && Math.abs(record.lon) <= 180);
+        const valid = records.filter((record) => Number.isFinite(record.lat) && Number.isFinite(record.lon) && Math.abs(record.lat) <= 90 && Math.abs(record.lon) <= 180 && inLocalArea(record.lat, record.lon, localArea));
         const identities = new Map();
         const entities = await stageEntities(valid, (record) => {
           const key = String(record.id);

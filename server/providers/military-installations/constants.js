@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 // ---------------------------------------------------------------------------
 // Military-installation context proxy
 // ---------------------------------------------------------------------------
@@ -33,11 +31,7 @@ const MILITARY_INSTALLATION_ELEMENT_CAP = 700;
 const MILITARY_INSTALLATION_DISK_TTL_MS = 30 * 86_400_000;
 
 /** Disk-cache directory for mapped installation payloads. */
-const MILITARY_INSTALLATION_DISK_DIR = path.join(
-  process.cwd(),
-  '.gev-cache',
-  'military-installations',
-);
+const MILITARY_INSTALLATION_DISK_DIR = '.gev-cache/military-installations';
 
 /**
  * Cache-key grid step in degrees (~5.5 km).

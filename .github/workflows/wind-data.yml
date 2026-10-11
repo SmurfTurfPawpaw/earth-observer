@@ -1,0 +1,50 @@
+name: Refresh wind data
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: wind-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    if: github.repository == 'SmurfTurfPawpaw/earth-observer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      WIND_OUTPUT: ${{ runner.temp }}/wind-snapshots
+      NODE_OPTIONS: --max-old-space-size=512
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Check snapshot contract
+        run: node --test server/hosted/wind-snapshot.test.mjs
+      - name: Generate all six forecast grids
+        run: node scripts/wind-snapshot.mjs "$WIND_OUTPUT"
+      - name: Publish bounded latest assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view wind-data --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release create wind-data --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false \
+              --title 'Latest forecast wind grids' \
+              --notes 'Derived NOAA GFS and ECMWF Open Data forecasts. Run, valid, retrieval and publication times, source credits and grid digests are recorded in each manifest. These are modeled forecasts, not observed wind. ECMWF data: CC BY 4.0 with source attribution and resampling/conversion notices in the IFS manifests.'
+          fi
+          # Upload grids first. Workers reject any manifest/grid digest mismatch
+          # while individual GitHub release assets are being replaced.
+          gh release upload wind-data "$WIND_OUTPUT"/*.grid.bin --repo "$GH_REPO" --clobber
+          gh release upload wind-data "$WIND_OUTPUT"/*.manifest.json --repo "$GH_REPO" --clobber

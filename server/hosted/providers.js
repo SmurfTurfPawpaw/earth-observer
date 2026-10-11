@@ -11,10 +11,11 @@ import { windProxy } from '../providers/wind.js';
 import { weatherProxy } from '../providers/weather.js';
 import { cycloneProxy } from '../providers/cyclones.js';
 import { firePerimetersProxy } from '../providers/firePerimeters.js';
+import { intelligenceProxy } from './intelligence.js';
 
 /** Only providers documented in DATA_POLICY are mounted in the hosted app. */
 export function hostedProviders() {
   return [aircraftProxy(), celestrakProxy(), rocketLaunchesProxy(), terrainHeightsProxy(),
     overpassProxy(), militaryInstallationsProxy(), cctvProxy(), gbfsProxy(), transitProxy(),
-    firmsProxy(), windProxy(), weatherProxy(), cycloneProxy(), firePerimetersProxy()];
+    firmsProxy(), windProxy(), weatherProxy(), cycloneProxy(), firePerimetersProxy(), intelligenceProxy()];
 }

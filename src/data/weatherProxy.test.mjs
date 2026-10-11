@@ -798,8 +798,8 @@ test('every product serves one whole-extent image at its advertised bounds, size
       response.headers['Cache-Control'],
       'public, max-age=86400, immutable',
     );
-    assert.equal(response.body.readUInt32BE(16), width);
-    assert.equal(response.body.readUInt32BE(20), width / 2);
+    assert.equal(new DataView(response.body.buffer, response.body.byteOffset, response.body.byteLength).getUint32(16), width);
+    assert.equal(new DataView(response.body.buffer, response.body.byteOffset, response.body.byteLength).getUint32(20), width / 2);
     assert.equal(maps.length, 1, 'one upstream request, no composition');
     assert.equal(maps[0].get('layers'), name);
     assert.equal(maps[0].get('bbox'), '-130,20,-60,55');
@@ -809,7 +809,8 @@ test('every product serves one whole-extent image at its advertised bounds, size
     assert.equal((await request(smaller)).statusCode, 200);
     assert.equal(maps.length, 2, 'size is part of the cache identity');
     assert.equal(maps[1].get('width'), '1024');
-    assert.deepEqual((await request(smaller)).body.readUInt32BE(16), 1024);
+    const smallerResponse = await request(smaller);
+    assert.equal(new DataView(smallerResponse.body.buffer, smallerResponse.body.byteOffset, smallerResponse.body.byteLength).getUint32(16), 1024);
     assert.equal(
       (await request(`${wholeImage(TIME, product)}&size=${width}x${width / 2}`))
         .statusCode,
@@ -846,8 +847,8 @@ test('detail windows take a rounded 2:1 bbox inside the product bounds, cached b
       response.headers['Cache-Control'],
       'public, max-age=86400, immutable',
     );
-    assert.equal(response.body.readUInt32BE(16), 4096, 'every product');
-    assert.equal(response.body.readUInt32BE(20), 2048);
+    assert.equal(new DataView(response.body.buffer, response.body.byteOffset, response.body.byteLength).getUint32(16), 4096, 'every product');
+    assert.equal(new DataView(response.body.buffer, response.body.byteOffset, response.body.byteLength).getUint32(20), 2048);
     assert.equal(maps[0].get('layers'), name);
     assert.equal(maps[0].get('time'), TIME);
     assert.deepEqual(
@@ -1093,8 +1094,8 @@ for (const product of ['radar', 'clouds-regional', 'lightning']) {
         first.headers['Cache-Control'],
         'public, max-age=86400, immutable',
       );
-      assert.equal(first.body.readUInt32BE(16), size);
-      assert.equal(first.body.readUInt32BE(20), size);
+      assert.equal(new DataView(first.body.buffer, first.body.byteOffset, first.body.byteLength).getUint32(16), size);
+      assert.equal(new DataView(first.body.buffer, first.body.byteOffset, first.body.byteLength).getUint32(20), size);
       assert.deepEqual((await request(url)).body, first.body);
     }
     assert.equal((await request(base)).statusCode, 200);

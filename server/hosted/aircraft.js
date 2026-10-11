@@ -24,7 +24,16 @@ export function aircraftProxy({ fetchImpl = fetch, now = Date.now } = {}) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Valid lat and lon are required' })); return;
         }
-        upstream = `https://api.adsb.lol/v2/lat/${Math.round(lat * 2) / 2}/lon/${Math.round(lon * 2) / 2}/dist/250`;
+        if (url.searchParams.has('radiusKm')) {
+          const radiusKm = Number(url.searchParams.get('radiusKm'));
+          if (!Number.isFinite(radiusKm) || radiusKm < 1 || radiusKm > 250) {
+            res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'radiusKm must be between 1 and 250' })); return;
+          }
+          // Share nearby requests on a ~5 km grid; padding keeps the requested circle covered.
+          const roundedLat = Math.round(lat * 20) / 20, roundedLon = Math.round(lon * 20) / 20;
+          const miles = Math.ceil((radiusKm + 4) / 1.852);
+          upstream = `https://api.adsb.lol/v2/lat/${roundedLat}/lon/${roundedLon}/dist/${miles}`;
+        } else upstream = `https://api.adsb.lol/v2/lat/${Math.round(lat * 2) / 2}/lon/${Math.round(lon * 2) / 2}/dist/250`;
       }
       let entry = cache.get(upstream);
       let state = 'HIT';
@@ -47,7 +56,7 @@ export function aircraftProxy({ fetchImpl = fetch, now = Date.now } = {}) {
               const payload = await readResponseJsonCapped(response, 8 * 1024 * 1024);
               if (!Array.isArray(payload.ac)) throw new Error('Invalid aircraft snapshot');
               const body = JSON.stringify(payload);
-              const fresh = { at: now(), body, bytes: Buffer.byteLength(body) };
+              const fresh = { at: now(), body, bytes: new TextEncoder().encode(body).byteLength };
               cacheBytes -= cache.get(upstream)?.bytes || 0;
               cache.delete(upstream); cache.set(upstream, fresh);
               cacheBytes += fresh.bytes;

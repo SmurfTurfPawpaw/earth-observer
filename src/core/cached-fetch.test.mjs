@@ -1,0 +1,118 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createBrowserStore } from './browser-store.js';
+import { createCachedFetch } from './cached-fetch.js';
+
+const url = '/api/flights?lat=4&lon=5';
+const response = (value) => new Response(JSON.stringify({ value }), { headers: { 'content-type': 'application/json' } });
+
+test('one cancelled caller cannot cancel another caller sharing the same feed request', async () => {
+  const started = Promise.withResolvers(), upstream = Promise.withResolvers();
+  let calls = 0, transport;
+  const fetch = createCachedFetch({ store: createBrowserStore(null), fetchImpl: (_url, { signal }) => {
+    calls++; transport = signal; started.resolve(); return upstream.promise;
+  } });
+  const one = new AbortController(), two = new AbortController();
+  const cancelled = fetch(url, { signal: one.signal });
+  const retained = fetch(url, { signal: two.signal });
+  const rejected = assert.rejects(cancelled, { name: 'AbortError' });
+  await started.promise;
+  // The second cache lookup is ordered behind the first; let it join first.
+  await new Promise((resolve) => setImmediate(resolve));
+  one.abort(); await rejected;
+  assert.equal(transport.aborted, false);
+  upstream.resolve(response(42));
+  assert.equal((await (await retained).json()).value, 42);
+  assert.equal(calls, 1);
+  fetch.destroy();
+});
+
+test('a joining caller cancels promptly without interrupting the first caller', async () => {
+  const started = Promise.withResolvers(), upstream = Promise.withResolvers();
+  let transport;
+  const fetch = createCachedFetch({ store: createBrowserStore(null), fetchImpl: (_url, { signal }) => {
+    transport = signal; started.resolve(); return upstream.promise;
+  } });
+  const one = fetch(url), controller = new AbortController();
+  const two = fetch(url, { signal: controller.signal });
+  const rejected = assert.rejects(two, { name: 'AbortError' });
+  await started.promise; await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(); await rejected;
+  assert.equal(transport.aborted, false);
+  upstream.resolve(response(7));
+  assert.equal((await (await one).json()).value, 7); fetch.destroy();
+});
+
+test('the last cancelled caller stops the shared transport and a replacement request can start', async () => {
+  const started = Promise.withResolvers(); let calls = 0, firstSignal;
+  const fetch = createCachedFetch({ store: createBrowserStore(null), fetchImpl: (_url, { signal }) => {
+    calls++;
+    if (calls > 1) return Promise.resolve(response(9));
+    firstSignal = signal; started.resolve();
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  } });
+  const controller = new AbortController(), request = fetch(url, { signal: controller.signal });
+  const rejected = assert.rejects(request, { name: 'AbortError' });
+  await started.promise; controller.abort(); await rejected;
+  assert.equal(firstSignal.aborted, true);
+  assert.equal((await (await fetch(url)).json()).value, 9);
+  assert.equal(calls, 2); fetch.destroy();
+});
+
+test('cancellation during a delayed cache lookup returns immediately and cannot start a late request', async () => {
+  const lookup = Promise.withResolvers(); let calls = 0;
+  const fetch = createCachedFetch({ store: { get: () => lookup.promise }, fetchImpl: async () => { calls++; return response(1); } });
+  const controller = new AbortController();
+  const request = fetch(url, { signal: controller.signal });
+  const rejected = assert.rejects(request, { name: 'AbortError' });
+  controller.abort(); await rejected;
+  lookup.resolve(undefined); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 0); fetch.destroy();
+});
+
+test('workspace teardown promptly rejects consumers even when a custom transport ignores abort', async () => {
+  const started = Promise.withResolvers(), upstream = Promise.withResolvers();
+  const fetch = createCachedFetch({ store: createBrowserStore(null), fetchImpl: async () => { started.resolve(); return upstream.promise; } });
+  const request = fetch(url), rejected = assert.rejects(request, { name: 'AbortError' });
+  await started.promise; fetch.destroy(); await rejected;
+  upstream.resolve(response(1)); await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('failing cache reads, writes and trimming never reject a successful HTTP response', async () => {
+  const store = { get: async () => { throw new Error('read unavailable'); }, put: async () => { throw new Error('quota exceeded'); }, all: async () => { throw new Error('read unavailable'); } };
+  const fetch = createCachedFetch({ store, fetchImpl: async () => response(5) });
+  assert.equal((await (await fetch(url)).json()).value, 5); fetch.destroy();
+  const trimFailure = createCachedFetch({ store: { ...store, put: async () => {} }, fetchImpl: async () => response(6) });
+  assert.equal((await (await trimFailure(url)).json()).value, 6); trimFailure.destroy();
+});
+
+test('chunked oversized cache copies stop at the cap without delaying or truncating the feed caller', async () => {
+  const bytes = new Uint8Array(5 * 1024 * 1024).fill(32);
+  let puts = 0;
+  const fetch = createCachedFetch({ store: { get: async () => undefined, put: async () => puts++, all: async () => [] }, fetchImpl: async () =>
+    new Response(new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }), { headers: { 'content-type': 'application/json' } }) });
+  const live = await fetch(url);
+  assert.equal((await live.arrayBuffer()).byteLength, bytes.byteLength);
+  assert.equal(puts, 0); fetch.destroy();
+});
+
+test('cache time records HTTP contact rather than delayed persistence completion', async () => {
+  let clock = 10000;
+  const records = new Map();
+  const store = { get: async (key) => records.get(key), put: async (key, record) => { clock += 1000; records.set(key, record); }, all: async () => [] };
+  const fetch = createCachedFetch({ store, now: () => clock, fetchImpl: async () => response(1) });
+  await fetch(url);
+  const cached = await fetch(url);
+  assert.equal(cached.headers.get('x-browser-cached-at'), '10000');
+  assert.equal(cached.headers.get('x-browser-cache-age-ms'), '1000'); fetch.destroy();
+});
+
+test('corrupt snapshots cannot block network recovery and credentials bypass snapshots', async () => {
+  let calls = 0;
+  const store = { get: async () => ({ at: 10000, status: 200, body: new ArrayBuffer(1), headers: [['invalid header', 'value']] }), put: async () => {}, all: async () => [] };
+  const fetch = createCachedFetch({ store, now: () => 10000, fetchImpl: async () => { calls++; return response(calls); } });
+  assert.equal((await (await fetch(url)).json()).value, 1);
+  await fetch(url, { credentials: 'include' }); await fetch(url, { credentials: 'include' });
+  await fetch(url, { cache: 'no-store' });
+  assert.equal(calls, 4); fetch.destroy();
+});

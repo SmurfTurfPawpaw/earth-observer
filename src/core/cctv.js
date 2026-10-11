@@ -1,13 +1,16 @@
 import { stageEntities, replaceEntities } from './entity-batches.js';
 import * as Cesium from 'cesium';
+import { inLocalArea, validateArea } from './local-area.js';
 
 /** Approved still-image cameras represented by selectable points, without video/projection machinery. */
 export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args) } = {}) {
   let viewer, dataSource, request;
+  let localArea;
   let enabled = false, count = 0, lastUpdate = null, error = null, attributions = [];
   return {
     id: 'cctv',
     updateInterval: 300000,
+    setLocalArea(value) { localArea = validateArea(value); },
     init(nextViewer) {
       viewer = nextViewer;
       dataSource = new Cesium.CustomDataSource('public-cameras');
@@ -37,6 +40,7 @@ export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args) } =
         for (const camera of payload.sources.slice(0, 4000)) {
           if (!camera.id || seen.has(camera.id) || !Number.isFinite(camera.lat) || !Number.isFinite(camera.lon) || Math.abs(camera.lat) > 90 || Math.abs(camera.lon) > 180) continue;
           seen.add(camera.id);
+          if (!inLocalArea(camera.lat, camera.lon, localArea)) continue;
           valid.push(camera);
         }
         const entities = await stageEntities(valid, (camera) => new Cesium.Entity({

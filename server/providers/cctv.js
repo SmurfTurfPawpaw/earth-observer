@@ -77,8 +77,8 @@ export async function fetchCctvImageFromUpstream(url, {
  * Frames share a bounded LRU cache and coalesced fetches; failures never trigger
  * another provider, video tooling, generated image or Street View fallback.
  */
-export function cctvProxy() {
-  const getSources = createCctvCatalog();
+export function cctvProxy(options = {}) {
+  const getSources = createCctvCatalog(options);
   const health = new Map();
   const cache = new Map();
   const inFlight = new Map();
@@ -120,7 +120,7 @@ export function cctvProxy() {
       throw Object.assign(new Error('Camera service busy'), { status: 503 });
     }
     return coalesceProxyRequest(inFlight, source.id, async () => {
-      const frame = await fetchCctvImageFromUpstream(url, { provider: source.pack });
+      const frame = await fetchCctvImageFromUpstream(url, { provider: source.pack, fetchImpl: options.fetchImpl });
       const ttl = frame ? (source.pack === 'tfl' ? 300_000 : FRAME_CACHE_MS) : FAILURE_CACHE_MS;
       remember(source.id, { url, frame, expiresAt: Date.now() + ttl });
       setHealth(source, frame ? 'ok' : 'offline');

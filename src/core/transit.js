@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { TRANSIT_ENABLED_FEEDS, haversineKm, transitModeFor } from '../data/transitFeeds.js';
+import { inLocalArea, validateArea } from './local-area.js';
 
 const FIX_MAX_AGE_MS = 600000;
 const FEED_MAX_AGE_MS = 300000;
@@ -31,6 +32,7 @@ function viewCenter(viewer) {
 
 export function createObservedTransitLayer({ fetchImpl = (...args) => fetch(...args), catalog = TRANSIT_ENABLED_FEEDS } = {}) {
   let viewer, dataSource, request, manager, removeMoveEnd, viewTimer, onChange;
+  let localArea;
   let enabled = false, lastUpdate = null, count = 0, active = [], error = null, zoomIn = false;
   const snapshots = new Map(), credits = new Map();
   const creditDisplay = () => viewer?.cesiumWidget?.creditDisplay || viewer?.creditDisplay || viewer?.scene?.frameState?.creditDisplay;
@@ -41,6 +43,7 @@ export function createObservedTransitLayer({ fetchImpl = (...args) => fetch(...a
   const layer = {
     id: 'transit', updateInterval: 30000,
     attachDataManager(nextManager) { manager = nextManager; },
+    setLocalArea(value) { localArea = validateArea(value); },
     setRowControlsListener(listener) { onChange = listener; },
     init(nextViewer) {
       viewer = nextViewer;
@@ -65,7 +68,7 @@ export function createObservedTransitLayer({ fetchImpl = (...args) => fetch(...a
       const controller = new AbortController(); request = controller;
       const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
       try {
-        const center = viewCenter(viewer);
+        const center = localArea || viewCenter(viewer);
         zoomIn = (viewer.camera.positionCartographic?.height ?? Infinity) > 3000000;
         const desired = !zoomIn && center ? catalog.filter((feed) => haversineKm(center.lat, center.lon, feed.center.lat, feed.center.lon) <= feed.loadRadiusKm) : [];
         const results = await Promise.all(desired.map(async (feed) => {
@@ -92,6 +95,7 @@ export function createObservedTransitLayer({ fetchImpl = (...args) => fetch(...a
         for (const result of results) {
           if (!result.snapshot || !Number.isFinite(result.contactedAt) || now - result.contactedAt > FEED_MAX_AGE_MS) continue;
           for (const record of normalizeTransitRecords(result.feed, result.snapshot, now)) {
+            if (!inLocalArea(record.lat, record.lon, localArea)) continue;
             if (entities.length >= 15000) break;
             entities.push(new Cesium.Entity({
               id: `transit:${result.feed.id}:${record.id}`,

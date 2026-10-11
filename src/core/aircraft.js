@@ -1,4 +1,5 @@
 import * as Cesium from 'cesium';
+import { inLocalArea, validateArea } from './local-area.js';
 
 function viewQuery(viewer) {
   const canvas = viewer.canvas;
@@ -11,12 +12,14 @@ function viewQuery(viewer) {
 export function createObservedAircraftLayer({ id = 'flights', source }) {
   if (!source?.getSnapshot) throw new TypeError('An aircraft observation source is required');
   let viewer, dataSource, request, removeMoveEnd, manager, viewTimer;
+  let localArea;
   let enabled = false, count = 0, lastUpdate = null, observedAtMs = null, ageMs = null, stale = false, coverage = null, error = null;
   const military = id === 'military';
   const layer = {
     id,
     updateInterval: 30000,
     attachDataManager(nextManager) { manager = nextManager; },
+    setLocalArea(value) { localArea = validateArea(value); },
     init(nextViewer) {
       viewer = nextViewer;
       dataSource = new Cesium.CustomDataSource(`${id}-observations`);
@@ -40,7 +43,8 @@ export function createObservedAircraftLayer({ id = 'flights', source }) {
       const controller = new AbortController(); request = controller;
       const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
       try {
-        const snapshot = await source.getSnapshot(viewQuery(viewer), { signal: combined });
+        const query = localArea ? { latitude: localArea.lat, longitude: localArea.lon, radiusKm: localArea.radiusKm } : viewQuery(viewer);
+        const snapshot = await source.getSnapshot(query, { signal: combined });
         combined.throwIfAborted();
         if (!enabled || request !== controller) return false;
         if (!Array.isArray(snapshot.records)) throw new Error('Aircraft observations are invalid');
@@ -49,6 +53,7 @@ export function createObservedAircraftLayer({ id = 'flights', source }) {
         for (const record of snapshot.records.slice(0, 5000)) {
           if (!record.id || seen.has(record.id) || !Number.isFinite(record.latitude) || !Number.isFinite(record.longitude) || Math.abs(record.latitude) > 90 || Math.abs(record.longitude) > 180) continue;
           seen.add(record.id);
+          if (!inLocalArea(record.latitude, record.longitude, localArea)) continue;
           const label = record.callsign || record.registration || record.id;
           const altitude = record.onGround ? 0 : Number.isFinite(record.ellipsoidAltitudeM) ? record.ellipsoidAltitudeM : Number.isFinite(record.baroAltitudeM) ? record.baroAltitudeM : 0;
           const observed = Number.isFinite(record.positionTimeMs) ? record.positionTimeMs : snapshot.observedAtMs;

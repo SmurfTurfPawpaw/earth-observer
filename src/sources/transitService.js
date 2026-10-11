@@ -107,10 +107,10 @@ export async function fetchTransitFeed(
  * @param {{fetchImpl?: typeof fetch}} [options]
  * @returns {{handle: (request: Request) => Promise<Response>, close: () => void}}
  */
-export function createTransitService({ fetchImpl = fetch } = {}) {
+export function createTransitService({ fetchImpl = fetch, historyEnabled = true } = {}) {
   /** @type {Map<string, {at:number, body:string, host:string}>} feedId → snapshot */
   const cache = new Map();
-  const history = createTransitHistory();
+  const history = historyEnabled ? createTransitHistory() : null;
   const admitHistory = makeRateLimiter({
     windowMs: 60000,
     max: 30,
@@ -190,7 +190,7 @@ export function createTransitService({ fetchImpl = fetch } = {}) {
       );
       const snapshot = buildTransitSnapshot(feed, bytes, now);
       if (closed) throw new Error('Transit provider closed');
-      history.ingest(feed, snapshot.vehicles, Date.now());
+      history?.ingest(feed, snapshot.vehicles, Date.now());
       const entry = {
         at: snapshot.fetchedAt,
         contactedAt: snapshot.fetchedAt,
@@ -248,6 +248,7 @@ export function createTransitService({ fetchImpl = fetch } = {}) {
     const { feed } = route;
     const now = Date.now();
     if (route.route === 'trail') {
+      if (!history) return reply(404, JSON.stringify({ error: 'Transit history is not enabled' }), { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       if (!admitHistory(feed.id)) {
         return reply(
           429,
@@ -398,7 +399,7 @@ export function createTransitService({ fetchImpl = fetch } = {}) {
     closed = true;
     for (const controller of controllers) controller.abort();
     controllers.clear();
-    history.clear();
+    history?.clear();
     cache.clear();
     cooldown.clear();
   }

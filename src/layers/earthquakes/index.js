@@ -1,4 +1,5 @@
 import * as Cesium from 'cesium';
+import { inLocalArea, validateArea } from '../../core/local-area.js';
 import {
   EARTHQUAKE_OVERLAY_SOURCE_ID,
   EARTHQUAKE_OVERLAY_COHORT_LIMIT,
@@ -23,6 +24,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
   let _lastUpdate = null;
   let _lastError = null;
   let _enabled = false;
+  let localArea;
 
   const layer = {
     id: 'earthquakes',
@@ -30,6 +32,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
     icon: '🌋',
     source: 'USGS',
     updateInterval: 60000,
+    setLocalArea(value) { localArea = validateArea(value); },
 
     init(viewer) {
       if (_viewer) throw new Error('Earthquake layer is already initialized');
@@ -86,6 +89,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
           place,
           time,
         } of rows) {
+          if (!inLocalArea(lat, lon, localArea)) continue;
           count++;
           const baseRadius = Math.pow(2, mag) * 1000;
           const color = depthColor(depthKm || 0);

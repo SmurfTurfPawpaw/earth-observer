@@ -132,9 +132,9 @@ async function fetchOverpassPayload(
       const authorization =
         requestUrl.username || requestUrl.password
           ? 'Basic ' +
-            Buffer.from(
+            btoa(String.fromCharCode(...new TextEncoder().encode(
               `${decodeURIComponent(requestUrl.username)}:${decodeURIComponent(requestUrl.password)}`,
-            ).toString('base64')
+            )))
           : null;
       requestUrl.username = '';
       requestUrl.password = '';

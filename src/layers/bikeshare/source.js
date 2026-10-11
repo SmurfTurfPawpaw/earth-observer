@@ -1,6 +1,8 @@
+import { inLocalArea } from '../../core/local-area.js';
 /** Read a GBFS station document through the existing bounded server proxy. */
 export function createBikeshareSource({
   fetchImpl = (...args) => globalThis.fetch(...args),
+  getLocalArea = () => null,
 } = {}) {
   return {
     async getStations(upstreamUrl, { signal } = {}) {
@@ -17,6 +19,10 @@ export function createBikeshareSource({
       signal?.throwIfAborted();
       if (!payload || typeof payload !== 'object')
         throw new Error('Malformed GBFS payload');
+      const area = getLocalArea();
+      if (area && Array.isArray(payload.data?.stations) && payload.data.stations.some((station) => Number.isFinite(station.lat) && Number.isFinite(station.lon))) {
+        return { ...payload, data: { ...payload.data, stations: payload.data.stations.filter((station) => Number.isFinite(station.lat) && Number.isFinite(station.lon) && inLocalArea(station.lat, station.lon, area)) } };
+      }
       return payload;
     },
   };

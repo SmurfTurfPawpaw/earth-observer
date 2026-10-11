@@ -219,16 +219,15 @@ export function weatherTileBounds(z, x, y) {
 }
 
 function validatePng(bytes, width, height) {
-  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const buffer = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
   if (
     buffer.length < 33 ||
-    !buffer
-      .subarray(0, 8)
-      .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
-    buffer.readUInt32BE(8) !== 13 ||
-    buffer.toString('ascii', 12, 16) !== 'IHDR' ||
-    buffer.readUInt32BE(16) !== width ||
-    buffer.readUInt32BE(20) !== height
+    ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => buffer[index] === byte) ||
+    view.getUint32(8) !== 13 ||
+    new TextDecoder().decode(buffer.subarray(12, 16)) !== 'IHDR' ||
+    view.getUint32(16) !== width ||
+    view.getUint32(20) !== height
   )
     throw failure('invalid_weather_image');
   return buffer;

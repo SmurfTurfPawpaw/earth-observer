@@ -11,56 +11,56 @@ import {
   loadVegvesenSourcesFromOpenData,
 } from './sources.js';
 
-const enabled = (name) => String(process.env[name] || '1').trim() !== '0';
-const accepted = (name) => String(process.env[name] || '').trim() === '1';
-const configured = (name) => Boolean(String(process.env[name] || '').trim());
+const enabled = (name, env = globalThis.process?.env || {}) => String(env[name] || '1').trim() !== '0';
+const accepted = (name, env = globalThis.process?.env || {}) => String(env[name] || '').trim() === '1';
+const configured = (name, env = globalThis.process?.env || {}) => Boolean(String(env[name] || '').trim());
 
 /** Only reviewed providers can enter this catalog; env/file sources are absent. */
 export const CCTV_PROVIDER_PACKS = Object.freeze([
-  { name: 'fintraffic', enabled: () => enabled('CCTV_FINTRAFFIC_ENABLED'), load: loadFintrafficSourcesFromOpenData },
-  { name: 'nsw', enabled: () => enabled('CCTV_NSW_ENABLED'), load: loadNswSourcesFromOpenData },
-  { name: 'calgary', enabled: () => enabled('CCTV_CALGARY_ENABLED'), load: loadCalgarySourcesFromOpenData },
-  { name: 'vegvesen', enabled: () => enabled('CCTV_VEGVESEN_ENABLED'), load: loadVegvesenSourcesFromOpenData },
+  { name: 'fintraffic', enabled: (env) => enabled('CCTV_FINTRAFFIC_ENABLED', env), load: loadFintrafficSourcesFromOpenData },
+  { name: 'nsw', enabled: (env) => enabled('CCTV_NSW_ENABLED', env), load: loadNswSourcesFromOpenData },
+  { name: 'calgary', enabled: (env) => enabled('CCTV_CALGARY_ENABLED', env), load: loadCalgarySourcesFromOpenData },
+  { name: 'vegvesen', enabled: (env) => enabled('CCTV_VEGVESEN_ENABLED', env), load: loadVegvesenSourcesFromOpenData },
   {
     name: 'drivebc',
-    enabled: () => enabled('CCTV_DRIVEBC_ENABLED') && accepted('CCTV_DRIVEBC_TERMS_ACCEPTED') && configured('CCTV_DRIVEBC_APPROVED_IDS'),
+    enabled: (env) => enabled('CCTV_DRIVEBC_ENABLED', env) && accepted('CCTV_DRIVEBC_TERMS_ACCEPTED', env) && configured('CCTV_DRIVEBC_APPROVED_IDS', env),
     load: loadDriveBcSourcesFromOpenData,
   },
   {
     name: 'tfl',
-    enabled: () => enabled('CCTV_TFL_ENABLED') && accepted('CCTV_TFL_TERMS_ACCEPTED') && configured('TFL_APP_KEY'),
+    enabled: (env) => enabled('CCTV_TFL_ENABLED', env) && accepted('CCTV_TFL_TERMS_ACCEPTED', env) && configured('TFL_APP_KEY', env),
     load: loadTflSourcesFromOpenData,
   },
   {
     name: 'ontario',
-    enabled: () => enabled('CCTV_ONTARIO_ENABLED') && accepted('CCTV_ONTARIO_TERMS_ACCEPTED') && configured('ONTARIO_511_API_KEY'),
+    enabled: (env) => enabled('CCTV_ONTARIO_ENABLED', env) && accepted('CCTV_ONTARIO_TERMS_ACCEPTED', env) && configured('ONTARIO_511_API_KEY', env),
     load: loadOntarioSourcesFromOpenData,
   },
 ]);
 
-export function enabledCctvProviderNames() {
-  return CCTV_PROVIDER_PACKS.filter((pack) => pack.enabled()).map((pack) => pack.name);
+export function enabledCctvProviderNames(env = globalThis.process?.env || {}) {
+  return CCTV_PROVIDER_PACKS.filter((pack) => pack.enabled(env)).map((pack) => pack.name);
 }
 
 /** Shared catalog with bounded refresh, failure isolation and revocation filtering. */
-export function createCctvCatalog() {
+export function createCctvCatalog({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
   let sources = [];
   let refreshedAt = 0;
   let inflight = null;
   let trimmedPacks = [];
 
   function currentSources() {
-    const names = new Set(enabledCctvProviderNames());
-    const driveBcIds = new Set(String(process.env.CCTV_DRIVEBC_APPROVED_IDS || '')
+    const names = new Set(enabledCctvProviderNames(env));
+    const driveBcIds = new Set(String(env.CCTV_DRIVEBC_APPROVED_IDS || '')
       .split(',').map((id) => id.trim()));
     return sources.filter((source) => names.has(source.pack)
       && (source.pack !== 'drivebc' || driveBcIds.has(source.id.replace(/^drivebc-/, ''))));
   }
 
   async function refresh() {
-    const activePacks = CCTV_PROVIDER_PACKS.filter((pack) => pack.enabled());
+    const activePacks = CCTV_PROVIDER_PACKS.filter((pack) => pack.enabled(env));
     const results = await Promise.allSettled(
-      activePacks.map((pack) => Promise.resolve().then(() => pack.load())),
+      activePacks.map((pack) => Promise.resolve().then(() => pack.load({ env, fetchImpl }))),
     );
     const packs = activePacks.map((pack, index) => {
       const items = results[index].status === 'fulfilled' && Array.isArray(results[index].value)
@@ -75,7 +75,7 @@ export function createCctvCatalog() {
         region: items.region ?? null,
       };
     });
-    const allocation = allocateSourceCap(packs, resolveCatalogCap(process.env.CCTV_MAX_SOURCES));
+    const allocation = allocateSourceCap(packs, resolveCatalogCap(env.CCTV_MAX_SOURCES));
     // Google-derived ground-height sidecars and local file/env camera packs
     // cannot enter the hosted catalog. Camera placement uses licensed terrain.
     if (allocation.sources.length || !sources.length) {
@@ -100,7 +100,7 @@ export function createCctvCatalog() {
   }
 
   getCctvSources.trimmedPacks = () => {
-    const names = new Set(enabledCctvProviderNames());
+    const names = new Set(enabledCctvProviderNames(env));
     return trimmedPacks.filter((pack) => names.has(pack.pack));
   };
   return getCctvSources;

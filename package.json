@@ -15,7 +15,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/notices.mjs && vite build && node scripts/compress.mjs",
+    "build": "node scripts/notices.mjs && vite build && node scripts/service-worker.mjs && node scripts/compress.mjs",
     "start": "node server/index.js",
     "preview": "vite preview",
     "test": "node scripts/test.mjs"

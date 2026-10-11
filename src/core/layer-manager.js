@@ -1,6 +1,7 @@
 import { LAYERS } from './catalog.js';
 import { createLayer as defaultFactory, preloadLayer as defaultPreload, layerServiceRequirements } from './layer-factories.js';
 import { createCoreServices } from './services.js';
+import { validateArea } from './local-area.js';
 
 export const STORAGE_KEY = 'earth-observer:layers:v1';
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
@@ -23,10 +24,11 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     meta, requested: false, enabled: false, initialized: false,
     status: 'disabled', error: null, module: null, loading: null,
     queue: Promise.resolve(), revision: 0, controller: new AbortController(),
-    timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults),
+    timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false,
   }]));
   const listeners = new Set([onStateChange]);
   let servicesPromise, services, destroyed = false, publishQueued = false;
+  let localArea = validateArea(options.localArea);
   const stateEntry = (entry) => {
     let stats = {};
     try { stats = entry.module?.getStats?.() || {}; } catch { /* startup may precede stats */ }
@@ -45,7 +47,10 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       error: entry.error || stats.error || stats.lastError || (stats.keyRequired ? 'Provider key required' : null),
       refreshing: entry.refreshing,
       snapshot: stats.snapshot === true,
-      stale: stats.stale === true,
+      stale: stats.stale === true || ['STALE', 'OFFLINE'].includes(entry.browserCache),
+      browserCache: entry.browserCache,
+      browserCachedAt: entry.browserCachedAt,
+      browserCacheAgeMs: entry.browserCachedAt ? Math.max(0, Date.now() - entry.browserCachedAt) : null,
       mode: stats.mode || null,
       observationDate: stats.observationDate || null,
       coverage: stats.coverage || null,
@@ -110,15 +115,23 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     if (!entry.loading) entry.loading = (async () => {
       // Engine code and its small, selective scene services load in parallel.
       const [layerServices] = await Promise.all([prepareServices(id), preloadCode(id)]);
-      const sourceFetch = (url, init = {}) => {
+      const sourceFetch = async (url, init = {}) => {
         if (documentRef?.hidden || !entry.requested) return Promise.reject(new DOMException('Layer is inactive', 'AbortError'));
         const signal = AbortSignal.any([entry.controller.signal, init.signal].filter(Boolean));
         signal.throwIfAborted();
-        return fetchImpl(url, { ...init, signal });
+        const absolute = new URL(String(url), globalThis.location?.origin || 'http://localhost').href;
+        entry.urls.add(absolute);
+        if (entry.urls.size > 30) entry.urls.delete(entry.urls.values().next().value);
+        const response = await fetchImpl(url, { ...init, signal });
+        signal.throwIfAborted();
+        entry.browserCache = response.headers?.get?.('x-browser-cache') || null;
+        entry.browserCachedAt = Number(response.headers?.get?.('x-browser-cached-at')) || null;
+        return response;
       };
-      const module = await factory(id, { services: layerServices, fetchImpl: sourceFetch, getLayer: ensureModule });
+      const module = await factory(id, { services: layerServices, fetchImpl: sourceFetch, getLayer: ensureModule, getLocalArea: () => localArea });
       if (destroyed) { await module.destroy?.(viewer); throw new DOMException('Application closed', 'AbortError'); }
       entry.module = module;
+      module.setLocalArea?.(localArea);
       module.attachDataManager?.(manager);
       module.attachShellServices?.({
         imageryHost: () => ({ collection: viewer.imageryLayers, kind: 'globe' }),
@@ -149,6 +162,10 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       entry.refreshing = false;
       if (!owner.signal.aborted) viewer.scene?.requestRender?.();
       publish();
+      if (entry.revalidated && !destroyed && entry.requested && !documentRef?.hidden) {
+        entry.revalidated = false;
+        queueMicrotask(() => { void refresh(id); });
+      }
     }
   }
   function armTimer(id, entry) {
@@ -255,9 +272,18 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     publish();
   }
   documentRef?.addEventListener?.('visibilitychange', visibilityChanged);
+  const unsubscribeCache = fetchImpl.subscribe?.((url) => {
+    if (destroyed || documentRef?.hidden) return;
+    for (const [id, entry] of entries) {
+      if (!entry.requested || !entry.urls.has(url)) continue;
+      if (entry.refreshing) entry.revalidated = true;
+      else void refresh(id);
+    }
+  });
   async function destroy() {
     if (destroyed) return;
     destroyed = true;
+    unsubscribeCache?.();
     documentRef?.removeEventListener?.('visibilitychange', visibilityChanged);
     for (const entry of entries.values()) { ++entry.revision; stopTimer(entry); entry.controller.abort(); }
     for (const entry of entries.values()) {
@@ -271,6 +297,21 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
 
   const manager = {
     viewer, getState, setEnabled, restore, destroy, refresh, preload,
+    getLocalArea: () => localArea ? { ...localArea } : null,
+    setLocalArea(value) {
+      const next = validateArea(value);
+      if (JSON.stringify(next) === JSON.stringify(localArea)) return;
+      localArea = next;
+      for (const [id, entry] of entries) {
+        if (entry.enabled) restartRequestLifetime(entry);
+        entry.module?.setLocalArea?.(localArea);
+        if (entry.enabled) {
+          if (entry.refreshing) entry.revalidated = true;
+          else void refresh(id);
+        }
+      }
+      publish();
+    },
     getLayer: (id) => requireEntry(id).module,
     isEnabled: (id) => Boolean(entries.get(id)?.enabled),
     isEffectivelyEnabled: (id) => Boolean(entries.get(id)?.requested),

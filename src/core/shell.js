@@ -1,6 +1,13 @@
 import * as Cesium from 'cesium';
 import { LAYERS } from './catalog.js';
-import { cameraView, serializeViewHash } from './navigation.js';
+import { cameraView, serializeViewHash, setCameraView, HOME_VIEW } from './navigation.js';
+import { createIcon } from './icons.js';
+import { readUiState, writeUiState, createCreditLedger, cacheStatus, layerCreditNotices } from './ui-state.js';
+import { createPlaceStore } from './places.js';
+import { createSavedPlacesUi } from './places-ui.js';
+import { commandCatalog } from './commands.js';
+import { createCommandPalette } from './commands-ui.js';
+import { chatGPTSignInPath } from './community-policy.js';
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -9,6 +16,8 @@ const el = (tag, className, text) => {
   return node;
 };
 const fieldLabel = (key) => ({ mag: 'Magnitude', depth: 'Depth (km)', usgsId: 'USGS event', lat: 'Latitude', lon: 'Longitude', frp: 'Fire power (MW)' })[key] || key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+const categoryIcon = (category) => ({ Movement: 'movement', Space: 'space', Environment: 'environment', Weather: 'weather', Imagery: 'imagery', Infrastructure: 'infrastructure' })[category] || 'layers';
+const onScreenAttribution = (value) => String(value).includes('<a') ? value : String(value).replace('© OpenStreetMap contributors', '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a>');
 
 /** The UI reflects owned requests, never elapsed-time guesses or simulated progress. */
 export function layerActivity(entry = {}) {
@@ -23,12 +32,9 @@ export function selectionFields(entity, time) {
   const result = [];
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined || value === null || key.startsWith('_') || key === 'frameUrl' || key === 'cameraId') continue;
-    if (value === '') continue;
-    if (typeof value === 'object' || typeof value === 'function') continue;
+    if (value === '' || typeof value === 'object' || typeof value === 'function') continue;
     let formatted = String(value);
-    if ((key === 'time' || key === 'timestamp') && Number.isFinite(Number(value)) && Number(value) > 100000000000) {
-      formatted = new Date(Number(value)).toLocaleString();
-    }
+    if ((key === 'time' || key === 'timestamp') && Number.isFinite(Number(value)) && Number(value) > 100000000000) formatted = new Date(Number(value)).toLocaleString();
     result.push([fieldLabel(key), formatted.slice(0, 1000)]);
   }
   const position = entity.position?.getValue?.(time);
@@ -41,233 +47,361 @@ export function selectionFields(entity, time) {
 
 export function createShell(viewer, manager) {
   const cleanup = [];
-  const rows = new Map();
-  const mounted = new Map();
-  const creditItems = new Map();
-  let noticeTimer;
-  let destroyed = false;
-  let pendingTiles = 0;
-  let pendingLayerNames = [];
-  const renderActivity = () => {
-    if (destroyed) return;
-    const activity = document.getElementById('load-status');
-    const parts = [];
-    if (pendingTiles > 0) parts.push(`Loading map · ${pendingTiles.toLocaleString()} tiles pending`);
-    if (pendingLayerNames.length) parts.push(pendingLayerNames.length === 1 ? `Loading ${pendingLayerNames[0]}` : `Loading ${pendingLayerNames.length} layers`);
-    activity.hidden = parts.length === 0;
-    document.getElementById('load-status-text').textContent = parts.join(' · ');
-    const count = document.getElementById('layer-loading-count');
-    count.hidden = pendingLayerNames.length === 0;
-    count.textContent = `${pendingLayerNames.length} loading`;
-  };
-  if (viewer.scene.globe.tileLoadProgressEvent) cleanup.push(viewer.scene.globe.tileLoadProgressEvent.addEventListener((count) => {
-    pendingTiles = Math.max(0, Number(count) || 0);
-    renderActivity();
-  }));
-  const notify = (message) => {
-    if (destroyed) return;
-    const container = document.getElementById('notification');
-    clearTimeout(noticeTimer);
-    container.textContent = message;
-    container.hidden = false;
-    noticeTimer = setTimeout(() => { container.hidden = true; }, 6000);
-  };
+  const rows = new Map(), mounted = new Map(), creditItems = new Map(), groups = new Map();
+  const panelListeners = new Set();
+  const panels = { selection: document.getElementById('selection'), news: document.getElementById('news-panel'), notebook: document.getElementById('notebook-panel') };
+  const panelButtons = { news: document.getElementById('toggle-news'), notebook: document.getElementById('toggle-notebook') };
+  let storage;
+  try { storage = localStorage; } catch { /* Controls remain usable without browser storage. */ }
+  const placeStore = createPlaceStore(storage);
+  let commandPalette, savedPlaces, community, communityImport;
+  const communitySection = document.getElementById('community-section');
+  const signIn = document.getElementById('sign-in');
+  const signInPath = () => chatGPTSignInPath(`${location.pathname}${location.search}${location.hash}`);
+  const refreshSignIn = () => { signIn.href = signInPath(); };
+  refreshSignIn(); signIn.addEventListener('click', refreshSignIn);
+  cleanup.push(() => signIn.removeEventListener('click', refreshSignIn));
+  const mobile = window.matchMedia('(max-width: 760px)');
+  const uiState = readUiState(storage, { mobile: mobile.matches });
+  const ledger = createCreditLedger(viewer.cesiumWidget.creditDisplay, (html, onScreen) => new Cesium.Credit(html, onScreen));
+  let noticeTimer, activePanel = null, destroyed = false, pendingTiles = 0, pendingLayerNames = [];
+  const remember = () => writeUiState(storage, uiState);
   const bind = (id, handler) => {
     const node = document.getElementById(id);
     node.addEventListener('click', handler);
     cleanup.push(() => node.removeEventListener('click', handler));
   };
-  const setSidebar = (open, focus = false) => {
+  const setSidebar = (open, { focus = false, persist = true } = {}) => {
+    if (open && window.innerWidth <= 1000 && activePanel) openPanel(null);
     document.body.classList.toggle('sidebar-open', open);
     document.getElementById('open-sidebar').setAttribute('aria-expanded', String(open));
+    const sidebar = document.getElementById('sidebar');
+    sidebar.inert = !open;
+    sidebar.setAttribute('aria-hidden', String(!open));
+    if (persist && !mobile.matches) { uiState.sidebarOpen = open; remember(); }
     if (focus) document.getElementById(open ? 'search' : 'open-sidebar').focus();
   };
-  bind('open-sidebar', () => setSidebar(true, true));
-  bind('close-sidebar', () => setSidebar(false, true));
+  const setNavbar = (open, { focus = false } = {}) => {
+    document.getElementById('header-tools').hidden = !open;
+    document.getElementById('toggle-navbar').setAttribute('aria-expanded', String(open));
+    uiState.navbarOpen = open; remember();
+    if (focus) document.getElementById(open ? 'share-view' : 'toggle-navbar').focus();
+  };
+  const emitPanel = (panel, open) => {
+    if (panel === 'notebook') { if (open && communitySection.open) void openCommunity(); else community?.close(); }
+    const detail = { panel, open };
+    document.dispatchEvent(new CustomEvent('earth-observer:panel', { detail }));
+    window.dispatchEvent(new CustomEvent('earth-observer:panel-change', { detail }));
+    for (const listener of panelListeners) listener(detail);
+  };
+  const openCommunity = async () => {
+    if (destroyed || activePanel !== 'notebook' || !communitySection.open) return;
+    try {
+      if (!community) {
+        communityImport ||= import('./community.js');
+        const { createCommunityPanel } = await communityImport;
+        if (destroyed) return;
+        community ||= createCommunityPanel({
+          container: document.getElementById('community-content'),
+          getLocation: () => { const view = cameraView(viewer); return { lat: view.lat, lon: view.lon }; },
+          onNavigate: ({ lat, lon }) => { const view = cameraView(viewer); setCameraView(viewer, { ...view, lat, lon, alt: Math.min(view.alt, 25000), pitch: -90 }, true); },
+          onSession: ({ signedIn }) => { signIn.hidden = signedIn; },
+        });
+      }
+      if (activePanel === 'notebook' && communitySection.open) community.open();
+    } catch { if (!destroyed) document.getElementById('community-content').textContent = 'Community contributions could not load. Close and reopen this section to retry.'; communityImport = null; }
+  };
+  const communityToggle = () => { if (communitySection.open) void openCommunity(); else community?.close(); };
+  communitySection.addEventListener('toggle', communityToggle);
+  cleanup.push(() => { communitySection.removeEventListener('toggle', communityToggle); community?.destroy(); });
+  const openPanel = (name, { focus = false } = {}) => {
+    if (name === activePanel) return;
+    const previous = activePanel;
+    activePanel = name;
+    for (const [key, panel] of Object.entries(panels)) {
+      panel.hidden = key !== name;
+      panelButtons[key]?.setAttribute('aria-expanded', String(key === name));
+    }
+    document.body.classList.toggle('side-panel-open', Boolean(name));
+    if (name && window.innerWidth <= 1000) setSidebar(false, { persist: false });
+    if (previous) emitPanel(previous, false);
+    if (name) emitPanel(name, true);
+    if (focus && name) panels[name].querySelector('button')?.focus();
+  };
+  const closePanel = (name, { restoreSelection = true, focus = false } = {}) => {
+    if (activePanel !== name) return;
+    if (restoreSelection && name !== 'selection' && viewer.selectedEntity) openPanel('selection');
+    else openPanel(null);
+    if (focus) panelButtons[name]?.focus();
+  };
+  bind('open-sidebar', () => {
+    const open = !document.body.classList.contains('sidebar-open');
+    if (open && window.innerWidth <= 1000) openPanel(null);
+    setSidebar(open, { focus: true });
+  });
+  bind('close-sidebar', () => setSidebar(false, { focus: true }));
+  bind('toggle-navbar', () => setNavbar(!uiState.navbarOpen));
+  bind('toggle-news', () => activePanel === 'news' ? closePanel('news', { focus: true }) : openPanel('news', { focus: true }));
+  bind('close-news', () => closePanel('news', { focus: true }));
+  bind('toggle-notebook', () => activePanel === 'notebook' ? closePanel('notebook', { focus: true }) : openPanel('notebook', { focus: true }));
+  bind('close-notebook', () => closePanel('notebook', { focus: true }));
+  bind('clear-selection', () => { viewer.selectedEntity = undefined; closePanel('selection', { restoreSelection: false }); });
   const escape = (event) => {
     if (event.key !== 'Escape') return;
-    viewer.selectedEntity = undefined;
-    setSidebar(false);
+    if (document.getElementById('command-palette').open) return;
+    if (activePanel === 'selection') { viewer.selectedEntity = undefined; closePanel('selection', { restoreSelection: false }); }
+    else if (activePanel) closePanel(activePanel, { focus: true });
+    else if (uiState.navbarOpen) setNavbar(false, { focus: true });
+    else setSidebar(false, { focus: true });
   };
   document.addEventListener('keydown', escape);
   cleanup.push(() => document.removeEventListener('keydown', escape));
-  bind('clear-selection', () => { viewer.selectedEntity = undefined; });
-  bind('clear-layers', async () => {
+  const onMobileChange = () => setSidebar(mobile.matches ? false : uiState.sidebarOpen, { persist: false });
+  mobile.addEventListener('change', onMobileChange);
+  cleanup.push(() => mobile.removeEventListener('change', onMobileChange));
+  setSidebar(uiState.sidebarOpen, { persist: false });
+  setNavbar(uiState.navbarOpen);
+  document.body.classList.add('ui-ready');
+
+  // Credits may wrap as layers are enabled. Panels always leave that legal footer visible.
+  const syncCreditHeight = () => document.getElementById('app').style.setProperty('--credit-height', `${Math.ceil(document.getElementById('credits').getBoundingClientRect().height)}px`);
+  if (typeof ResizeObserver !== 'undefined') {
+    const observer = new ResizeObserver(syncCreditHeight);
+    observer.observe(document.getElementById('credits'));
+    cleanup.push(() => observer.disconnect());
+  }
+  syncCreditHeight();
+
+  const renderActivity = () => {
+    if (destroyed) return;
+    const parts = [];
+    if (pendingTiles > 0) parts.push(`Map · ${pendingTiles.toLocaleString()} tiles pending`);
+    if (pendingLayerNames.length) parts.push(pendingLayerNames.length === 1 ? `Loading ${pendingLayerNames[0]}` : `Loading ${pendingLayerNames.length} layers`);
+    document.getElementById('load-status').hidden = parts.length === 0;
+    document.getElementById('load-status-text').textContent = parts.join(' · ');
+    const count = document.getElementById('layer-loading-count');
+    count.hidden = pendingLayerNames.length === 0;
+    count.textContent = `${pendingLayerNames.length} loading`;
+  };
+  if (viewer.scene.globe.tileLoadProgressEvent) cleanup.push(viewer.scene.globe.tileLoadProgressEvent.addEventListener((count) => { pendingTiles = Math.max(0, Number(count) || 0); renderActivity(); }));
+  const notify = (message) => {
+    if (destroyed) return;
+    const container = document.getElementById('notification');
+    clearTimeout(noticeTimer); container.textContent = message; container.hidden = false;
+    noticeTimer = setTimeout(() => { container.hidden = true; }, 6000);
+  };
+  const setLayerEnabled = (id, enabled) => {
+    if (!LAYERS.some((layer) => layer.id === id)) throw new Error('This layer is unavailable.');
+    if (!enabled) { viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
+    return manager.setEnabled(id, enabled);
+  };
+  const clearLayers = async () => {
     await Promise.allSettled(LAYERS.map((layer) => manager.setEnabled(layer.id, false)));
     viewer.selectedEntity = undefined;
-  });
-  bind('share-view', async () => {
+  };
+  bind('clear-layers', clearLayers);
+  const shareView = async () => {
     const state = manager.getState();
     const ids = LAYERS.filter((layer) => state[layer.id]?.enabled).map((layer) => layer.id);
     const params = Object.fromEntries(ids.map((id) => [id, manager.getLayerParams?.(id) || {}]).filter(([, value]) => Object.keys(value).length));
     const url = new URL(location.href);
     url.hash = serializeViewHash(cameraView(viewer), ids, params);
     history.replaceState(null, '', url);
-    try {
-      await navigator.clipboard.writeText(url.href);
-      notify('View link copied. It includes the camera and enabled layers.');
-    } catch {
-      // Clipboard permissions vary. Expose the URL in a selectable input.
+    try { await navigator.clipboard.writeText(url.href); notify('View link copied with its camera and enabled layers.'); }
+    catch {
       const message = document.getElementById('notification');
-      clearTimeout(noticeTimer);
-      message.replaceChildren(el('span', '', 'Copy this view link: '));
+      clearTimeout(noticeTimer); message.replaceChildren(el('span', '', 'Copy this view link: '));
       const input = el('input'); input.value = url.href; input.readOnly = true; input.setAttribute('aria-label', 'View link');
       message.append(input); message.hidden = false; input.focus(); input.select();
     }
-  });
+  };
+  bind('share-view', shareView);
 
-  const groups = new Map();
   document.getElementById('layers').replaceChildren();
-  const sourceList = document.getElementById('source-list');
-  sourceList.replaceChildren();
+  const sourceList = document.getElementById('source-list'); sourceList.replaceChildren();
   for (const layer of LAYERS) {
     if (!groups.has(layer.category)) {
       const group = el('details', 'layer-group');
-      group.open = true;
-      group.append(el('summary', '', layer.category));
-      document.getElementById('layers').append(group);
-      groups.set(layer.category, group);
+      group.open = uiState.openCategories ? uiState.openCategories.includes(layer.category) : groups.size === 0;
+      const summary = el('summary');
+      const count = el('span', 'group-count');
+      const chevron = createIcon('chevronRight'); chevron.classList.add('summary-chevron');
+      summary.append(createIcon(categoryIcon(layer.category)), el('span', '', layer.category), count, chevron);
+      group.append(summary); document.getElementById('layers').append(group);
+      groups.set(layer.category, { group, count });
+      const toggle = () => {
+        uiState.openCategories = [...groups].filter(([, value]) => value.group.open).map(([category]) => category);
+        remember();
+      };
+      group.addEventListener('toggle', toggle); cleanup.push(() => group.removeEventListener('toggle', toggle));
     }
-    const row = el('div', 'layer-row');
-    row.dataset.layerId = layer.id;
+    const row = el('div', 'layer-row'); row.dataset.layerId = layer.id;
     const label = el('label');
-    const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.value = layer.id;
+    const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.value = layer.id; checkbox.setAttribute('aria-label', layer.name);
     const text = el('span', 'layer-label');
     const name = el('span', 'layer-name', layer.name);
-    const spinner = el('span', 'loading-spinner'); spinner.hidden = true; spinner.setAttribute('aria-hidden', 'true');
-    name.append(spinner); text.append(name);
-    const status = el('span', 'layer-status', layer.sourceLabel || layer.source);
-    status.id = `layer-status-${layer.id}`;
-    checkbox.setAttribute('aria-describedby', status.id);
-    text.append(status); label.append(checkbox, text);
-    const options = el('details', 'layer-options'); options.hidden = true;
-    options.append(el('summary', '', 'Details & options'));
-    const optionBody = el('div', 'layer-options-body');
-    const detailStatus = el('p', 'layer-detail-status');
-    const placeholder = el('div', 'layer-placeholder'); placeholder.hidden = true; placeholder.setAttribute('aria-hidden', 'true');
-    placeholder.append(el('span'), el('span'));
+    const spinner = el('span', 'loading-spinner'); spinner.hidden = true; spinner.setAttribute('aria-hidden', 'true'); name.append(spinner);
+    const status = el('span', 'layer-status'); status.id = `layer-status-${layer.id}`; checkbox.setAttribute('aria-describedby', status.id);
+    text.append(name, status); label.append(checkbox, text);
+    const options = el('details', 'layer-options'); options.hidden = true; options.append(el('summary', '', 'Details & options'));
+    const optionBody = el('div', 'layer-options-body'), detailStatus = el('p', 'layer-detail-status');
+    const placeholder = el('div', 'layer-placeholder'); placeholder.hidden = true; placeholder.setAttribute('aria-hidden', 'true'); placeholder.append(el('span'), el('span'));
     const controls = el('div', 'layer-controls');
     optionBody.append(detailStatus, placeholder, controls); options.append(optionBody);
-    row.append(label, options); groups.get(layer.category).append(row);
+    row.append(label, options); groups.get(layer.category).group.append(row);
     const toggle = () => {
-      if (!checkbox.checked) { viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
-      manager.setEnabled(layer.id, checkbox.checked).catch((error) => notify(`${layer.name}: ${error.message || 'Could not load data.'}`));
+      setLayerEnabled(layer.id, checkbox.checked).catch((error) => notify(`${layer.name}: ${error.message || 'Could not load data.'}`));
     };
-    checkbox.addEventListener('change', toggle);
-    cleanup.push(() => checkbox.removeEventListener('change', toggle));
+    checkbox.addEventListener('change', toggle); cleanup.push(() => checkbox.removeEventListener('change', toggle));
     const warm = () => { void manager.preload?.(layer.id)?.catch?.(() => {}); };
-    checkbox.addEventListener('pointerenter', warm);
-    checkbox.addEventListener('focus', warm);
-    cleanup.push(() => { checkbox.removeEventListener('pointerenter', warm); checkbox.removeEventListener('focus', warm); });
+    label.addEventListener('pointerenter', warm); checkbox.addEventListener('focus', warm);
+    cleanup.push(() => { label.removeEventListener('pointerenter', warm); checkbox.removeEventListener('focus', warm); });
     const optionsToggle = () => { if (options.open) update(); };
-    options.addEventListener('toggle', optionsToggle);
-    cleanup.push(() => options.removeEventListener('toggle', optionsToggle));
+    options.addEventListener('toggle', optionsToggle); cleanup.push(() => options.removeEventListener('toggle', optionsToggle));
     rows.set(layer.id, { row, checkbox, status, controls, options, spinner, detailStatus, placeholder });
-    const source = el('div', 'source-item');
-    const heading = el('h3');
-    const link = el('a', '', layer.name); link.href = layer.sourceUrl; link.target = '_blank'; link.rel = 'noreferrer';
+    const source = el('div', 'source-item'), heading = el('h3');
+    const link = el('a', '', layer.name); link.href = layer.sourceUrl === '/DATA_POLICY.md' ? `${import.meta.env?.BASE_URL || '/'}DATA_POLICY.md` : layer.sourceUrl; link.target = '_blank'; link.rel = 'noreferrer';
     heading.append(link); source.append(heading, el('p', '', layer.description), el('p', '', layer.attribution)); sourceList.append(source);
   }
 
   const update = (state = manager.getState()) => {
     if (destroyed) return;
     pendingLayerNames = [];
+    let enabledCount = 0;
     for (const layer of LAYERS) {
       const entry = state[layer.id] || {};
       const { row, checkbox, status, controls, options, spinner, detailStatus, placeholder } = rows.get(layer.id);
       const { pending, firstLoad } = layerActivity(entry);
       if (pending) pendingLayerNames.push(layer.name);
-      checkbox.checked = Boolean(entry.enabled);
-      row.dataset.enabled = String(Boolean(entry.enabled));
-      row.dataset.status = entry.status || 'off';
-      row.dataset.loading = String(pending);
-      spinner.hidden = !pending;
-      row.setAttribute('aria-busy', String(pending));
-      const count = Number(entry.count) || 0;
-      const source = layer.sourceLabel || layer.source;
+      if (entry.enabled) enabledCount += 1;
+      checkbox.checked = Boolean(entry.enabled); row.dataset.enabled = String(Boolean(entry.enabled)); row.dataset.status = entry.status || 'off'; row.dataset.loading = String(pending);
+      spinner.hidden = !pending; row.setAttribute('aria-busy', String(pending));
+      const count = Number(entry.count) || 0, source = layer.sourceLabel || layer.source;
+      const cached = cacheStatus(entry);
       const refreshTime = entry.refreshedAt || entry.lastUpdate;
-      const stamp = refreshTime ? ` · refreshed ${new Date(refreshTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
+      const refreshLabel = refreshTime && !cached.label ? `Retrieved ${new Date(refreshTime).toLocaleString()}` : '';
       const observedTime = entry.observedAt || entry.observedAtMs;
-      const observedLabel = observedTime ? ` · observed ${new Date(observedTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
+      const observedLabel = observedTime ? `Observed ${new Date(observedTime).toLocaleString()}` : '';
       const archived = entry.snapshot === true || (layer.id === 'local-firms' && entry.observationDate && entry.stale);
-      const archiveLabel = archived ? `Archived${entry.observationDate ? ` · ${entry.observationDate}` : ''} · ` : '';
-      const staleLabel = entry.stale && !archived ? 'Older feed · ' : '';
+      const freshness = archived ? `Archived${entry.observationDate ? ` · ${entry.observationDate}` : ''}` : entry.stale ? 'Older feed' : '';
       const ageMs = entry.sourceAgeMs ?? entry.ageMs;
-      const ageLabel = Number.isFinite(ageMs) && ageMs >= 60000 ? ` · data ${Math.round(ageMs / 60000)} min old` : '';
-      const summary = `${archiveLabel}${staleLabel}${count.toLocaleString()} records · ${source}${archived ? '' : observedLabel + ageLabel + stamp}`;
-      status.textContent = firstLoad ? `${entry.refreshing ? 'Fetching data' : 'Preparing layer'}… · ${source}` : entry.error ? String(entry.error) : !entry.enabled ? source : summary;
-      detailStatus.textContent = entry.enabled && !firstLoad ? [summary, entry.error, entry.coverage].filter(Boolean).join(' · ') : status.textContent;
-      status.title = [status.textContent, layer.description, entry.coverage].filter(Boolean).join(' ');
-      placeholder.hidden = !firstLoad;
-      checkbox.setAttribute('aria-label', layer.name);
+      const ageLabel = Number.isFinite(ageMs) && ageMs >= 60000 ? `Data ${Math.round(ageMs / 60000)} min old` : '';
+      const compact = [cached.label, freshness, `${count.toLocaleString()} records`, source].filter(Boolean).join(' · ');
+      const summary = [compact, archived ? '' : observedLabel, archived ? '' : ageLabel, refreshLabel, cached.detail, entry.error, entry.coverage].filter(Boolean).join(' · ');
+      status.textContent = firstLoad ? `${entry.refreshing ? 'Fetching data' : 'Preparing layer'}…` : entry.error ? 'Source unavailable · details below' : entry.enabled ? compact : source;
+      detailStatus.textContent = firstLoad ? [status.textContent, source, layer.description].join(' · ') : entry.enabled || entry.error ? [summary, layer.description].filter(Boolean).join(' · ') : source;
+      status.title = detailStatus.textContent; placeholder.hidden = !firstLoad;
       if (entry.enabled && !creditItems.has(layer.id)) {
-        const credits = [new Cesium.Credit(layer.attribution, true)];
-        if (layer.detailedAttribution) credits.push(new Cesium.Credit(layer.detailedAttribution, false));
+        const credits = layerCreditNotices(layer).map(({ html, onScreen }) => ledger.retain(onScreen ? onScreenAttribution(html) : html, onScreen));
         creditItems.set(layer.id, credits);
-        for (const credit of credits) viewer.cesiumWidget.creditDisplay.addStaticCredit(credit);
       } else if (!entry.enabled && creditItems.has(layer.id)) {
-        for (const credit of creditItems.get(layer.id)) viewer.cesiumWidget.creditDisplay.removeStaticCredit(credit);
+        for (const credit of creditItems.get(layer.id)) ledger.release(credit);
         creditItems.delete(layer.id);
       }
       if (entry.enabled && options.open && manager.getLayer(layer.id) && !mounted.has(layer.id)) {
-        const dispose = manager.mountControls?.(layer.id, controls);
-        mounted.set(layer.id, typeof dispose === 'function' ? dispose : () => {});
+        const dispose = manager.mountControls?.(layer.id, controls); mounted.set(layer.id, typeof dispose === 'function' ? dispose : () => {});
       }
-      if (!entry.enabled && mounted.has(layer.id)) {
-        mounted.get(layer.id)(); mounted.delete(layer.id); controls.replaceChildren();
-      }
-      options.hidden = !entry.enabled;
+      if (!entry.enabled && mounted.has(layer.id)) { mounted.get(layer.id)(); mounted.delete(layer.id); controls.replaceChildren(); }
+      options.hidden = !entry.enabled && !entry.error;
+    }
+    const activeCount = document.getElementById('layer-active-count'); activeCount.textContent = enabledCount; activeCount.title = `${enabledCount} active layers`;
+    document.getElementById('clear-layers').disabled = enabledCount === 0;
+    for (const [category, { count }] of groups) {
+      const categoryLayers = LAYERS.filter((layer) => layer.category === category);
+      const active = categoryLayers.filter((layer) => state[layer.id]?.enabled).length;
+      count.textContent = active ? `${active} / ${categoryLayers.length}` : String(categoryLayers.length);
+      count.title = `${active} active of ${categoryLayers.length} layers`;
     }
     renderActivity();
+    commandPalette?.refresh();
   };
   const select = (entity) => {
-    const panel = document.getElementById('selection');
-    panel.hidden = !entity;
-    if (!entity) return;
+    if (!entity) { closePanel('selection', { restoreSelection: false }); return; }
     document.getElementById('selection-title').textContent = entity.name || String(entity.id || 'Selected feature');
-    const fields = selectionFields(entity, viewer.clock.currentTime);
-    const list = el('dl');
+    const fields = selectionFields(entity, viewer.clock.currentTime), list = el('dl');
     for (const [label, value] of fields) list.append(el('dt', '', label), el('dd', '', value));
-    const details = document.getElementById('selection-details');
-    details.replaceChildren(fields.length ? list : el('p', '', 'No additional details are available for this feature.'));
+    const details = document.getElementById('selection-details'); details.replaceChildren(fields.length ? list : el('p', '', 'No additional details are available for this feature.'));
     const frameUrl = entity.properties?.frameUrl?.getValue?.(viewer.clock.currentTime);
     if (typeof frameUrl === 'string' && /^\/api\/cctv\/frame\/[A-Za-z0-9_.%~-]+$/.test(frameUrl)) {
-      const preview = el('div', 'camera-preview');
-      const frame = el('div', 'camera-frame');
-      const image = el('img'); image.alt = `Latest available traffic camera image: ${entity.name || 'selected camera'}`; image.referrerPolicy = 'no-referrer';
+      const preview = el('div', 'camera-preview'), frame = el('div', 'camera-frame'), image = el('img');
+      image.alt = `Latest available traffic camera image: ${entity.name || 'selected camera'}`; image.referrerPolicy = 'no-referrer';
       const caption = el('p', 'muted', 'Still image from the source. Refresh requests its latest available frame.');
       const refresh = el('button', '', 'Refresh image'); refresh.type = 'button';
       let hasFrame = false;
       const load = () => {
-        refresh.disabled = true;
-        frame.dataset.loading = 'true';
-        frame.setAttribute('aria-busy', 'true');
-        image.hidden = !hasFrame;
-        caption.textContent = 'Loading the latest available image…';
-        image.src = `${frameUrl}?ts=${Date.now()}`;
+        refresh.disabled = true; frame.dataset.loading = 'true'; frame.setAttribute('aria-busy', 'true'); image.hidden = !hasFrame;
+        caption.textContent = 'Loading the latest available image…'; image.src = `${frameUrl}?ts=${Date.now()}`;
       };
       image.addEventListener('load', () => { hasFrame = true; image.hidden = false; frame.dataset.loading = 'false'; frame.setAttribute('aria-busy', 'false'); refresh.disabled = false; caption.textContent = 'Still image from the source. Refresh requests its latest available frame.'; });
       image.addEventListener('error', () => { hasFrame = false; frame.dataset.loading = 'false'; frame.setAttribute('aria-busy', 'false'); refresh.disabled = false; image.hidden = true; caption.textContent = 'This camera image is currently unavailable.'; });
-      refresh.addEventListener('click', load);
-      frame.append(image); preview.append(frame, caption, refresh); details.prepend(preview); load();
+      refresh.addEventListener('click', load); frame.append(image); preview.append(frame, caption, refresh); details.prepend(preview); load();
     }
-    viewer.scene.requestRender();
+    openPanel('selection'); viewer.scene.requestRender();
   };
   cleanup.push(viewer.selectedEntityChanged.addEventListener(select));
   if (manager.subscribe) cleanup.push(manager.subscribe(update));
   update();
-  // These controls appear in the initial HTML; enable them once their handlers exist.
-  for (const button of document.querySelectorAll('#search-form button, #navigation button, #share-view, #open-sidebar, #close-sidebar, #clear-layers')) button.disabled = false;
+  const currentPlaceView = () => {
+    const view = cameraView(viewer);
+    if (view.roll > 180 && view.roll <= 360) view.roll -= 360;
+    return view;
+  };
+  const goToSavedPlace = (id) => {
+    const place = placeStore.get(id);
+    if (!place) throw new Error('This saved place no longer exists.');
+    setCameraView(viewer, place.view, true);
+    if (mobile.matches) setSidebar(false);
+  };
+  const openSavedPlaces = () => { setSidebar(true); savedPlaces.open({ draft: true }); };
+  savedPlaces = createSavedPlacesUi({ store: placeStore, getView: currentPlaceView, onRecall: goToSavedPlace, onChange: () => commandPalette?.refresh() });
+  cleanup.push(() => savedPlaces.destroy());
+  commandPalette = createCommandPalette({
+    dialog: document.getElementById('command-palette'), input: document.getElementById('command-search'), list: document.getElementById('command-list'), count: document.getElementById('command-count'), closeButton: document.getElementById('close-command'),
+    getCatalog: () => commandCatalog({ layers: LAYERS, places: placeStore.list(), state: manager.getState() }), onError: notify,
+    async execute(action) {
+      switch (action.type) {
+        case 'show-layers': setSidebar(true, { focus: true }); break;
+        case 'home': setCameraView(viewer, HOME_VIEW, true); break;
+        case 'news': openPanel('news', { focus: true }); break;
+        case 'notebook': openPanel('notebook', { focus: true }); break;
+        case 'share': await shareView(); break;
+        case 'save-place': openSavedPlaces(); break;
+        case 'clear-layers': await clearLayers(); break;
+        case 'place': goToSavedPlace(action.id); break;
+        case 'toggle-layer': {
+          const result = await setLayerEnabled(action.id, !manager.getState()[action.id]?.enabled);
+          if (result === false && manager.getState()[action.id]?.error) throw new Error(manager.getState()[action.id].error);
+          break;
+        }
+        default: throw new Error('This command is unavailable.');
+      }
+    },
+  });
+  cleanup.push(() => commandPalette.destroy());
+  bind('toggle-command', () => commandPalette.open());
+  document.querySelector('.boot-attribution')?.remove();
+  for (const button of document.querySelectorAll('#search-form button, #navigation button, #share-view, #open-sidebar, #close-sidebar, #toggle-navbar, #toggle-news, #toggle-notebook, #toggle-command, #save-place, #locate, #reset-session')) button.disabled = false;
   return {
-    notify,
-    update,
+    notify, update,
     closeSidebar: () => setSidebar(false),
+    openSidebar: () => setSidebar(true),
+    openNews: () => openPanel('news'), closeNews: () => closePanel('news'),
+    openNotebook: () => openPanel('notebook'), closeNotebook: () => closePanel('notebook'),
+    openSavedPlaces, goToSavedPlace,
+    openCommands: () => commandPalette.open(), closeCommands: () => commandPalette.close(),
+    subscribePanels(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener); },
+    selectEntity(entity) { if (viewer.selectedEntity === entity) select(entity); else viewer.selectedEntity = entity; },
+    setLocalStatus(text, { active = false, radiusKm } = {}) {
+      const status = document.getElementById('local-status'); status.textContent = text; status.title = text;
+      document.getElementById('local-context').dataset.active = String(active);
+      document.querySelector('.local-radius-label').hidden = !active;
+      if (radiusKm !== undefined && [10, 25, 50, 100, 250].includes(Number(radiusKm))) document.getElementById('local-radius').value = String(radiusKm);
+    },
     destroy() {
       destroyed = true; clearTimeout(noticeTimer);
       cleanup.splice(0).reverse().forEach((dispose) => dispose?.());
       for (const dispose of mounted.values()) dispose();
-      for (const credits of creditItems.values()) for (const credit of credits) viewer.cesiumWidget.creditDisplay.removeStaticCredit(credit);
-      rows.clear(); mounted.clear(); creditItems.clear();
+      ledger.clear(); rows.clear(); mounted.clear(); creditItems.clear(); panelListeners.clear();
     },
   };
 }

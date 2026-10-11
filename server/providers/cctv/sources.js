@@ -19,12 +19,12 @@ import {
 import { directionToHeading } from '../../../src/data/directionText.js';
 import { readResponseJsonCapped } from '../common/http.js';
 
-export async function loadTflSourcesFromOpenData() {
-  const appKey = String(process.env.TFL_APP_KEY || '').trim();
-  if (!appKey || process.env.CCTV_TFL_TERMS_ACCEPTED !== '1') return [];
+export async function loadTflSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+  const appKey = String(env.TFL_APP_KEY || '').trim();
+  if (!appKey || env.CCTV_TFL_TERMS_ACCEPTED !== '1') return [];
   try {
     const url = `${TFL_JAMCAM_URL}?app_key=${encodeURIComponent(appKey)}`;
-    const resp = await fetch(url, {
+    const resp = await fetchImpl(url, {
       headers: { Accept: 'application/json' },
       redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
@@ -84,7 +84,7 @@ export async function loadTflSourcesFromOpenData() {
     }
 
     const maxRaw = Number(
-      process.env.CCTV_TFL_MAX_SOURCES || DEFAULT_TFL_MAX_SOURCES,
+      env.CCTV_TFL_MAX_SOURCES || DEFAULT_TFL_MAX_SOURCES,
     );
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(600, Math.floor(maxRaw)))
@@ -171,13 +171,13 @@ function pickOntarioCctvView(views) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadOntarioSourcesFromOpenData() {
-  const apiKey = String(process.env.ONTARIO_511_API_KEY || '').trim();
-  if (!apiKey || process.env.CCTV_ONTARIO_TERMS_ACCEPTED !== '1') return [];
+export async function loadOntarioSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
+  const apiKey = String(env.ONTARIO_511_API_KEY || '').trim();
+  if (!apiKey || env.CCTV_ONTARIO_TERMS_ACCEPTED !== '1') return [];
   try {
     const endpoint = new URL(ONTARIO_511_CAMERAS_URL);
     endpoint.searchParams.set('key', apiKey);
-    const resp = await fetch(endpoint.toString(), {
+    const resp = await fetchImpl(endpoint.toString(), {
       headers: { Accept: 'application/json' },
       redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
@@ -247,7 +247,7 @@ export async function loadOntarioSourcesFromOpenData() {
       new Map(cameras.map((camera) => [camera.id, camera])).values(),
     );
     const maxRaw = Number(
-      process.env.CCTV_ONTARIO_MAX_SOURCES || DEFAULT_ONTARIO_MAX_SOURCES,
+      env.CCTV_ONTARIO_MAX_SOURCES || DEFAULT_ONTARIO_MAX_SOURCES,
     );
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(1000, Math.floor(maxRaw)))
@@ -293,9 +293,9 @@ export async function loadOntarioSourcesFromOpenData() {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadFintrafficSourcesFromOpenData() {
+export async function loadFintrafficSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
   try {
-    const resp = await fetch(FINTRAFFIC_STATIONS_URL, {
+    const resp = await fetchImpl(FINTRAFFIC_STATIONS_URL, {
       headers: {
         Accept: 'application/json',
         'Accept-Encoding': 'gzip',
@@ -382,7 +382,7 @@ export async function loadFintrafficSourcesFromOpenData() {
     }
 
     const maxRaw = Number(
-      process.env.CCTV_FINTRAFFIC_MAX_SOURCES || DEFAULT_FINTRAFFIC_MAX_SOURCES,
+      env.CCTV_FINTRAFFIC_MAX_SOURCES || DEFAULT_FINTRAFFIC_MAX_SOURCES,
     );
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(600, Math.floor(maxRaw)))
@@ -446,16 +446,16 @@ const DRIVEBC_ORIENTATION_HEADINGS = Object.freeze({
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadDriveBcSourcesFromOpenData() {
+export async function loadDriveBcSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
   // The public feed includes partner-owned images. A missing credit does not
   // prove ministry ownership, so only explicitly reviewed camera IDs qualify.
   const approvedIds = new Set(
-    String(process.env.CCTV_DRIVEBC_APPROVED_IDS || '').split(',')
+    String(env.CCTV_DRIVEBC_APPROVED_IDS || '').split(',')
       .map((id) => id.trim()).filter((id) => /^[1-9]\d*$/.test(id)),
   );
-  if (!approvedIds.size || process.env.CCTV_DRIVEBC_TERMS_ACCEPTED !== '1') return [];
+  if (!approvedIds.size || env.CCTV_DRIVEBC_TERMS_ACCEPTED !== '1') return [];
   try {
-    const resp = await fetch(DRIVEBC_WEBCAMS_URL, {
+    const resp = await fetchImpl(DRIVEBC_WEBCAMS_URL, {
       headers: { Accept: 'application/json' },
       redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
@@ -524,7 +524,7 @@ export async function loadDriveBcSourcesFromOpenData() {
     }
 
     const maxRaw = Number(
-      process.env.CCTV_DRIVEBC_MAX_SOURCES || DEFAULT_DRIVEBC_MAX_SOURCES,
+      env.CCTV_DRIVEBC_MAX_SOURCES || DEFAULT_DRIVEBC_MAX_SOURCES,
     );
     // Up to the catalog ceiling, so a BC-only setup can load the whole province.
     const maxCount = Number.isFinite(maxRaw)
@@ -611,9 +611,9 @@ export function nswCameraToSource(feature) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadNswSourcesFromOpenData() {
+export async function loadNswSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
   try {
-    const resp = await fetch(NSW_CAMERAS_URL, {
+    const resp = await fetchImpl(NSW_CAMERAS_URL, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'earth-observer-cctv/1.0',
@@ -630,7 +630,7 @@ export async function loadNswSourcesFromOpenData() {
     const features = Array.isArray(body?.features) ? body.features : [];
     const cameras = features.map(nswCameraToSource).filter(Boolean);
     const maxRaw = Number(
-      process.env.CCTV_NSW_MAX_SOURCES || DEFAULT_NSW_MAX_SOURCES,
+      env.CCTV_NSW_MAX_SOURCES || DEFAULT_NSW_MAX_SOURCES,
     );
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(900, Math.floor(maxRaw)))
@@ -783,10 +783,10 @@ export function calgaryCameraToSource(record) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadCalgarySourcesFromOpenData() {
+export async function loadCalgarySourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
   try {
     const endpoint = DEFAULT_CALGARY_ROWS_URL;
-    const resp = await fetch(endpoint, {
+    const resp = await fetchImpl(endpoint, {
       headers: { Accept: 'application/json' },
       redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
@@ -822,7 +822,7 @@ export async function loadCalgarySourcesFromOpenData() {
       cameras.push(camera);
     }
     const maxRaw = Number(
-      process.env.CCTV_CALGARY_MAX_SOURCES || DEFAULT_CALGARY_MAX_SOURCES,
+      env.CCTV_CALGARY_MAX_SOURCES || DEFAULT_CALGARY_MAX_SOURCES,
     );
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(400, Math.floor(maxRaw)))
@@ -917,10 +917,10 @@ export function vegvesenCameraToSource(feature) {
  *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
-export async function loadVegvesenSourcesFromOpenData() {
+export async function loadVegvesenSourcesFromOpenData({ env = globalThis.process?.env || {}, fetchImpl = fetch } = {}) {
   try {
     const endpoint = DEFAULT_VEGVESEN_CCTV_URL;
-    const resp = await fetch(endpoint, {
+    const resp = await fetchImpl(endpoint, {
       headers: { Accept: 'application/geo+json,application/json' },
       redirect: 'manual',
       signal: AbortSignal.timeout(CCTV_SOURCE_FETCH_TIMEOUT_MS),
@@ -957,7 +957,7 @@ export async function loadVegvesenSourcesFromOpenData() {
       cameras.push(camera);
     }
     const maxRaw = Number(
-      process.env.CCTV_VEGVESEN_MAX_SOURCES || DEFAULT_VEGVESEN_MAX_SOURCES,
+      env.CCTV_VEGVESEN_MAX_SOURCES || DEFAULT_VEGVESEN_MAX_SOURCES,
     );
     const maxCount = Number.isFinite(maxRaw)
       ? Math.max(8, Math.min(1000, Math.floor(maxRaw)))

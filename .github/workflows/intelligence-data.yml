@@ -1,0 +1,50 @@
+name: Refresh discovery metadata
+
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: intelligence-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    if: github.repository == 'SmurfTurfPawpaw/earth-observer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      INTELLIGENCE_OUTPUT: ${{ runner.temp }}/intelligence-snapshots
+      NODE_OPTIONS: --max-old-space-size=256
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check snapshot contract
+        run: node --test server/hosted/gdelt-snapshot.test.mjs
+      - name: Generate three fixed discovery samples
+        id: generate
+        run: node scripts/gdelt-snapshot.mjs "$INTELLIGENCE_OUTPUT"
+      - name: Preserve prior metadata when upstream is unavailable
+        if: steps.generate.outputs.status == 'skipped'
+        run: echo 'The generation step reported an upstream limit or invalid response. The previously published snapshot remains in place.'
+      - name: Publish bounded latest metadata
+        if: steps.generate.outputs.status == 'generated'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view intelligence-data --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release create intelligence-data --repo "$GH_REPO" --target "$GITHUB_SHA" --latest=false \
+              --title 'Latest discovery metadata' \
+              --notes 'A bounded GDELT discovery sample: source links and headline metadata only, across three fixed topic queries. Retrieval times and GDELT indexing times are preserved; indexing time is not original publication time. Publisher claims have not been independently verified by Earth Observer.'
+          fi
+          gh release upload intelligence-data "$INTELLIGENCE_OUTPUT/gdelt.snapshot.json" --repo "$GH_REPO" --clobber

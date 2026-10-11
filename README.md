@@ -4,6 +4,19 @@ A globe for public Earth observation feeds. Sources, timestamps, uncertainty,
 and attribution stay visible. No cinematic filters, invented road traffic,
 voice control, or local credential setup.
 
+The personal-site edition lives at [giovannicallebaut.com/earth/](https://giovannicallebaut.com/earth/).
+Browsing is public. It includes a compact collapsible interface, keyboard commands
+(Ctrl/Cmd+K), named saved views, disaster/news discovery, official annual economic
+facts, and a private evidence notebook. Public contributions require sign-in,
+explicit publication consent, and a separate moderator's approval.
+
+On a new visit the browser asks for location permission without blocking the globe.
+When permission is granted, the app selects a rounded local position and a 10 km
+area; searching a place works without sharing device location. Camera position,
+radius and layer choices restore on reload. View preferences and private notes
+stay in the browser; rounded map coordinates are used to acquire nearby feeds.
+There is no visitor analytics or session-information collector.
+
 The static interface paints while the 3D engine loads. Production builds
 precompress text and JSON Lines using Brotli and gzip, cache versioned engine
 assets, and validate other assets with ETags. Layer code warms on hover or
@@ -12,6 +25,14 @@ that layer. Shared scene services initialize only when needed. Loading labels
 reflect actual requests and tile queues; existing data stays visible during
 refreshes. Large camera, fire, and infrastructure point sets prepare in batches to keep controls
 responsive.
+
+Bounded IndexedDB snapshots show saved observations immediately while background
+requests update them. A scoped service worker retains the interface, required code
+and a limited basemap cache for returning/offline visits. Optional module warming
+stops on hidden tabs, data-saving connections and slow networks. Rendering pauses
+when hidden and runs on demand otherwise. Saved scene previews remain labeled as
+saved views while the real scene initializes. New locations, first visits and live
+provider responses still require work; caching does not guarantee instant data.
 
 The interface loads each layer on demand. Measured vehicle locations stay at
 their reported positions between updates. Satellite positions are predictions
@@ -43,7 +64,12 @@ On Windows, set `HOST` and `PORT` using your shell or host configuration.
 The production server serves `dist/` and the same-origin `/api/` providers.
 Deploy this Node service behind your host's HTTPS ingress; serving `dist/`
 alone will omit the API-dependent layers. `/healthz` is the health check.
-There is no paid platform, login requirement, or external font dependency.
+Browsing has no login requirement or external font dependency. Community
+publication uses the separate authenticated Worker extension.
+
+The actual personal-site deployment bundles this application under `/earth/`
+with its existing portfolio Worker. See [HOSTING.md](docs/HOSTING.md) and
+[WORKER_RUNTIME.md](docs/WORKER_RUNTIME.md) for that deployment and storage.
 
 ```sh
 docker build -t earth-observer .
@@ -83,3 +109,21 @@ Tests cover layer cancellation/disposal, polling suspension, view links,
 provider allowlists, production routing, bounded feed bodies, shared caches,
 and upstream failure behavior. Third-party availability, geographic coverage,
 and provider capacity still determine which live data can be displayed.
+
+## Intelligence, evidence and research
+
+USGS and GDACS retain their observed/retrieved times. GDELT supplies only linked
+news metadata through one scheduled public snapshot every 30 minutes; unavailable
+or outdated sources are labeled. Related links are indicative matches, not
+independent confirmation. World Bank indicators are annual facts with their own
+reference years. Forecast wind grids refresh every six hours and retain model,
+run, valid time and source credits; predictions are not measured wind.
+
+- [Intelligence sources and limitations](docs/INTELLIGENCE_SOURCES.md)
+- [Economic facts](docs/ECONOMIC_FACTS.md), [scheduled news](docs/GDELT_SNAPSHOTS.md), and [forecast grids](docs/WIND_SNAPSHOTS.md)
+- [Private/public evidence and moderation](docs/COMMUNITY.md)
+- [Maxinomics research and exact coverage](docs/MAXINOMICS_RESEARCH.md): 65 dated videos in the requested window; official transcripts were unavailable. Unverified reposts and primary-source checks are distinguished explicitly.
+- [Upstream feature review](docs/UPSTREAM_FEEDBACK.md) and [300-comment YouTube sample](docs/YOUTUBE_FEEDBACK.md)
+
+The goal is an attributable investigation workspace. Neither this app nor a
+creator's commentary can establish a claim merely by aggregating several links.

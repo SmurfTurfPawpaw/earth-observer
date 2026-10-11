@@ -29,10 +29,13 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     contextOptions: { webgl: { alpha: false, antialias: true } },
   });
   try {
-    viewer.targetFrameRate = 30;
+    viewer.targetFrameRate = 60;
     viewer.resolutionScale = Math.min(1, 1.5 / (globalThis.devicePixelRatio || 1));
     viewer.scene.globe.maximumScreenSpaceError = 3;
     viewer.scene.globe.tileCacheSize = 100;
+    viewer.scene.globe.preloadAncestors = true;
+    viewer.scene.globe.preloadSiblings = true;
+    viewer.scene.globe.loadingDescendantLimit = 8;
     viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#213a49');
     viewer.scene.screenSpaceCameraController.minimumZoomDistance = 250;
     viewer.scene.screenSpaceCameraController.maximumZoomDistance = 50000000;
@@ -48,8 +51,17 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
       credit: new Cesium.Credit('<a href="https://earthdata.nasa.gov/">NASA GIBS / Blue Marble</a>', true),
     });
     const imagery = viewer.imageryLayers.addImageryProvider(nasa);
-    let tileFailures = 0;
-    let fallbackStarted = false;
+    // Paint inexpensive bundled imagery first; NASA detail fills in without a blank globe.
+    const baseReady = Cesium.TileMapServiceImageryProvider.fromUrl(
+      Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'),
+      { maximumLevel: 1, credit: new Cesium.Credit('<a href="https://www.naturalearthdata.com/">Natural Earth</a>, public domain', true) },
+    ).then((provider) => {
+      if (viewer.isDestroyed()) return false;
+      viewer.imageryLayers.addImageryProvider(provider, 0);
+      viewer.scene.requestRender();
+      return true;
+    }).catch(() => false);
+    let tileFailures = 0, fallbackStarted = false;
     nasa.errorEvent.addEventListener((error) => {
       if (fallbackStarted || viewer.isDestroyed()) return;
       tileFailures += 1;
@@ -58,16 +70,13 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
         return;
       }
       fallbackStarted = true;
-      Cesium.TileMapServiceImageryProvider.fromUrl(
-        Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'),
-        { credit: new Cesium.Credit('<a href="https://www.naturalearthdata.com/">Natural Earth</a>, public domain', true) },
-      ).then((provider) => {
+      baseReady.then((available) => {
         if (viewer.isDestroyed()) return;
+        if (!available) { onNotice('Imagery is unavailable. The globe remains interactive; reconnect for map detail.'); return; }
         viewer.imageryLayers.remove(imagery, true);
-        viewer.imageryLayers.addImageryProvider(provider, 0);
         viewer.scene.requestRender();
         onNotice('NASA imagery is unavailable. Showing bundled Natural Earth imagery.');
-      }).catch(() => onNotice('Base imagery could not load. The globe and data layers remain available.'));
+      });
     });
 
     // Trackpad pinch arrives as Ctrl+wheel; Cesium otherwise treats it as browser zoom.

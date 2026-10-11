@@ -185,3 +185,21 @@ test('data-saving and slow connections skip optional warm-up without blocking re
     await env.manager.destroy();
   }
 });
+
+test('changing the local area cancels pending data and queues its replacement even for static layers', async () => {
+  const started = Promise.withResolvers(), blocked = Promise.withResolvers(); let updates = 0, firstSignal, area;
+  const env = environment(async () => ({ init() {}, enable() {}, disable() {}, destroy() {}, updateInterval: 0,
+    setLocalArea(value) { area = value; },
+    async update(_viewer, { signal }) {
+      updates++;
+      if (updates === 1) { firstSignal = signal; started.resolve(); await blocked.promise; }
+      return !signal.aborted;
+    },
+  }));
+  const enabling = env.manager.setEnabled('test', true); await started.promise;
+  env.manager.setLocalArea({ lat: 50, lon: 4, radiusKm: 10 });
+  assert.equal(firstSignal.aborted, true);
+  blocked.resolve(); await enabling; await settle();
+  assert.equal(updates, 2); assert.deepEqual(area, { lat: 50, lon: 4, radiusKm: 10 });
+  assert.equal(env.manager.getState().test.refreshing, false); await env.manager.destroy();
+});

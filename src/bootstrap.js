@@ -1,5 +1,7 @@
-/** Paint the static controls while the essential 3D engine downloads. */
+import { showSavedScene } from './core/scene-preview.js';
+/** Paint saved view and static controls while the essential 3D engine downloads. */
 async function boot() {
+  void showSavedScene();
   try {
     if (import.meta.env.PROD && !globalThis.Cesium) {
       const preload = document.querySelector('link[data-globe-engine]');

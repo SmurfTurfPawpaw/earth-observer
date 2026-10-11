@@ -51,6 +51,7 @@ function aircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities 
     if (!military && Number.isFinite(query.latitude) && Number.isFinite(query.longitude)) {
       params.set('lat', query.latitude.toFixed(4));
       params.set('lon', query.longitude.toFixed(4));
+      if (Number.isFinite(query.radiusKm)) params.set('radiusKm', String(query.radiusKm));
     }
     const response = await fetchImpl(`${endpoint}${params.size ? '?' + params : ''}`, { signal });
     if (!response.ok) throw new Error(`adsb.lol HTTP ${response.status}`);
@@ -78,7 +79,7 @@ function aircraftSource(fetchImpl, military, { readsbSnapshot, readsbIdentities 
   };
 }
 
-export async function createLayer(id, { services = {}, fetchImpl }) {
+export async function createLayer(id, { services = {}, fetchImpl, getLocalArea }) {
   const { surface, weatherClock, overlayHost } = services;
   const modules = await preloadLayer(id);
   if (id === 'flights' || id === 'military') {
@@ -120,7 +121,7 @@ export async function createLayer(id, { services = {}, fetchImpl }) {
   }
   if (id === 'bikeshare') {
     const [adapter, source] = modules;
-    return adapter.createApplicationBikeshare({ source: source.createBikeshareSource({ fetchImpl }) });
+    return adapter.createApplicationBikeshare({ source: source.createBikeshareSource({ fetchImpl, getLocalArea }) });
   }
   if (id === 'transit') {
     const [{ createObservedTransitLayer }] = modules;

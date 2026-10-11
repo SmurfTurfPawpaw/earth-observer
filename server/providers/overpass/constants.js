@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 // ---------------------------------------------------------------------------
 // Overpass API proxy constants and cache state
 // ---------------------------------------------------------------------------
@@ -30,8 +28,8 @@ function parseOverpassUpstreams(raw) {
 let upstreamMemo = { raw: null, endpoints: [] };
 
 /** Resolve after environment loading. Public Overpass instances are not used by default. */
-function resolveOverpassUpstreams() {
-  const raw = process.env.OVERPASS_UPSTREAMS || '';
+function resolveOverpassUpstreams(env = globalThis.process?.env || {}) {
+  const raw = env.OVERPASS_UPSTREAMS || '';
   if (upstreamMemo.raw !== raw)
     upstreamMemo = { raw, endpoints: parseOverpassUpstreams(raw) };
   return [...upstreamMemo.endpoints];
@@ -60,7 +58,7 @@ const OVERPASS_DISK_TTL_MS = 7 * 86_400_000;
 const OVERPASS_BOUNDARY_DISK_TTL_MS = 30 * 86_400_000;
 
 /** Disk-cache directory for Overpass responses. */
-const OVERPASS_DISK_DIR = path.join(process.cwd(), '.gev-cache', 'overpass');
+const OVERPASS_DISK_DIR = '.gev-cache/overpass';
 
 /** Per-upstream fetch timeout (ms). */
 const OVERPASS_TIMEOUT_MS = 22000;
