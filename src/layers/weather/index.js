@@ -67,6 +67,7 @@ export function createWeatherLayer({
   let motion = null;
   let runNavigation = null;
   let imageryHost = null;
+  let manager = null;
   let hostCollection;
   let hostHidden = false;
   let hostStatus = null;
@@ -292,6 +293,9 @@ export function createWeatherLayer({
           : null;
       notify();
     },
+    attachDataManager(nextManager) {
+      manager = typeof nextManager?.requestRefresh === 'function' ? nextManager : null;
+    },
     enable() {
       enabled = true;
       registerClock();
@@ -410,7 +414,12 @@ export function createWeatherLayer({
         followLatest = true;
         rendering?.clear();
         if (clock) void clock.refresh();
-        if (enabled) void layer.update(viewer);
+        // Changing the source product needs a manifest read, unlike opacity
+        // and selecting an already advertised dated frame.
+        if (enabled) {
+          if (manager) manager.requestRefresh(id);
+          else void layer.update(viewer);
+        }
       }
       if (infraredChanged && enabled && manifest) {
         clearTimeout(timer);
@@ -706,6 +715,7 @@ export function createWeatherLayer({
       };
     },
     destroy() {
+      manager = null;
       layer.disable();
       unsubscribeClock?.();
       removeCamera?.();

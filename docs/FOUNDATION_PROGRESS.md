@@ -1,5 +1,14 @@
 # Foundation run progress
 
+Latest12October2026 checkpoint: the cloud collector has completed unattended
+scheduled factual publication after the laptop producer stopped. Production is
+Site48; saved49 is unpublished. Shared scene work and primitive static rendering
+passed99 integrated changed-path checks and scoped native browser measurements.
+See REVIEW_HANDOFF.md and SCENE_WORK_FOUNDATION.md for evidence and limitations.
+Current architecture priority is one reusable prepared edition per source revision,
+served by cached regional reads and existing revision notices. The earlier initial
+phase table records the starting point, not current cloud execution status.
+
 Run: 2026-10-11T21:39:10Z → 2026-10-12T06:39:10Z (Brussels 23:39 → 08:39).
 Plan: FOUNDATION_PLAN.md. This is the first bounded work window toward the full
 platform goal. Passing a foundation slice does not complete the global objective.

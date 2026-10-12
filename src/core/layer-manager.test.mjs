@@ -1,15 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLayerManager, STORAGE_KEY, LAYER_ACTIVATION_LIMITS } from './layer-manager.js';
+import { createLayerManager, STORAGE_KEY, LAYER_ACTIVATION_LIMITS, LAYER_REFRESH_FOLLOWUP_MS } from './layer-manager.js';
 
 const catalog = [{ id: 'test', defaults: { mode: 'safe' } }];
 const microtasks = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
 const settle = async () => { await microtasks(); await new Promise(resolve => setTimeout(resolve, 0)); await microtasks(); };
+const replacement = async () => { await new Promise(resolve => setTimeout(resolve, LAYER_REFRESH_FOLLOWUP_MS + 10)); await settle(); };
 function environment(createLayer, overrides = {}) {
   const timers = new Map();
   let timerId = 0;
   const events = new Map();
-  const document = { hidden: false, addEventListener: (name, callback) => events.set(name, callback), removeEventListener: (name) => events.delete(name) };
+  const document = { hidden: false,
+    addEventListener(name, callback) { if (!events.has(name)) events.set(name, new Set()); events.get(name).add(callback); },
+    removeEventListener(name, callback) { events.get(name)?.delete(callback); } };
   const saved = new Map();
   const storage = { getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value) };
   const viewer = { scene: { requestRender() {} } };
@@ -18,7 +21,7 @@ function environment(createLayer, overrides = {}) {
     setInterval: (callback) => { timers.set(++timerId, callback); return timerId; },
     clearInterval: (id) => timers.delete(id), ...overrides,
   });
-  return { manager, timers, document, saved, storage, visibility: () => events.get('visibilitychange')?.() };
+  return { manager, viewer, timers, document, saved, storage, visibility: () => { for (const callback of events.get('visibilitychange') || []) callback(); } };
 }
 function engine(calls) {
   let params = {};
@@ -122,7 +125,9 @@ test('producer revisions coalesce one follow-up during an active refresh and res
   const refreshing = env.manager.refresh('test'); await settle();
   for (let i = 0; i < 8; i++) assert.equal(env.manager.requestRefresh('test'), true);
   assert.equal(count, 2); assert.equal(invalidations, 1);
-  pending.resolve(); await refreshing; await settle(); assert.equal(count, 3); assert.equal(invalidations, 2);
+  pending.resolve(); await refreshing; await settle(); assert.equal(count, 2, 'An active-read burst schedules one delayed replacement');
+  assert.equal(env.manager.getState().test.workPhase, 'queued-update');
+  await replacement(); assert.equal(count, 3); assert.equal(invalidations, 2);
   env.document.hidden = true; assert.equal(env.manager.requestRefresh('test'), false);
   env.document.hidden = false; await env.manager.setTimelineMode('history');
   assert.equal(env.manager.requestRefresh('test'), false);
@@ -177,7 +182,7 @@ test('a reviewed publication invalidates the active read immediately and coalesc
   await env.manager.setEnabled('earthquakes', true); const refreshing = env.manager.refresh('earthquakes'), active = await began.promise;
   assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(2)), true); assert.equal(active.aborted, true);
   assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(3)), true);
-  await refreshing; await settle(); assert.equal(count, 3); assert.equal(pendingRevision.fence, 3);
+  await refreshing; await replacement(); assert.equal(count, 3); assert.equal(pendingRevision.fence, 3);
   assert.deepEqual(invalidations.map(value => value.fence), [2, 3, 3]); await env.manager.destroy();
 });
 
@@ -259,7 +264,7 @@ test('returning from history while a canceled read retires queues a fresh owned 
   } }));
   await env.manager.setEnabled('test', true); const pending = env.manager.refresh('test'); await began.promise;
   await env.manager.setTimelineMode('history'); assert.equal(oldSignal.aborted, true); await env.manager.setTimelineMode('live');
-  assert.equal(updates, 2); blocked.resolve(); await pending; await settle(); assert.equal(updates, 3);
+  assert.equal(updates, 2); blocked.resolve(); await pending; await replacement(); assert.equal(updates, 3);
   await env.manager.destroy();
 });
 
@@ -346,7 +351,7 @@ test('changing the local area cancels pending data and queues its replacement ev
   const enabling = env.manager.setEnabled('test', true); await started.promise;
   env.manager.setLocalArea({ lat: 50, lon: 4, radiusKm: 10 });
   assert.equal(firstSignal.aborted, true);
-  blocked.resolve(); await enabling; await settle();
+  blocked.resolve(); await enabling; await replacement();
   assert.equal(updates, 2); assert.deepEqual(area, { lat: 50, lon: 4, radiusKm: 10 });
   assert.equal(env.manager.getState().test.refreshing, false); await env.manager.destroy();
 });
@@ -441,4 +446,94 @@ test('initial source failure without retained data is unavailable while an exist
     assert.equal(JSON.parse(env.saved.get(STORAGE_KEY)).layers.test.enabled, true);
     assert.equal(calls.includes('destroy'), !retained, 'A retained source display is not discarded for failed revalidation');
   }
+});
+
+function controlledWork(t, ids, update) {
+  const turns = new Map(), gates = new Map(), starts = [], counts = new Map(); let sequence = 0, active = 0, maximum = 0;
+  const env = environment(async id => ({ ...engine([]), updateInterval: 0,
+    async update(viewer, options) {
+      const count = (counts.get(id) || 0) + 1; counts.set(id, count); starts.push(`${id}:${count}`);
+      const gate = Promise.withResolvers(); gates.set(`${id}:${count}`, gate);
+      active++; maximum = Math.max(maximum, active);
+      try { return await update({ id, count, gate, viewer, ...options }); } finally { active--; }
+    },
+  }), { catalog: ids.map(id => ({ id, defaults: {} })), layerServiceRequirements: () => [],
+    setTimeout(callback, delay) { turns.set(++sequence, { callback, delay }); return sequence; }, clearTimeout: id => turns.delete(id) });
+  const turn = async (delay = 0) => {
+    await microtasks(); const candidate = [...turns].find(([, value]) => value.delay === delay);
+    if (!candidate) return false; const [id, value] = candidate; turns.delete(id); value.callback(); await microtasks(); return true;
+  };
+  t.after(async () => { for (const gate of gates.values()) gate.resolve(); await env.manager.destroy(); });
+  return { ...env, gates, starts, counts, turns, turn, get active() { return active; }, get maximum() { return maximum; } };
+}
+
+test('recurring refresh and initial activation share two physical permits; disabled queued work never starts and ignored cancellation keeps its slot', async t => {
+  const ids = ['fires', 'cameras', 'dams'];
+  const env = controlledWork(t, ids, async ({ count, gate, work }) => { work.assertCurrent(); if (count > 1) await gate.promise; return true; });
+  const restored = env.manager.restore(ids); for (let i = 0; i < ids.length; i++) await env.turn(); await restored;
+  const first = env.manager.refresh('fires'), second = env.manager.refresh('cameras'); await env.turn(); await env.turn();
+  const queued = env.manager.refresh('dams'); await microtasks();
+  assert.equal(env.manager.getWorkState().activeUpdates, 2); assert.equal(env.manager.getWorkState().queuedUpdates, 1);
+  assert.equal(env.manager.getState().dams.workPhase, 'queued-update'); assert.equal(env.counts.get('dams'), 1);
+  await env.manager.setEnabled('dams', false); assert.equal(await queued, false); assert.equal(env.counts.get('dams'), 1);
+  const reenabling = env.manager.setEnabled('dams', true); await microtasks();
+  await env.manager.setEnabled('fires', false);
+  assert.equal(env.manager.getWorkState().activeUpdates, 2, 'An ignored aborted source still owns its physical permit');
+  assert.equal(await env.turn(), false, 'No third source starts while two requests remain physically unsettled');
+  env.gates.get('fires:2').resolve(); assert.equal(await first, false); await env.turn();
+  assert.equal(env.counts.get('dams'), 2); assert.equal(env.maximum, 2);
+  env.gates.get('cameras:2').resolve(); env.gates.get('dams:2').resolve(); await Promise.all([second, reenabling]);
+  assert.equal(env.manager.getWorkState().activeUpdates, 0); assert.equal(env.manager.getWorkState().queuedUpdates, 0);
+});
+
+test('hidden visibility invalidates a scheduled follow-up and a new visible owner survives an ignored-abort read', async t => {
+  const signals = [];
+  const env = controlledWork(t, ['test'], async ({ count, gate, signal }) => { signals.push(signal); if (count === 2 || count === 3) await gate.promise; return true; });
+  const enabled = env.manager.setEnabled('test', true); await env.turn(); await enabled;
+  const pending = env.manager.refresh('test'); await env.turn(); env.manager.requestRefresh('test');
+  env.gates.get('test:2').resolve(); await pending;
+  assert.ok([...env.turns.values()].some(value => value.delay === LAYER_REFRESH_FOLLOWUP_MS));
+  env.document.hidden = true; env.visibility(); assert.equal(env.turns.size, 0);
+  env.document.hidden = false; env.visibility(); await env.turn(); assert.equal(env.counts.get('test'), 3);
+  env.manager.requestRefresh('test'); env.document.hidden = true; env.visibility(); env.document.hidden = false; env.visibility();
+  assert.equal(signals[2].aborted, true); assert.equal(env.manager.getWorkState().activeUpdates, 1);
+  assert.equal(await env.turn(), false); assert.equal(env.counts.get('test'), 3);
+  env.gates.get('test:3').resolve(); await microtasks();
+  assert.equal(await env.turn(LAYER_REFRESH_FOLLOWUP_MS), true); assert.equal(await env.turn(), true);
+  assert.equal(env.counts.get('test'), 4); assert.equal(signals[3].aborted, false);
+  assert.equal(env.manager.getWorkState().activeUpdates, 0); assert.equal(env.turns.size, 0);
+});
+
+test('waiting background work ages past repeated high-priority refreshes without exceeding the shared permit limit', async t => {
+  const core = 'earthquakes', notices = 'gdacs-notices', background = 'background';
+  const env = controlledWork(t, [background, core, notices], async ({ gate }) => { await gate.promise; return true; });
+  const restored = env.manager.restore([background, core, notices]); await env.turn(); await env.turn();
+  env.gates.get(`${core}:1`).resolve(); await microtasks();
+  for (let count = 2; count <= 3; count++) {
+    const refresh = env.manager.refresh(core); await env.turn(); assert.equal(env.counts.get(core), count);
+    env.gates.get(`${core}:${count}`).resolve(); await refresh;
+  }
+  const nextCore = env.manager.refresh(core); await env.turn();
+  assert.equal(env.starts.at(-1), `${background}:1`, 'A queued lower-priority layer takes precedence once four admissions have passed');
+  assert.equal(env.counts.get(core), 3); assert.equal(env.maximum, 2);
+  env.gates.get(`${background}:1`).resolve(); await microtasks(); await env.turn();
+  assert.equal(env.counts.get(core), 4); env.gates.get(`${core}:4`).resolve(); env.gates.get(`${notices}:1`).resolve();
+  await Promise.all([restored, nextCore]); assert.equal(env.manager.getWorkState().activeUpdates, 0);
+});
+
+test('init, enable and initial update reuse one work owner; cooperative preparation publishes complete metrics and unchanged updates stay complete', async t => {
+  const phases = [], committed = [], owners = [], measured = { count: 3, preparationMs: 5, attachmentMs: 2, commitMs: 1, observerErrors: 0 };
+  const env = environment(async () => ({ updateInterval: 0,
+    async init(_viewer, { work }) { owners.push(work); await work.prepare([1, 2, 3], value => value * 2); },
+    enable(_viewer, { work }) { owners.push(work); work.assertCurrent(); },
+    async update(_viewer, { work }) { owners.push(work); const values = await work.prepare([4, 5, 6], value => value * 2); work.publish(() => committed.push(values)); return false; },
+    getStats: () => ({ count: 3, lastUpdate: 123, editionMetrics: { ...measured, bad: Infinity } }), disable() {}, destroy() {},
+  }));
+  t.after(() => env.manager.destroy()); env.manager.subscribe(state => phases.push(state.test.workPhase));
+  assert.equal(await env.manager.setEnabled('test', true), true);
+  assert.equal(new Set(owners).size, 1, 'Preparation never recursively acquires the physical initial-update permit');
+  assert.deepEqual(committed, [[8, 10, 12]]); assert.equal(env.manager.getState().test.workPhase, 'complete');
+  assert.equal(env.manager.getState().test.refreshedAt, null); assert.equal(env.manager.getState().test.lastUpdate, 123);
+  assert.equal(env.manager.getState().test.preparedCount, 3); assert.deepEqual(env.manager.getState().test.editionMetrics, measured);
+  assert.ok(phases.includes('queued-prepare')); assert.equal(env.manager.getWorkState().activeUpdates, 0);
 });

@@ -6,6 +6,73 @@ execution has already passed operating acceptance. Each gate can change the phas
 
 ## Current blocking design gate: recurring blank globe presentation
 
+Update,12October2026 at09:41UTC: the user proposed sending data to a central
+processor and streaming prepared results. Adopt that as the primary delivery
+architecture: collect/retain facts independently, prepare reusable regional scene
+editions once per source revision, serve bounded cached scene/full-delta reads and
+use the existing small revision stream for notification. Avoid a second transport
+or broker until prepared output and subscriber budgets justify it. Shared browser
+work is the remaining display safeguard, not a reason to redo normalization and
+clustering in every visitor. Static fire/camera/infrastructure adapters now use
+batched primitives and selected-only detail Entities.99 changed-path checks pass;
+native7,000-record scope and deferred-GPU limits are in SCENE_WORK_FOUNDATION.md.
+The current release is being prepared; version48 is still production at this point.
+
+Update, 12 October 2026 at 08:28 UTC: the user rejected separate performance
+machinery in individual layers. The next implementation must reuse one viewer-owned
+work coordinator for initial loads and recurring refreshes, with a shared aggregate
+preparation budget, current-owner cancellation and coherent edition publication.
+Static adapters define source/feature mapping rather than their own scheduling loops.
+Camera-dependent render budgets, animated engines and pure-data Worker preparation
+will adopt the same ownership contract in subsequent gates. A cooperative budget
+cannot preempt one synchronous parser, native Cesium commit or GPU operation.
+Measure those separately and revise payload/render plans when they exceed budget.
+
+Satellite ownership source c8105fbfc0dc04145d40abc01a16e0bae5c7408b passed its
+21 focused checks and the full GitHub Check. Site version 49 is saved from combined
+6d7bff8b4f0b4b4bdcc53664136b10baf956e2dc, but has not been deployed. Production
+remains version 48. No separate FIRMS/aircraft implementation was written before
+the approach was revised. Do not treat the satellite correction as acceptance of
+the full performance foundation or of the disappearing globe.
+
+The latest actual unattended collector proof includes successful scheduled wakes
+at 07:38:51 and 07:39:51 UTC, after the laptop collector stopped. The latter stored
+new factual collection at 07:40:02.282 UTC and published world/update editions.
+This establishes initial cloud operation for the admitted four-source collection;
+separate Node/Python producers and minute cadence under jitter remain open gates.
+
+Update, 12 October 2026 at 07:40 UTC: version 48 is published. Layer activation
+has two physical slots and yields between starts; selected intent is persisted
+before loading. The UI counts ready/loading/queued/unavailable layers and stops
+the spinner when attempts settle. Live USGS, historical seismic scenes and GDACS
+now have semantic icons. A completed-frame 2D display bridge is opt-in, with a
+bounded backing, immediate camera input and actual scene UTC. Local copy and
+interaction checks passed; the user has not checked native visibility. Neither
+the black-screen defect nor improved 16-layer blocking has passed acceptance.
+
+The strict-public flag was deployed, but actual Cron still failed. The concrete
+request incompatibility was Worker rejection of redirect:error. Manual redirect
+handling with explicit 3xx rejection is deployed as version
+22c68258-0b06-49da-a649-1ed5bce187b7. A real stored run used 3 ms CPU. The laptop
+collector stopped at 07:31:08 UTC; a cloud-only stored check is confirmed at
+07:33:01.743 UTC. Some minute wakes return busy under the existing rolling
+60-second admission window. Rework jitter-aware admission and measure actual
+cadence before claiming every minute captures. Separate Node/Python producers
+are not migrated by this timer.
+
+The earlier per-layer preparation proposal is superseded by the shared foundation
+above. Empty/unavailable satellite holds are corrected in saved version 49. Migrate
+the existing static batching consumers through one complete-edition utility, then
+integrate stateful animated engines without changing their source/motion semantics.
+
+The ten-second buffer is still a plan. Pilot complete validated USGS editions,
+using monotonic arrival deadlines and bounded pending editions, then one
+synchronous preUpdate commit. Pins, labels, statistics and selected evidence must
+use the active edition together. Camera and live clock stay immediate. Bind the
+dossier bridge to displayed source revisions before buffering; do not stack this
+buffer onto aircraft's existing 25-second motion playback delay. GDACS requires
+an explicit source-edition contract before a shared multi-source commit.
+
 User steering at the nine-hour checkpoint changes the presentation contract:
 waiting is acceptable when actual loading is represented; up to a minute of
 display delay is acceptable for smoothness. Semantic icons and visible reasoning
@@ -50,7 +117,7 @@ intermittent presentation defect, not evidence of missing source data.
 Before adding more features, isolate default drawing-buffer discard and demand
 rendering from render-loop/visibility reactivation with a bounded comparison in
 the affected embedded browser. The current implementation has alpha:false,
-default preserveDrawingBuffer and demand rendering. These are a hypothesis, not
+preserveDrawingBuffer:true and demand rendering. These are a hypothesis, not
 a proven root cause. Keep frame timing, actual presentation and render-loop
 failure separate; a successful screenshot is insufficient acceptance. Do not
 blindly enable continuous rendering or claim a buffer change fixes it. Agree the
@@ -61,8 +128,9 @@ journey to remain visible and verify its cost.
 
 The user connected an account whose dashboard shows Workers Free. The narrow
 minute collector is deployed with exact code/configuration readback, a dedicated
-collect-only HMAC and one cron. Actual unattended scheduled executions and CPU
-acceptance are still being checked. Keep D1/R2 evidence and the existing signed collect-only operation;
+collect-only HMAC and one cron. Initial actual unattended execution and CPU
+evidence are verified above; sustained cadence and other producers remain open.
+Keep D1/R2 evidence and the existing signed collect-only operation;
 do not duplicate storage in an MCP server or move acquisition to visitor browsers.
 The temporary awake-laptop bridge ends at 2026-10-12T06:39:10Z.
 

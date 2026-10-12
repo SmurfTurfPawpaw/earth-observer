@@ -1,4 +1,4 @@
-import { stageEntities, replaceEntities } from './entity-batches.js';
+import { createStagedPointEdition } from './point-editions.js';
 import * as Cesium from 'cesium';
 
 const MAX_RENDERED_DETECTIONS = 20000;
@@ -27,68 +27,74 @@ export function normalizeFireDetections(payload) {
   return { records: records.slice(0, MAX_RENDERED_DETECTIONS), totalCount };
 }
 
-export function createFireDetectionsLayer({ source } = {}) {
-  let viewer, dataSource, request, onChange;
+export function createFireDetectionsLayer({ source, documentRef = globalThis.document } = {}) {
+  let viewer, edition, request, onChange;
   let enabled = false, lastUpdate = null, observedAtMs = null, error = null, warning = null;
   let records = [], totalCount = 0, snapshot = false, stale = false, observationDate = null, coverage = null, mode = null;
   return {
     id: 'local-firms', updateInterval: 1800000,
     init(nextViewer) {
       viewer = nextViewer;
-      dataSource = new Cesium.CustomDataSource('NASA-FIRMS-detections'); dataSource.show = false;
-      viewer.dataSources.add(dataSource);
+      edition = createStagedPointEdition({ viewer, name: 'NASA-FIRMS-detections' });
     },
-    enable() { enabled = true; dataSource.show = true; },
+    enable() { enabled = true; edition.setVisible(true); },
     disable() {
       enabled = false; request?.abort(); request = null;
-      if (dataSource) dataSource.show = false;
-      if (String(viewer?.selectedEntity?.id || '').startsWith('firms:')) viewer.selectedEntity = undefined;
+      edition?.setVisible(false);
     },
-    async update(_viewer, { signal } = {}) {
-      if (!enabled) return false;
+    async update(_viewer, { signal, work } = {}) {
+      if (!enabled || documentRef?.hidden || signal?.aborted) return false;
       request?.abort();
       const controller = new AbortController(); request = controller;
       const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
       try {
         const payload = await source.getSnapshot({ signal: combined });
+        combined.throwIfAborted();
+        if (!enabled || documentRef?.hidden || request !== controller) return false;
         if (payload.keyRequired) throw new Error('FIRMS source is not configured');
         const normalized = normalizeFireDetections(payload);
         combined.throwIfAborted();
         if (!enabled || request !== controller) return false;
         const nextSnapshot = payload.snapshot === true;
-        const entities = await stageEntities(normalized.records, (record) => new Cesium.Entity({
-          id: `firms:${record.id}`,
-          name: `NASA FIRMS · ${record.acqDate || 'Date unspecified'}`,
-          position: Cesium.Cartesian3.fromDegrees(record.lon, record.lat, 10),
-          point: { pixelSize: 7, color: Cesium.Color.fromCssColorString('#dfae73'),
-            outlineColor: Cesium.Color.fromCssColorString('#382b1d'), outlineWidth: 1 },
-          properties: {
-            observationType: 'Satellite active-fire / thermal-anomaly detection',
-            dataMode: nextSnapshot ? 'Archived sample; not current conditions' : 'NASA FIRMS near real-time detections',
-            acquiredAt: record.observedAt === null ? 'Unspecified' : new Date(record.observedAt).toISOString(),
-            satellite: String(record.satellite || ''), instrument: String(record.instrument || ''),
-            confidence: String(record.confidence ?? ''),
-            ...(Number.isFinite(record.frp) ? { fireRadiativePowerMW: record.frp } : {}),
-            ...(Number.isFinite(record.brightness) ? { brightnessTemperatureK: record.brightness } : {}),
-            dayOrNight: record.daynight === 'D' ? 'Day' : record.daynight === 'N' ? 'Night' : 'Unspecified',
-            source: 'NASA FIRMS', sourceUrl: 'https://firms.modaps.eosdis.nasa.gov/',
+        let nextCoverage = payload.coverage || (nextSnapshot ? 'Archived sample only; not current or comprehensive global fire coverage' : 'NASA FIRMS detections from the trailing 24 hours');
+        if (normalized.records.length < normalized.totalCount) nextCoverage += ` · showing the ${normalized.records.length.toLocaleString()} detections with greatest reported radiative power out of ${normalized.totalCount.toLocaleString()}`;
+        const nextObservationDate = nextSnapshot ? String(payload.observationDate || normalized.records.find(record => record.acqDate)?.acqDate || '') : null;
+        let latestObservation = null;
+        const published = await edition.stage(normalized.records, (record) => {
+          if (record.observedAt !== null) latestObservation = Math.max(latestObservation || 0, record.observedAt);
+          return {
+            id: `firms:${record.id}`,
+            name: `NASA FIRMS · ${record.acqDate || 'Date unspecified'}`,
+            position: Cesium.Cartesian3.fromDegrees(record.lon, record.lat, 10),
+            point: { pixelSize: 7, color: Cesium.Color.fromCssColorString('#dfae73'),
+              outlineColor: Cesium.Color.fromCssColorString('#382b1d'), outlineWidth: 1 },
+            properties: {
+              observationType: 'Satellite active-fire / thermal-anomaly detection',
+              dataMode: nextSnapshot ? 'Archived sample; not current conditions' : 'NASA FIRMS near real-time detections',
+              acquiredAt: record.observedAt === null ? 'Unspecified' : new Date(record.observedAt).toISOString(),
+              satellite: String(record.satellite || ''), instrument: String(record.instrument || ''),
+              confidence: String(record.confidence ?? ''),
+              ...(Number.isFinite(record.frp) ? { fireRadiativePowerMW: record.frp } : {}),
+              ...(Number.isFinite(record.brightness) ? { brightnessTemperatureK: record.brightness } : {}),
+              dayOrNight: record.daynight === 'D' ? 'Day' : record.daynight === 'N' ? 'Night' : 'Unspecified',
+              source: 'NASA FIRMS', sourceUrl: 'https://firms.modaps.eosdis.nasa.gov/',
+            },
+          };
+        }, { signal: combined, work,
+          isCurrent: () => enabled && !documentRef?.hidden && request === controller,
+          commit() {
+            records = normalized.records; totalCount = normalized.totalCount;
+            snapshot = nextSnapshot; stale = snapshot || payload.stale === true;
+            observationDate = nextObservationDate;
+            mode = payload.mode || (snapshot ? 'archived-sample' : 'live');
+            observedAtMs = Number.isFinite(payload.lastObservationAt) ? payload.lastObservationAt : latestObservation;
+            coverage = nextCoverage;
+            lastUpdate = Date.now(); error = null; warning = null;
           },
-        }));
-        const selection = String(viewer.selectedEntity?.id || '');
-        dataSource.entities.removeAll();
-        for (const entity of entities) dataSource.entities.add(entity);
-        if (selection.startsWith('firms:')) viewer.selectedEntity = dataSource.entities.getById(selection);
-        records = normalized.records; totalCount = normalized.totalCount;
-        snapshot = nextSnapshot; stale = snapshot || payload.stale === true;
-        observationDate = snapshot ? String(payload.observationDate || records.find((record) => record.acqDate)?.acqDate || '') : null;
-        mode = payload.mode || (snapshot ? 'archived-sample' : 'live');
-        observedAtMs = Number.isFinite(payload.lastObservationAt) ? payload.lastObservationAt : records.reduce((latest, record) => Math.max(latest || 0, record.observedAt || 0), 0) || null;
-        coverage = payload.coverage || (snapshot ? 'Archived sample only; not current or comprehensive global fire coverage' : 'NASA FIRMS detections from the trailing 24 hours');
-        if (records.length < totalCount) coverage += ` · showing the ${records.length.toLocaleString()} detections with greatest reported radiative power out of ${totalCount.toLocaleString()}`;
-        lastUpdate = Date.now(); error = null; warning = null;
-        viewer.scene.requestRender(); onChange?.(); return true;
+        });
+        if (published) onChange?.(); return published;
       } catch (failure) {
-        if (combined.aborted) return false;
+        if (combined.aborted || !enabled || documentRef?.hidden || request !== controller) return false;
         if (snapshot && records.length) warning = 'Refresh unavailable; the dated archive remains displayed.';
         else error = failure.message || 'Fire detections unavailable';
         if (!snapshot && records.length) stale = true;
@@ -97,7 +103,8 @@ export function createFireDetectionsLayer({ source } = {}) {
     },
     getStats: () => ({ count: records.length, totalCount, lastUpdate, refreshedAt: lastUpdate,
       observedAtMs, ageMs: observedAtMs === null ? null : Math.max(0, Date.now() - observedAtMs),
-      snapshot, stale, observationDate, coverage, mode, source: 'NASA FIRMS', error, warning }),
+      snapshot, stale, observationDate, coverage, mode, source: 'NASA FIRMS', error, warning,
+      editionMetrics: edition?.getMetrics() || null }),
     getRowControls: () => ({
       info: [coverage, warning].filter(Boolean).join(' · '),
       chips: [{ label: 'View detections', disabled: records.length === 0, params: { focusDetections: true } }],
@@ -111,8 +118,8 @@ export function createFireDetectionsLayer({ source } = {}) {
     getParams: () => ({}),
     destroy() {
       enabled = false; request?.abort(); request = null; onChange = null;
-      if (dataSource && viewer && !viewer.isDestroyed()) viewer.dataSources.remove(dataSource, true);
-      records = []; totalCount = 0; viewer = null; dataSource = null;
+      edition?.destroy();
+      records = []; totalCount = 0; viewer = null; edition = null;
     },
   };
 }

@@ -11,7 +11,7 @@ import { chatGPTSignInPath } from './community-policy.js';
 import { createWorldDossier } from './world-dossier.js';
 import { gdacsNoticeSelection, updateGdacsNoticeDossier } from './gdacs-dossier.js';
 import { createWorkspaceFocus } from './workspace-focus.js';
-import { preparationState, preparationLabel } from './preparation-state.js';
+import { preparationState, preparationLabel, layerWorkLabel } from './preparation-state.js';
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -398,6 +398,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
       const entry = state[layer.id] || {};
       const { row, checkbox, status, controls, options, spinner, detailStatus, placeholder } = rows.get(layer.id);
       const { pending, firstLoad } = layerActivity(entry);
+      const workLabel = pending ? layerWorkLabel(entry) : '';
       if (entry.enabled) enabledCount += 1;
       checkbox.checked = Boolean(entry.enabled); row.dataset.enabled = String(Boolean(entry.enabled)); row.dataset.status = entry.status || 'off'; row.dataset.loading = String(pending);
       spinner.hidden = !pending; row.setAttribute('aria-busy', String(pending));
@@ -415,6 +416,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
       const summary = [compact, archived ? '' : observedLabel, archived ? '' : ageLabel, refreshLabel, cached.detail, entry.error, entry.coverage].filter(Boolean).join(' · ');
       status.textContent = entry.enabled && entry.status === 'paused' ? entry.timelinePaused ? 'Live layer paused in History' : 'Paused while this tab is hidden'
         : entry.enabled && entry.status === 'queued' ? 'Queued · waiting for a loading slot'
+        : workLabel ? firstLoad ? workLabel : `${workLabel} · ${count.toLocaleString()} records retained`
         : firstLoad ? `${entry.refreshing ? 'Fetching data' : 'Preparing layer'}…`
         : entry.error ? entry.settledEnabled ? 'Showing retained data · refresh unavailable' : 'Source unavailable · details below' : entry.enabled ? compact : source;
       detailStatus.textContent = firstLoad ? [status.textContent, source, layer.description].join(' · ') : entry.enabled || entry.error ? [summary, layer.description].filter(Boolean).join(' · ') : source;

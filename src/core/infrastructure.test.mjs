@@ -6,12 +6,18 @@ import { createInfrastructureLayer } from './infrastructure.js';
 import { createInfrastructureSource, INFRASTRUCTURE_DATA_URLS, parseGeojsonLines, featurePoint } from '../sources/infrastructureData.js';
 
 function scene() {
-  const sources = new Set(); let cameraMoves = 0;
+  const primitives = new Cesium.PrimitiveCollection(), actions = new Map(); let cameraMoves = 0, picked;
   const viewer = {
-    dataSources: { add: (source) => sources.add(source), remove: (source) => sources.delete(source) },
-    scene: { requestRender() {} }, camera: { flyTo() { cameraMoves++; } }, isDestroyed: () => false,
+    dataSources: new Cesium.DataSourceCollection(), entities: new Cesium.EntityCollection(),
+    scene: { primitives, requestRender() {}, pick: () => picked }, camera: { flyTo() { cameraMoves++; } }, isDestroyed: () => false,
+    screenSpaceEventHandler: { getInputAction: type => actions.get(type), setInputAction: (fn, type) => actions.set(type, fn), removeInputAction: type => actions.delete(type) },
+    get source() { return primitives.length ? primitives.get(primitives.length - 1) : null; },
+    pick(index = 0) {
+      const point = this.source.get(index); picked = { id: point.id, primitive: point };
+      actions.get(Cesium.ScreenSpaceEventType.LEFT_CLICK)?.({ position: new Cesium.Cartesian2() }); return this.selectedEntity;
+    },
   };
-  return { viewer, sources, cameraMoves: () => cameraMoves };
+  return { viewer, primitives, cameraMoves: () => cameraMoves };
 }
 
 test('both bundled inventories render every valid feature as a static point with real metadata and no invented height', async () => {
@@ -25,45 +31,42 @@ test('both bundled inventories render every valid feature as a static point with
     const source = createInfrastructureSource({ fetchImpl: async () => { requests++; return { ok: true, text: async () => text }; } });
     const layer = createInfrastructureLayer({ id, source });
     layer.init(env.viewer); layer.enable();
-    const collection = [...env.sources][0].entities; let notifications = 0;
-    collection.collectionChanged.addEventListener(() => notifications++);
+    assert.equal(env.viewer.source, null);
     assert.equal(await layer.update(env.viewer), true);
     assert.equal(layer.getStats().count, expected);
-    assert.equal(collection.values.length, expected);
-    assert.equal(notifications, 1);
+    const collection = env.viewer.source;
+    assert.equal(collection.length, expected);
+    assert.equal(env.viewer.dataSources.length, 0); assert.equal(env.viewer.entities.values.length, 0, 'Static markers allocate no per-record Entity');
     assert.equal(env.cameraMoves(), 0);
     assert.ok(expected > 0);
     if (id === 'local-datacenters') assert.ok(expected > 1000, 'No former point-count cap may drop most records');
-    for (const entity of collection.values) {
-      const position = entity.position.getValue(Cesium.JulianDate.now());
+    for (let i = 0; i < collection.length; i++) {
+      const point = collection.get(i), position = point.position;
       assert.ok(Math.abs(Cesium.Cartographic.fromCartesian(position).height) < 0.00001);
-      assert.equal(entity.position.isConstant, true);
-      assert.equal(entity.polyline, undefined);
-      assert.equal(entity.polygon, undefined);
-      assert.equal(entity.path, undefined);
-      assert.equal(entity.point.disableDepthTestDistance, undefined);
-      assert.match(entity.properties.credit.getValue(), /OpenStreetMap contributors/);
+      assert.equal(point.disableDepthTestDistance, 0);
     }
-    const approximate = collection.values.find((entity) => entity.properties.positionMeaning.getValue().startsWith('Approximate'));
+    const records = await source.getRecords(id);
+    const approximate = env.viewer.pick(records.findIndex(record => record.approximate));
     assert.ok(approximate);
     assert.match(approximate.properties.positionMeaning.getValue(), /not a surveyed point/);
+    assert.match(approximate.properties.credit.getValue(), /OpenStreetMap contributors/);
+    assert.equal(approximate.position.isConstant, true);
+    assert.equal(approximate.polyline, undefined); assert.equal(approximate.polygon, undefined); assert.equal(approximate.path, undefined);
     if (id === 'local-datacenters') {
-      const aws = collection.values.find((entity) => entity.name === 'AWS');
+      const aws = env.viewer.pick(records.findIndex(record => record.name === 'AWS'));
       assert.equal(aws.properties.operator.getValue(), 'Amazon Web Services');
     } else {
-      const itaipu = collection.values.find((entity) => entity.name === 'Usina Hidrelétrica de Itaipu');
+      const itaipu = env.viewer.pick(records.findIndex(record => record.name === 'Usina Hidrelétrica de Itaipu'));
       assert.equal(itaipu.properties.operator.getValue(), 'Itaipú Binacional');
       assert.equal(itaipu.properties.reportedElectricityOutput.getValue(), '14000 MW');
     }
-    const firstEntity = collection.values[0];
+    const firstPoint = collection.get(0);
     layer.disable(); layer.enable();
-    notifications = 0;
     assert.equal(await layer.update(env.viewer), false);
-    assert.equal(collection.values[0], firstEntity);
-    assert.equal(notifications, 0);
+    assert.equal(env.viewer.source, collection); assert.equal(collection.get(0), firstPoint);
     assert.equal(requests, 1);
     assert.equal(layer.updateInterval, 0);
-    layer.destroy(); assert.equal(env.sources.size, 0);
+    layer.destroy(); assert.equal(env.primitives.length, 0);
   }
 });
 
@@ -85,7 +88,7 @@ test('hidden updates perform no fetch and disabling during body loading publishe
   await reading.promise; layer.disable(); body.resolve(fixture);
   assert.equal(await updating, false);
   assert.equal(layer.getStats().count, 0);
-  assert.equal([...env.sources][0].entities.values.length, 0);
+  assert.equal(env.viewer.source, null);
   layer.enable(); assert.equal(await layer.update(env.viewer), true);
   assert.equal(requests, 2);
   assert.equal(layer.getStats().count, 1);

@@ -3,11 +3,17 @@ import { createLayer as defaultFactory, preloadLayer as defaultPreload, layerSer
 import { createCoreServices } from './services.js';
 import { validateArea } from './local-area.js';
 import { pluginRevision } from './live-updates.js';
+import { sceneWorkFor } from './scene-work.js';
 
 export const STORAGE_KEY = 'earth-observer:layers:v1';
 export const LAYER_ACTIVATION_LIMITS = Object.freeze({ concurrent: 2 });
+export const LAYER_REFRESH_FOLLOWUP_MS = 100;
+const FAIR_AFTER_ADMISSIONS = 4;
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
 const aborted = (error) => error?.name === 'AbortError';
+const editionMetrics = value => value && typeof value === 'object' ? Object.freeze(Object.fromEntries(
+  ['count', 'preparationMs', 'attachmentMs', 'commitMs', 'observerErrors'].filter(key => Number.isFinite(value[key]) && value[key] >= 0)
+    .map(key => [key, Math.min(value[key], Number.MAX_SAFE_INTEGER)]))) : null;
 // These adapters select genuine provider frames against the shared scene
 // time and hide themselves across coverage gaps. Other layers are live-only
 // until a dated source contract exists; current data cannot stand in for it.
@@ -38,11 +44,15 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     meta, requested: false, enabled: false, initialized: false,
     status: 'disabled', error: null, module: null, loading: null,
     queue: Promise.resolve(), revision: 0, controller: new AbortController(), admission: null, activating: false,
-    timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false, preparedDirty: false, preparedRevision: undefined,
+    timer: null, refreshing: false, refreshPromise: null, refreshOwner: null, refreshRevision: null, updateStarted: false,
+    followupTimer: undefined, revalidationOwner: null, workSequence: 0, workState: null,
+    refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false, preparedDirty: false, preparedRevision: undefined,
   }]));
   const listeners = new Set([onStateChange]);
   let servicesPromise, services, destroyed = false, publishQueued = false, timelinePaused = false;
   let admissionTimer, activeAdmissions = 0;
+  let admissionSequence = 0, admittedJobs = 0;
+  const sceneWork = options.sceneWork || sceneWorkFor(viewer, { documentRef });
   const admissions = [], catalogOrder = new Map(catalog.map((meta, index) => [meta.id, index]));
   let localArea = validateArea(options.localArea);
   const historySuspends = (entry) => timelinePaused && !OBSERVED_FRAME_LAYERS.has(entry.meta.id);
@@ -82,6 +92,11 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       mode: stats.mode || null,
       observationDate: stats.observationDate || null,
       coverage: stats.coverage || null,
+      workPhase: entry.followupTimer !== undefined ? 'queued-update' : entry.workState?.workPhase || (entry.status === 'queued' ? 'queued-update' : null),
+      preparedCount: entry.workState?.preparedCount || 0,
+      preparationTotal: entry.workState?.preparationTotal ?? null,
+      workMetrics: entry.workState?.workMetrics || null,
+      editionMetrics: editionMetrics(stats.editionMetrics),
     };
   };
   const getState = () => Object.fromEntries([...entries].map(([id, entry]) => [id, stateEntry(entry)]));
@@ -116,8 +131,45 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     entry.timer = null;
   }
   function restartRequestLifetime(entry) {
+    cancelFollowup(entry); entry.revalidated = false; entry.revalidationOwner = null;
     entry.controller.abort();
     entry.controller = new AbortController();
+  }
+  function cancelFollowup(entry) {
+    if (entry.followupTimer !== undefined) cancelAdmissionTimer(entry.followupTimer);
+    entry.followupTimer = undefined;
+  }
+  const allowed = entry => !destroyed && !historySuspends(entry) && entry.requested && entry.enabled && !documentRef?.hidden;
+  function latestRefresh(entry) {
+    // A queued same-owner read already absorbs the latest cache/source intent.
+    if (entry.refreshing && !entry.updateStarted && entry.refreshOwner === entry.controller && entry.refreshRevision === entry.revision) return;
+    entry.revalidated = true; entry.revalidationOwner = { revision: entry.revision, controller: entry.controller };
+  }
+  function followup(id, entry) {
+    if (!entry.revalidated || entry.followupTimer !== undefined || !allowed(entry)) return;
+    const owner = entry.revalidationOwner;
+    if (!owner || owner.revision !== entry.revision || owner.controller !== entry.controller) { entry.revalidated = false; return; }
+    entry.revalidated = false; entry.revalidationOwner = null;
+    entry.followupTimer = scheduleAdmission(() => {
+      entry.followupTimer = undefined;
+      if (allowed(entry) && owner.revision === entry.revision && owner.controller === entry.controller) void refresh(id);
+      publish();
+    }, LAYER_REFRESH_FOLLOWUP_MS);
+    publish();
+  }
+  function ownedWork(entry, revision, owner) {
+    const sequence = ++entry.workSequence; let sourceEdition;
+    const scope = sceneWork.scope({ key: `${entry.meta.id}:${sequence}`, signal: owner.signal,
+      isCurrent: () => !destroyed && revision === entry.revision && owner === entry.controller && entry.requested &&
+        !historySuspends(entry) && !documentRef?.hidden && (!sourceEdition || entry.preparedRevision?.fence === sourceEdition.fence),
+      onChange(state) { if (!destroyed && sequence === entry.workSequence && revision === entry.revision) { entry.workState = state; publish(); } },
+    });
+    entry.workState = scope.getState();
+    return { scope, owner, bindSource() { sourceEdition = entry.preparedRevision; } };
+  }
+  function completedWorkOutcome(entry) {
+    let stats = {}; try { stats = entry.module?.getStats?.() || {}; } catch { /* No reported error. */ }
+    return entry.error || stats.error || stats.lastError ? 'error' : 'complete';
   }
   function updateActiveServices() {
     services?.setActiveServices?.([...new Set([...entries].flatMap(([id, entry]) => !historySuspends(entry) && entry.requested && (entry.enabled || entry.activating) ? requiredServices(id) : []))]);
@@ -137,21 +189,26 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     admissionTimer = scheduleAdmission(() => {
       admissionTimer = undefined;
       if (destroyed || !admissions.length || activeAdmissions >= LAYER_ACTIVATION_LIMITS.concurrent) return;
-      admissions.sort((a, b) => admissionPriority(a.entry) - admissionPriority(b.entry));
+      admissions.sort((a, b) => {
+        const oldA = admittedJobs - a.queuedAfter >= FAIR_AFTER_ADMISSIONS, oldB = admittedJobs - b.queuedAfter >= FAIR_AFTER_ADMISSIONS;
+        return oldA || oldB ? Number(oldB) - Number(oldA) || a.sequence - b.sequence : admissionPriority(a.entry) - admissionPriority(b.entry) || a.sequence - b.sequence;
+      });
       const job = admissions.shift(), entry = job.entry;
       entry.admission = null;
-      if (job.revision !== entry.revision || !entry.requested || historySuspends(entry) || documentRef?.hidden) job.resolve(null);
+      if (job.revision !== entry.revision || job.owner !== entry.controller || !entry.requested || historySuspends(entry) || documentRef?.hidden) job.resolve(null);
       else {
+        admittedJobs++;
         activeAdmissions++; let released = false;
         job.resolve(() => { if (released) return; released = true; activeAdmissions--; armAdmissions(); });
       }
       armAdmissions();
     }, 0);
   }
-  function admitActivation(entry, revision) {
+  function admitWork(entry, revision, kind = 'activation') {
     if (destroyed || revision !== entry.revision || !entry.requested || historySuspends(entry) || documentRef?.hidden) return Promise.resolve(null);
-    entry.status = 'queued'; publish();
-    return new Promise(resolve => { const job = { entry, revision, resolve }; entry.admission = job; admissions.push(job); armAdmissions(); });
+    if (kind === 'activation') entry.status = 'queued'; publish();
+    return new Promise(resolve => { const job = { entry, revision, owner: entry.controller, resolve,
+      sequence: ++admissionSequence, queuedAfter: admittedJobs }; entry.admission = job; admissions.push(job); armAdmissions(); });
   }
   async function prepareServices(id) {
     const names = requiredServices(id);
@@ -202,34 +259,48 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     })().finally(() => { entry.loading = null; });
     return entry.loading;
   }
-  async function refresh(id) {
+  async function refresh(id, { activationWork } = {}) {
     const entry = requireEntry(id);
-    if (historySuspends(entry) || !entry.enabled || !entry.requested || entry.refreshing || documentRef?.hidden || destroyed) return false;
+    if (!allowed(entry)) return false;
+    if (entry.refreshing) { latestRefresh(entry); return false; }
+    cancelFollowup(entry);
     entry.refreshing = true;
-    const owner = entry.controller;
+    const owner = entry.controller, revision = entry.revision, module = entry.module;
+    entry.refreshOwner = owner; entry.refreshRevision = revision;
+    const work = activationWork || ownedWork(entry, revision, owner);
     publish();
-    try {
-      if (entry.preparedDirty) {
-        entry.preparedDirty = false;
-        entry.module.invalidatePreparedSnapshot?.(entry.preparedRevision);
+    const operation = (async () => {
+      let release, outcome = 'cancelled';
+      try {
+        // Initial update reuses its activation's physical permit. Recurring
+        // reads join the same pool instead of multiplying startup concurrency.
+        if (!activationWork) { release = await admitWork(entry, revision, 'refresh'); if (!release) return false; }
+        if (!allowed(entry) || owner !== entry.controller || revision !== entry.revision || module !== entry.module) return false;
+        work.bindSource(); work.scope.setPhase('acquiring'); entry.updateStarted = true;
+        if (entry.preparedDirty) {
+          entry.preparedDirty = false;
+          module.invalidatePreparedSnapshot?.(entry.preparedRevision);
+        }
+        const updated = await module.update?.(viewer, { signal: owner.signal, work: work.scope });
+        work.scope.assertCurrent();
+        entry.error = null;
+        if (updated !== false) entry.refreshedAt = Date.now();
+        outcome = completedWorkOutcome(entry);
+        return updated !== false;
+      } catch (error) {
+        outcome = aborted(error) || owner.signal.aborted ? 'cancelled' : 'error';
+        if (!aborted(error) && !owner.signal.aborted && owner === entry.controller && revision === entry.revision) entry.error = error.message || 'Source unavailable';
+        return false;
+      } finally {
+        entry.refreshing = false; entry.updateStarted = false;
+        if (!activationWork) work.scope.finish(outcome);
+        release?.();
+        if (!owner.signal.aborted) viewer.scene?.requestRender?.();
+        publish(); followup(id, entry);
       }
-      const updated = await entry.module.update?.(viewer, { signal: owner.signal });
-      if (owner.signal.aborted) return false;
-      entry.error = null;
-      if (updated !== false) entry.refreshedAt = Date.now();
-      return updated !== false;
-    } catch (error) {
-      if (!aborted(error) && !owner.signal.aborted) entry.error = error.message || 'Source unavailable';
-      return false;
-    } finally {
-      entry.refreshing = false;
-      if (!owner.signal.aborted) viewer.scene?.requestRender?.();
-      publish();
-      if (entry.revalidated && !destroyed && !historySuspends(entry) && entry.requested && !documentRef?.hidden) {
-        entry.revalidated = false;
-        queueMicrotask(() => { void refresh(id); });
-      }
-    }
+    })();
+    entry.refreshPromise = operation;
+    try { return await operation; } finally { if (entry.refreshPromise === operation) entry.refreshPromise = null; }
   }
   function armTimer(id, entry) {
     stopTimer(entry);
@@ -247,36 +318,43 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       viewer.scene?.requestRender?.(); publish(); return true;
     }
     if (documentRef?.hidden) { entry.status = 'paused'; publish(); return false; }
-    const release = await admitActivation(entry, revision);
-    if (!release) return false;
-    if (destroyed || revision !== entry.revision || !entry.requested || historySuspends(entry) || documentRef?.hidden) { release(); return false; }
+    const work = ownedWork(entry, revision, entry.controller);
+    const release = await admitWork(entry, revision);
+    if (!release) { work.scope.finish('cancelled'); return false; }
+    if (destroyed || revision !== entry.revision || !entry.requested || historySuspends(entry) || documentRef?.hidden) { work.scope.finish('cancelled'); release(); return false; }
     entry.activating = true;
     entry.status = 'loading'; entry.error = null; publish();
+    let outcome = 'cancelled';
     try {
+      work.scope.setPhase('acquiring');
       updateActiveServices();
       const module = await ensureModule(id);
       if (destroyed || revision !== entry.revision) return false;
+      work.scope.assertCurrent();
       if (!entry.initialized) {
         // Mark before init: a partial initialization must also be cleaned up.
         entry.initialized = true;
-        if ((await module.init?.(viewer, { signal: entry.controller.signal })) === false) throw new Error('Layer initialization failed');
+        if ((await module.init?.(viewer, { signal: work.owner.signal, work: work.scope })) === false) throw new Error('Layer initialization failed');
       }
       if (destroyed || revision !== entry.revision) return false;
+      work.scope.assertCurrent();
       module.setParams?.(entry.params, { origin: 'user' });
-      if ((await module.enable?.(viewer, { signal: entry.controller.signal })) === false) throw new Error('Layer activation failed');
+      if ((await module.enable?.(viewer, { signal: work.owner.signal, work: work.scope })) === false) throw new Error('Layer activation failed');
       if (destroyed || revision !== entry.revision) { await module.disable?.(viewer); return false; }
       entry.enabled = true; entry.status = 'ready';
-      if (entry.refreshing) entry.revalidated = true;
-      const refreshed = await refresh(id);
+      if (entry.refreshing) latestRefresh(entry);
+      const refreshed = await refresh(id, { activationWork: work });
       if (revision !== entry.revision) return false;
       if (!refreshed) {
         let stats = {}; try { stats = module.getStats?.() || {}; } catch { /* No retained display proof. */ }
         const failure = entry.error || stats.error || stats.lastError;
         if (failure && !(Number(stats.count) > 0 || stats.lastUpdate != null)) throw new Error(String(failure));
       }
+      outcome = completedWorkOutcome(entry);
       armTimer(id, entry); viewer.scene?.requestRender?.(); publish(); return true;
     } catch (error) {
       stopTimer(entry);
+      outcome = aborted(error) ? 'cancelled' : 'error';
       try { await entry.module?.disable?.(viewer); } catch { /* destroy is the next recovery boundary */ }
       if (revision !== entry.revision || destroyed) return false;
       if (aborted(error) && documentRef?.hidden) {
@@ -289,7 +367,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       entry.status = aborted(error) ? 'disabled' : 'error';
       entry.error = aborted(error) ? null : error.message || 'Layer could not start';
       persist(); publish(); return false;
-    } finally { entry.activating = false; release(); updateActiveServices(); publish(); }
+    } finally { work.scope.finish(outcome); entry.activating = false; release(); updateActiveServices(); publish(); }
   }
   function setEnabled(id, enabled) {
     const entry = requireEntry(id);
@@ -299,6 +377,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     entry.requested = next;
     cancelAdmission(entry); updateActiveServices();
     const revision = ++entry.revision;
+    entry.workState = null;
     stopTimer(entry); restartRequestLifetime(entry);
     entry.module?.cancelPendingRestore?.({ origin: 'user', reason: 'visibility changed' });
     entry.module?.cancelPendingTrackingRestore?.({ origin: 'user', reason: 'visibility changed' });
@@ -316,6 +395,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     for (const [id, entry] of entries) {
       cancelAdmission(entry);
       const revision = ++entry.revision;
+      entry.workState = null;
       stopTimer(entry); restartRequestLifetime(entry); entry.revalidated = false;
       // This transition preserves requested intent and never writes preferences.
       if (entry.requested) entry.status = historySuspends(entry) || documentRef?.hidden ? 'paused' : 'queued';
@@ -356,12 +436,16 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     updateActiveServices();
     for (const [id, entry] of entries) {
       stopTimer(entry);
-      if (documentRef?.hidden) { cancelAdmission(entry); if (entry.requested && !entry.enabled) entry.status = 'paused'; }
+      cancelFollowup(entry); entry.revalidated = false; entry.revalidationOwner = null;
+      if (documentRef?.hidden) {
+        cancelAdmission(entry);
+        if (entry.requested && !entry.enabled) entry.status = 'paused';
+      }
       entry.controller.abort();
       if (!documentRef?.hidden) entry.controller = new AbortController();
       if (!historySuspends(entry) && !documentRef?.hidden && entry.enabled) {
         armTimer(id, entry);
-        if (entry.refreshing) entry.revalidated = true;
+        if (entry.refreshing) latestRefresh(entry);
         else void refresh(id);
       }
       else if (!historySuspends(entry) && !documentRef?.hidden && entry.requested) void setEnabled(id, true);
@@ -373,7 +457,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     if (destroyed || documentRef?.hidden) return;
     for (const [id, entry] of entries) {
       if (historySuspends(entry) || !entry.requested || !entry.urls.has(url)) continue;
-      if (entry.refreshing) entry.revalidated = true;
+      if (entry.refreshing) latestRefresh(entry);
       else void refresh(id);
     }
   });
@@ -383,9 +467,10 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     if (admissionTimer !== undefined) cancelAdmissionTimer(admissionTimer); admissionTimer = undefined;
     unsubscribeCache?.();
     documentRef?.removeEventListener?.('visibilitychange', visibilityChanged);
-    for (const entry of entries.values()) { ++entry.revision; cancelAdmission(entry); stopTimer(entry); entry.controller.abort(); entry.status = 'disabled'; }
+    sceneWork.destroy();
+    for (const entry of entries.values()) { ++entry.revision; cancelAdmission(entry); cancelFollowup(entry); stopTimer(entry); entry.controller.abort(); entry.status = 'disabled'; }
     for (const entry of entries.values()) {
-      await Promise.allSettled([entry.queue, entry.loading].filter(Boolean));
+      await Promise.allSettled([entry.queue, entry.loading, entry.refreshPromise].filter(Boolean));
       try { await entry.module?.destroy?.(viewer); } catch (error) { console.error(error); }
       entry.module?.setRowControlsListener?.(null);
       entry.module = null;
@@ -395,6 +480,8 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
 
   const manager = {
     viewer, getState, setEnabled, restore, destroy, refresh, preload, setTimelineMode,
+    getWorkState: () => Object.freeze({ activeUpdates: activeAdmissions, queuedUpdates: admissions.length,
+      limit: LAYER_ACTIVATION_LIMITS.concurrent, preparation: sceneWork.getState() }),
     requestRefresh(id, revision) {
       const entry = requireEntry(id);
       if (destroyed) return false;
@@ -410,7 +497,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       // disabled layers. The next permitted update must bypass an older HIT.
       entry.preparedDirty = true;
       if (historySuspends(entry) || documentRef?.hidden || !entry.requested || !entry.enabled) return false;
-      if (entry.refreshing) entry.revalidated = true;
+      if (entry.refreshing) latestRefresh(entry);
       else void refresh(id);
       return true;
     },
@@ -424,7 +511,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
         if (entry.enabled) restartRequestLifetime(entry);
         entry.module?.setLocalArea?.(localArea);
         if (entry.enabled) {
-          if (entry.refreshing) entry.revalidated = true;
+          if (entry.refreshing) latestRefresh(entry);
           else void refresh(id);
         }
       }

@@ -46,6 +46,7 @@ export function createWindLayer({
   let enabled = false;
   let rendering = null;
   let imageryHost = null;
+  let manager = null;
   let manifest = null;
   let error = null;
   let loading = false;
@@ -118,6 +119,9 @@ export function createWindLayer({
           ? services.imageryHost
           : null;
       rendering?.rehome?.();
+    },
+    attachDataManager(nextManager) {
+      manager = typeof nextManager?.requestRefresh === 'function' ? nextManager : null;
     },
     enable() {
       enabled = true;
@@ -224,7 +228,11 @@ export function createWindLayer({
         loading = enabled && needsField;
         if (enabled && needsField)
           queueMicrotask(() => {
-            if (enabled && generation === current) void layer.update(viewer);
+            if (!enabled || generation !== current) return;
+            // Source intent joins the same admission/coalescing owner as polls.
+            // Independent engines retain their explicit standalone lifecycle.
+            if (manager) manager.requestRefresh(layer.id);
+            else void layer.update(viewer);
           });
         else if (enabled && manifest && !manifest.unavailable)
           rendering?.start();
@@ -402,6 +410,7 @@ export function createWindLayer({
       rowControlsListener = typeof listener === 'function' ? listener : null;
     },
     destroy() {
+      manager = null;
       layer.disable();
       unsubscribeClock?.();
       rendering?.destroy();

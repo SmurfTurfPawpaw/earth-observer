@@ -1,11 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as Cesium from 'cesium';
 import { createCamerasLayer } from './cctv.js';
 
 function globe() {
-  let dataSource;
-  return { dataSources: { add(value) { dataSource = value; }, remove() { dataSource = null; } }, scene: { requestRender() {} },
-    isDestroyed: () => false, get source() { return dataSource; } };
+  const primitives = new Cesium.PrimitiveCollection(), actions = new Map(); let picked;
+  const viewer = { dataSources: new Cesium.DataSourceCollection(), entities: new Cesium.EntityCollection(),
+    scene: { primitives, requestRender() {}, pick: () => picked }, isDestroyed: () => false,
+    screenSpaceEventHandler: { getInputAction: type => actions.get(type), setInputAction: (fn, type) => actions.set(type, fn), removeInputAction: type => actions.delete(type) },
+    get source() { return primitives.length ? primitives.get(primitives.length - 1) : null; },
+    pick(index = 0) {
+      const point = this.source.get(index); picked = { id: point.id, primitive: point };
+      actions.get(Cesium.ScreenSpaceEventType.LEFT_CLICK)?.({ position: new Cesium.Cartesian2() }); return this.selectedEntity;
+    } };
+  return viewer;
 }
 const camera = { id: 'calgary-86', name: 'Fixture intersection', lat: 51.046, lon: -114.063, credit: 'City of Calgary' };
 
@@ -40,7 +48,7 @@ test('disabling or changing a camera area aborts and refuses a late response', a
     layer.init(viewer); layer.enable();
     const pending = layer.update(viewer); cancel(layer); assert.equal(signal.aborted, true);
     resolve(Response.json({ sources: [camera] }));
-    assert.equal(await pending, false); assert.equal(layer.getStats().count, 0); assert.equal(viewer.source.entities.values.length, 0);
+    assert.equal(await pending, false); assert.equal(layer.getStats().count, 0); assert.equal(viewer.source, null);
     layer.destroy();
   }
 });
@@ -64,15 +72,15 @@ test('changing area immediately removes the prior scope and a failed replacement
       coverage: { status: 'ready', note: 'Reviewed Calgary cameras within 10 km.' } });
   } });
   layer.init(viewer); layer.setLocalArea({ lat: 51.046, lon: -114.063, radiusKm: 10 }); layer.enable();
-  await layer.update(viewer); viewer.selectedEntity = viewer.source.entities.values[0];
+  await layer.update(viewer); viewer.pick();
   assert.equal(layer.getStats().count, 1);
   layer.setLocalArea({ lat: 50.85, lon: 4.351, radiusKm: 10 });
-  assert.equal(viewer.source.entities.values.length, 0); assert.equal(viewer.selectedEntity, undefined);
+  assert.equal(viewer.source, null); assert.equal(viewer.selectedEntity, undefined);
   assert.equal(layer.getStats().count, 0); assert.equal(layer.getStats().coverage, null);
   assert.equal(layer.getStats().status, null); assert.equal(layer.getStats().lastUpdate, null);
   assert.equal(layer.getStats().sourceAgeMs, null); assert.doesNotMatch(layer.getRowControls().info, /Calgary/);
   fail = true; assert.equal(await layer.update(viewer), false);
-  assert.equal(viewer.source.entities.values.length, 0); assert.equal(layer.getStats().count, 0);
+  assert.equal(viewer.source, null); assert.equal(layer.getStats().count, 0);
   assert.equal(layer.getStats().status, 'unavailable'); assert.equal(layer.getStats().stale, false);
   assert.match(layer.getStats().error, /Synthetic offline/); assert.doesNotMatch(layer.getRowControls().info, /Calgary/);
   layer.destroy();
@@ -92,9 +100,26 @@ test('a failed same-area refresh retains records with stale state and the origin
   assert.equal(layer.getStats().sourceAgeMs, 30_000);
   fail = true; clock += 60_000; assert.equal(await layer.update(viewer), false);
   const stats = layer.getStats();
-  assert.equal(viewer.source.entities.values.length, 1); assert.equal(stats.count, 1);
+  assert.equal(viewer.source.length, 1); assert.equal(stats.count, 1);
   assert.equal(stats.lastUpdate, updatedAt); assert.equal(stats.sourceAgeMs, 90_000);
   assert.equal(stats.status, 'stale'); assert.equal(stats.stale, true); assert.equal(stats.degraded, true);
   assert.match(layer.getRowControls().info, /earlier reviewed camera records/); assert.match(layer.getRowControls().info, /City of Calgary/);
   layer.destroy();
+});
+
+test('same-scope camera replacement remaps selected/tracked records with corrected attribution and source age', async (t) => {
+  const viewer = globe(); let time = Date.parse('2026-10-12T08:00:00Z'), credit = 'First source credit';
+  t.mock.method(Date, 'now', () => time);
+  const layer = createCamerasLayer({ fetchImpl: async () => Response.json({ sources: [{ ...camera, credit }],
+    providers: [{ retrievedAt: new Date(time - 30_000).toISOString() }] }) });
+  layer.init(viewer); layer.enable(); assert.equal(await layer.update(viewer), true);
+  assert.equal(viewer.entities.values.length, 0); assert.equal(viewer.dataSources.length, 0);
+  const selected = viewer.pick(); assert.ok(selected); viewer.trackedEntity = selected;
+  time += 60_000; credit = 'Corrected source credit'; assert.equal(await layer.update(viewer), true);
+  assert.equal(viewer.selectedEntity.id, selected.id);
+  assert.equal(viewer.trackedEntity, viewer.selectedEntity);
+  assert.equal(viewer.selectedEntity.properties.credit.getValue(), credit);
+  assert.match(layer.getRowControls().info, /Corrected source credit/);
+  assert.equal(layer.getStats().sourceAgeMs, 30_000); assert.equal(viewer.scene.primitives.length, 1);
+  assert.equal(viewer.entities.values.length, 0); assert.equal(viewer.dataSources.length, 0); layer.destroy();
 });

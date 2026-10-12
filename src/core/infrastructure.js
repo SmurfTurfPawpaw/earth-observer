@@ -1,5 +1,5 @@
 import * as Cesium from 'cesium';
-import { stageEntities, replaceEntities } from './entity-batches.js';
+import { createStagedPointEdition } from './point-editions.js';
 import { inLocalArea, validateArea } from './local-area.js';
 
 /** Static mapped locations; outline geometries become explicitly approximate points. */
@@ -10,39 +10,45 @@ export function createInfrastructureLayer({ id, source, documentRef = globalThis
   const sourceName = dams ? 'Open Infrastructure Map / OpenStreetMap' : 'OpenStreetMap';
   const credit = `${dams ? 'Open Infrastructure Map · ' : ''}© OpenStreetMap contributors · ODbL`;
   const coverage = 'Bundled mapped locations; completeness varies. Outline features use an approximate representative point.';
-  let viewer, dataSource, request, onChange;
+  let viewer, edition, request, onChange;
   let localArea;
   let enabled = false, loaded = false, count = 0, approximateCount = 0, lastUpdate = null, error = null;
   return {
     id, updateInterval: 0,
-    setLocalArea(value) { const next = validateArea(value); if (JSON.stringify(next) !== JSON.stringify(localArea)) { localArea = next; loaded = false; } },
+    setLocalArea(value) {
+      const next = validateArea(value);
+      if (JSON.stringify(next) === JSON.stringify(localArea)) return;
+      request?.abort(); request = null; localArea = next; loaded = false;
+      edition?.clear(); count = 0; approximateCount = 0; lastUpdate = null; error = null;
+    },
     init(nextViewer) {
       viewer = nextViewer;
-      dataSource = new Cesium.CustomDataSource(id); dataSource.show = false;
-      viewer.dataSources.add(dataSource);
+      edition = createStagedPointEdition({ viewer, name: id });
     },
-    enable() { enabled = true; dataSource.show = true; },
+    enable() { enabled = true; edition.setVisible(true); },
     disable() {
       enabled = false; request?.abort(); request = null;
-      if (dataSource) dataSource.show = false;
-      if (String(viewer?.selectedEntity?.id || '').startsWith(`${id}:`)) viewer.selectedEntity = undefined;
+      edition?.setVisible(false);
     },
-    async update(_viewer, { signal } = {}) {
+    async update(_viewer, { signal, work } = {}) {
       if (!enabled || documentRef?.hidden || signal?.aborted) return false;
       if (loaded) return false; // The bundled dataset and existing entity set are immutable.
       request?.abort();
       const controller = new AbortController(); request = controller;
       const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+      const area = localArea;
       try {
         const records = await source.getRecords(id, { signal: combined });
         combined.throwIfAborted();
         if (!Array.isArray(records)) throw new Error('Infrastructure records are invalid');
-        const valid = records.filter((record) => Number.isFinite(record.lat) && Number.isFinite(record.lon) && Math.abs(record.lat) <= 90 && Math.abs(record.lon) <= 180 && inLocalArea(record.lat, record.lon, localArea));
         const identities = new Map();
-        const entities = await stageEntities(valid, (record) => {
+        let nextApproximateCount = 0;
+        const published = await edition.stage(records, (record) => {
+          if (!Number.isFinite(record.lat) || !Number.isFinite(record.lon) || Math.abs(record.lat) > 90 || Math.abs(record.lon) > 180 || !inLocalArea(record.lat, record.lon, area)) return null;
           const key = String(record.id);
           const ordinal = identities.get(key) || 0; identities.set(key, ordinal + 1);
-          return new Cesium.Entity({
+          if (record.approximate) ++nextApproximateCount;
+          return {
             id: `${id}:${key}${ordinal ? `:part-${ordinal}` : ''}`,
             name: record.name || `${title} ${key}`,
             position: Cesium.Cartesian3.fromDegrees(record.lon, record.lat, 0),
@@ -59,27 +65,29 @@ export function createInfrastructureLayer({ id, source, documentRef = globalThis
               dataMode: 'Bundled location dataset; mapping date and completeness vary',
               source: sourceName, sourceUrl: 'https://www.openstreetmap.org/copyright', credit,
             },
-          });
-        }, combined);
-        combined.throwIfAborted();
-        if (!enabled || documentRef?.hidden || request !== controller) return false;
-        replaceEntities(dataSource.entities, entities);
-        loaded = true; count = entities.length; approximateCount = valid.filter((record) => record.approximate).length;
-        lastUpdate = Date.now(); error = null;
-        viewer.scene.requestRender(); onChange?.(); return true;
+          };
+        }, { signal: combined, work,
+          isCurrent: () => enabled && !documentRef?.hidden && request === controller && area === localArea,
+          commit(next) {
+            loaded = true; count = next.count; approximateCount = nextApproximateCount;
+            lastUpdate = Date.now(); error = null;
+          },
+        });
+        if (published) onChange?.(); return published;
       } catch (failure) {
-        if (combined.aborted || !enabled || documentRef?.hidden) return false;
+        if (combined.aborted || !enabled || documentRef?.hidden || request !== controller || area !== localArea) return false;
         error = failure.message || 'Infrastructure locations unavailable'; onChange?.(); return false;
       } finally { if (request === controller) request = null; }
     },
-    getStats: () => ({ count, lastUpdate, mode: 'bundled', coverage, source: sourceName, error }),
+    getStats: () => ({ count, lastUpdate, mode: 'bundled', coverage, source: sourceName, error,
+      editionMetrics: edition?.getMetrics() || null }),
     getRowControls: () => ({ info: `${coverage}${loaded ? ` ${approximateCount.toLocaleString()} approximate points.` : ''} Select a point for available source details.` }),
     setRowControlsListener(listener) { onChange = listener; },
     getParams: () => ({}),
     destroy() {
       enabled = false; request?.abort(); request = null; onChange = null;
-      if (dataSource && viewer && !viewer.isDestroyed()) viewer.dataSources.remove(dataSource, true);
-      viewer = null; dataSource = null; loaded = false; count = 0; approximateCount = 0;
+      edition?.destroy(); edition = null;
+      viewer = null; loaded = false; count = 0; approximateCount = 0;
     },
   };
 }

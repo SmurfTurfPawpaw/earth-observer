@@ -1,10 +1,10 @@
-import { stageEntities, replaceEntities } from './entity-batches.js';
+import { createStagedPointEdition } from './point-editions.js';
 import * as Cesium from 'cesium';
 import { inLocalArea, validateArea } from './local-area.js';
 
 /** Approved still-image cameras represented by selectable points, without video/projection machinery. */
-export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args) } = {}) {
-  let viewer, dataSource, request;
+export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args), documentRef = globalThis.document } = {}) {
+  let viewer, edition, request;
   let localArea;
   let enabled = false, count = 0, lastUpdate = null, error = null, attributions = [];
   let coverage = null, stale = false, degraded = false, retrievedAt = null, status = null;
@@ -18,26 +18,22 @@ export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args) } =
       localArea = next;
       // A last-good catalog belongs to its original scope. It cannot describe
       // the new area while a replacement is loading or unavailable.
-      if (dataSource) replaceEntities(dataSource.entities, []);
-      if (viewer?.selectedEntity?.properties?.cameraId) viewer.selectedEntity = undefined;
+      edition?.clear();
       count = 0; lastUpdate = null; error = null; attributions = [];
       coverage = null; stale = false; degraded = false; retrievedAt = null; status = null;
       viewer?.scene?.requestRender();
     },
     init(nextViewer) {
       viewer = nextViewer;
-      dataSource = new Cesium.CustomDataSource('public-cameras');
-      dataSource.show = false;
-      viewer.dataSources.add(dataSource);
+      edition = createStagedPointEdition({ viewer, name: 'public-cameras' });
     },
-    enable() { enabled = true; dataSource.show = true; },
+    enable() { enabled = true; edition.setVisible(true); },
     disable() {
       enabled = false; request?.abort(); request = null;
-      if (dataSource) dataSource.show = false;
-      if (viewer?.selectedEntity?.properties?.cameraId) viewer.selectedEntity = undefined;
+      edition?.setVisible(false);
     },
-    async update(_viewer, { signal } = {}) {
-      if (!enabled) return false;
+    async update(_viewer, { signal, work } = {}) {
+      if (!enabled || documentRef?.hidden || signal?.aborted) return false;
       request?.abort();
       const controller = new AbortController(); request = controller;
       const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
@@ -51,14 +47,18 @@ export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args) } =
         combined.throwIfAborted();
         if (!enabled || request !== controller) return false;
         const seen = new Set();
-        const valid = [];
-        for (const camera of payload.sources.slice(0, 4000)) {
-          if (!camera.id || seen.has(camera.id) || !Number.isFinite(camera.lat) || !Number.isFinite(camera.lon) || Math.abs(camera.lat) > 90 || Math.abs(camera.lon) > 180) continue;
+        const credits = new Set(), nextAttributions = [];
+        const nextStatus = payload.coverage?.status || null;
+        const nextCoverage = typeof payload.coverage?.note === 'string' ? payload.coverage.note : null;
+        const times = (Array.isArray(payload.providers) ? payload.providers : []).map(provider => Date.parse(provider.retrievedAt)).filter(Number.isFinite);
+        const nextRetrievedAt = times.length ? Math.min(...times) : null;
+        return await edition.stage(payload.sources.slice(0, 4000), camera => {
+          if (!camera.id || seen.has(camera.id) || !Number.isFinite(camera.lat) || !Number.isFinite(camera.lon) || Math.abs(camera.lat) > 90 || Math.abs(camera.lon) > 180) return null;
           seen.add(camera.id);
-          if (!inLocalArea(camera.lat, camera.lon, area)) continue;
-          valid.push(camera);
-        }
-        const entities = await stageEntities(valid, (camera) => new Cesium.Entity({
+          if (!inLocalArea(camera.lat, camera.lon, area)) return null;
+          const credit = camera.credit || camera.license;
+          if (credit && !credits.has(credit)) { credits.add(credit); nextAttributions.push(credit); }
+          return {
             id: `camera:${camera.id}`,
             name: String(camera.name || camera.id),
             position: Cesium.Cartesian3.fromDegrees(camera.lon, camera.lat, 10),
@@ -77,22 +77,18 @@ export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args) } =
               credit: String(camera.credit || ''),
               media: 'Latest available still image',
             },
-          }), combined);
-        if (!enabled || request !== controller) return false;
-        replaceEntities(dataSource.entities, entities);
-        count = entities.length; lastUpdate = Date.now();
-        status = payload.coverage?.status || null;
-        error = status === 'unavailable' ? 'Camera catalogs are unavailable for this area' : null;
-        coverage = typeof payload.coverage?.note === 'string' ? payload.coverage.note : null;
-        stale = payload.stale === true;
-        degraded = payload.degraded === true;
-        const times = (Array.isArray(payload.providers) ? payload.providers : []).map((provider) => Date.parse(provider.retrievedAt)).filter(Number.isFinite);
-        retrievedAt = times.length ? Math.min(...times) : null;
-        attributions = [...new Set(valid.map((camera) => camera.credit || camera.license).filter(Boolean))];
-        viewer.scene.requestRender();
-        return true;
+          };
+        }, { signal: combined, work,
+          isCurrent: () => enabled && !documentRef?.hidden && request === controller && area === localArea,
+          commit(next) {
+            count = next.count; lastUpdate = Date.now(); status = nextStatus;
+            error = status === 'unavailable' ? 'Camera catalogs are unavailable for this area' : null;
+            coverage = nextCoverage; stale = payload.stale === true; degraded = payload.degraded === true;
+            retrievedAt = nextRetrievedAt; attributions = nextAttributions;
+          },
+        });
       } catch (failure) {
-        if (combined.aborted) return false;
+        if (combined.aborted || !enabled || documentRef?.hidden || request !== controller || area !== localArea) return false;
         error = failure.message || 'Camera catalog unavailable';
         stale = count > 0; degraded = true;
         status = stale ? 'stale' : 'unavailable';
@@ -104,12 +100,12 @@ export function createCamerasLayer({ fetchImpl = (...args) => fetch(...args) } =
         return false;
       } finally { if (request === controller) request = null; }
     },
-    getStats: () => ({ count, lastUpdate, error, coverage, stale, degraded, status, sourceAgeMs: retrievedAt === null ? null : Math.max(0, Date.now() - retrievedAt) }),
+    getStats: () => ({ count, lastUpdate, error, coverage, stale, degraded, status,
+      sourceAgeMs: retrievedAt === null ? null : Math.max(0, Date.now() - retrievedAt), editionMetrics: edition?.getMetrics() || null }),
     getRowControls: () => ({ info: `${coverage ? coverage + ' ' : ''}Select a camera point to open its latest still image.${attributions.length ? ` Sources: ${attributions.join(' · ')}.` : ''}` }),
     destroy() {
       enabled = false; request?.abort(); request = null;
-      if (dataSource && viewer && !viewer.isDestroyed()) viewer.dataSources.remove(dataSource, true);
-      dataSource = null; viewer = null; count = 0;
+      edition?.destroy(); edition = null; viewer = null; count = 0;
     },
   };
 }

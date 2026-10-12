@@ -1,5 +1,27 @@
 # Nine-hour foundation checkpoint
 
+## Latest checkpoint: 12 October 2026, 09:41 UTC
+
+Production remains Site version48; version49 containing satellite render ownership
+is saved but unpublished. The integrated shared scene coordinator, batched static
+point renderer, truthful work phases and manager-owned wind/weather acquisition
+passed99 changed-path checks. The local native 7,000-record diagnostic accepted
+primitive cohorts in211.8ms versus666.8ms for Entity staging, with scope/size/GPU
+limits recorded in SCENE_WORK_FOUNDATION.md. This package is being prepared for
+publication; neither a whole-app speed claim nor native black-screen acceptance is
+implied. Optional retention-audit working files remain excluded.
+
+Cloud-only minute collector execution is now proven for its four admitted sources:
+after the laptop stopped at07:31:08Z, a scheduled run stored new factual collection
+at07:40:02.282Z. The latest observed08:20:01.170Z heartbeat retained08:16:10.981Z
+facts; heartbeat time is not a new observation. Separate Node/Python producers and
+jitter-aware admission remain open. Earlier cloud-failure statements below are
+superseded by these verified checkpoints.
+
+User steering now prioritizes central prepared editions and cached regional
+delivery; keep the existing bounded revision stream while removing repeated
+visitor processing. The complete historical/current/future platform remains open.
+
 As of06:42 UTC (08:42 Brussels),12October2026. The full platform objective is
 unfinished. The latest facts below supersede the earlier checkpoint retained here.
 

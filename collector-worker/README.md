@@ -150,6 +150,24 @@ on the ignored artifact being present.
    actual Cron executions, CPU and advancing hosted receipts before declaring
    autonomous collection ready.
 
+### Observed deployment checkpoint, 12 October 2026
+
+The reviewed runtime artifact is deployed as version
+`22c68258-0b06-49da-a649-1ed5bce187b7`, with the strict-public routing flag,
+one minute Cron, existing scoped secret and disabled public Worker URLs preserved.
+The Free-plan dashboard recorded an actual stored invocation with 3 ms CPU.
+The temporary laptop collector stopped at 07:31:08 UTC. Later scheduled wakes
+at 07:38:51 and 07:39:51 UTC succeeded; the latter stored a new factual collection
+at 07:40:02.282 UTC and published world/update editions. A further stored heartbeat
+at 08:20:01.170 UTC retained source collection dated 08:16:10.981 UTC.
+
+This is initial unattended proof for the four admitted collection sources, not
+a claim that every minute wake captures new provider data. The current server's
+rolling admission window can return busy under wake jitter. Separate Node/Python
+producers, sustained cadence and broad source migration remain independent gates.
+Configuration helper results deliberately remain configuration-only; this runtime
+evidence was observed separately, and must not be inferred from a successful PUT.
+
 For the known original runtime with its desired routing flag, a fresh GET-only
 `plan` exposes exactly one `runtime-upgrade` operation. Approve
 `mode:"upgrade-runtime"` with that plan ID and **no HMAC field**. One bounded PUT

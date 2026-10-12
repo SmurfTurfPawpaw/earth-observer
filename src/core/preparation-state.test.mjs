@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { preparationState, preparationLabel } from './preparation-state.js';
+import { preparationState, preparationLabel, layerWorkLabel } from './preparation-state.js';
 test('requested work is counted once across admission, failure and History suspension', () => {
   const counts = preparationState({
     first: { enabled: true, status: 'ready', settledEnabled: true },
@@ -20,4 +20,19 @@ test('unknown requested state stays waiting; empty completed sources are ready w
   assert.equal(preparationState({ empty: { enabled: true, status: 'ready', count: 0 } }).ready, 1);
   assert.equal(preparationLabel(preparationState({})), '');
   assert.equal(preparationState({ old: { enabled: true, status: 'ready', stale: true }, degraded: { enabled: true, status: 'ready', degraded: true } }).degraded, 2);
+});
+
+test('preparation progress retains displayed readiness and admits only exact bounded pass counts', () => {
+  const active = { enabled: true, status: 'ready', settledEnabled: true, refreshing: true,
+    count: 41, lastUpdate: 1234, workPhase: 'preparing', preparedCount: 250, preparationTotal: 1000 };
+  assert.equal(layerWorkLabel(active), `Preparing data · ${(250).toLocaleString()} / ${(1000).toLocaleString()} records`);
+  assert.equal(preparationState({ active }).ready, 1);
+  assert.equal(preparationState({ active }).refreshing, 1);
+  for (const values of [{ preparedCount: -1 }, { preparedCount: 1001 }, { preparationTotal: null },
+    { preparationTotal: Infinity }, { preparedCount: .5 }])
+    assert.equal(layerWorkLabel({ ...active, ...values }), 'Preparing data…');
+  for (const values of [{ enabled: false }, { timelinePaused: true }, { status: 'paused' },
+    { workPhase: 'complete' }, { workPhase: 'cancelled' }, { workPhase: 'error' }])
+    assert.equal(layerWorkLabel({ ...active, ...values }), '');
+  assert.equal(layerWorkLabel({ ...active, workPhase: 'prepared' }), 'Data prepared · applying update');
 });

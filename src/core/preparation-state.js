@@ -24,3 +24,20 @@ export function preparationLabel(counts) {
   }
   return parts.join(' · ');
 }
+
+/** Counts describe the current preparation pass, never source freshness or a rendered frame. */
+export function layerWorkLabel(entry = {}) {
+  if (!entry.enabled || entry.timelinePaused || entry.status === 'paused') return '';
+  const labels = {
+    'queued-update': 'Refresh queued', acquiring: 'Fetching data…',
+    'queued-prepare': 'Preparation queued', preparing: 'Preparing data…',
+    prepared: 'Data prepared · applying update', committing: 'Applying update…',
+  };
+  const label = labels[entry.workPhase];
+  if (!label) return '';
+  const done = entry.preparedCount, total = entry.preparationTotal;
+  if (entry.workPhase === 'preparing' && Number.isSafeInteger(done) && Number.isSafeInteger(total) &&
+      total > 0 && done >= 0 && done <= total)
+    return `Preparing data · ${done.toLocaleString()} / ${total.toLocaleString()} records`;
+  return label;
+}

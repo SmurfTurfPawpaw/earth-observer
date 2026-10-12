@@ -135,6 +135,27 @@ test('local appearance and units reuse the loaded field; optional scalar request
   assert.equal(layer.getRowControls().legend.at(-1).label, '1050+');
   layer.destroy();
 });
+
+test('attached manager owns source-changing intent; local controls and a rejected admission cannot start a direct read', async () => {
+  const requests = [], delegated = [];
+  const { layer } = harness({ getSnapshot: async args => { requests.push(args); return complete(args.model); } });
+  await layer.update();
+  layer.attachDataManager({ requestRefresh(id) { delegated.push(id); return false; } });
+  layer.setParams({ overlay: 'speed', units: 'mph', paused: true });
+  await Promise.resolve();
+  assert.equal(delegated.length, 0); assert.equal(requests.length, 1);
+  layer.setParams({ model: 'ifs' });
+  layer.setParams({ model: 'gfs' });
+  await Promise.resolve();
+  assert.deepEqual(delegated, ['wind'], 'Only the latest queued source intent reaches its owner');
+  assert.equal(requests.length, 1, 'An attached owner refusing admission does not fall back to independent acquisition');
+  await layer.update();
+  assert.equal(requests.length, 2, 'The owner can explicitly invoke the update without recursively requesting itself');
+  assert.deepEqual(delegated, ['wind']);
+  layer.setParams({ model: 'ifs' }); layer.destroy();
+  await Promise.resolve();
+  assert.deepEqual(delegated, ['wind'], 'Destroy cancels a queued parameter refresh');
+});
 test('local appearance changes preserve an in-flight first load', async () => {
   const requests = [];
   const { layer } = harness({
