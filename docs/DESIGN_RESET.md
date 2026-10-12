@@ -19,6 +19,8 @@ My working interpretation, still requiring visual confirmation, is a spatial ins
 
 ## Renderer evaluation, proposed
 
+Budget update from the user: maximum EUR5/month. Treat this as a strict ceiling for proposed recurring project services, including provider taxes/fees, while clarifying whether existing domain/website/subscription costs are included. No purchase or paid upgrade is authorized. Prefer browser-side rendering and quota-bounded free static hosting/data services for a pilot; do not propose a US$5 minimum metered plan as a guaranteed EUR5 cap. Rented always-on GPU streaming, unrestricted AI analysis and unbounded global history are not a validated fit. Local Unreal may still be a visual research tool if existing hardware supports it, without assuming electricity/availability is free. The current collector/Sites workloads have not been audited against this ceiling.
+
 Unreal plus Cesium for Unreal is a serious candidate. Epic Pixel Streaming renders on a remote GPU and streams frames plus interactive input over WebRTC. It is a different delivery architecture from a browser-native renderer; independent visitor navigation, session capacity, latency, reconnect behavior and hosting cost require measurement. A shared video mirror is suitable for a shared view, not automatically for independent cameras.
 
 A browser-native game renderer is a second candidate. Babylon.js exposes WebGL/WebGPU rendering and game-oriented materials/effects. Accurate Earth coordinates, terrain/imagery level-of-detail, globe-scale precision, history and evidence must be proven in the integration. The existing globe renderer is also a baseline to measure, not a predetermined winner. No engine has been installed or selected for the reset.
@@ -37,7 +39,7 @@ Sources checked:
 
 - Exact reference scenes and what the user likes about their geometry, depth, motion and composition.
 - Accepted interactive visual direction.
-- Representative devices and hosting/capacity budget.
+- Representative devices, traffic/retention scope, and how the EUR5/month ceiling accounts for existing domain/hosting/subscription costs.
 - Renderer selection supported by prototype observations.
 - Which existing backend contracts survive review against the accepted experience.
 
