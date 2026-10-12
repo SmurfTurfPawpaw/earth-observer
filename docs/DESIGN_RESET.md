@@ -2,6 +2,8 @@
 
 Status: planning, 12 October2026. Latest user steering explicitly abandons the ambitious 3D direction and proposes https://threatmap.checkpoint.com/ as a simpler reference. The previous Unreal / browser game-engine comparison is superseded. The long-running engineering goal remains paused; this reference establishes a proposed direction, not acceptance of an implemented replacement.
 
+Prototype authorization: the user subsequently said "let's try it, we'll start with design until it's perfect and then implement the data, let's make it quick". A separate prototype in `public/design/` on branch `codex/design-atlas-20261012` is authorized. It uses clearly identified fictional fixtures, bundled Natural Earth geometry and browser-local interactions. It is served separately at `/earth/design/`, preserving the existing Earth application. This authorizes building/reviewing the prototype, not acceptance of its design or resumption of the backend goal.
+
 ## What is already established
 
 The user values a serious public intelligence tool, uncluttered controls, geographic precision, continuous world time, historical exploration, meaningful iconography, fluid motion and premium visual execution. The user rejected the current interface's visual quality. Passing engineering checks and publishing release59 do not establish visual acceptance. Earlier palette/radius/effect restrictions must be reconsidered against a visual reference rather than inherited as the final aesthetic.

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="description" content="A design preview of a quieter world intelligence atlas. All events are fictional sample data."><title>Observer · Design preview</title><link rel="stylesheet" href="./style.css"></head>
+<body>
+  <main id="atlas" class="atlas">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Observer design preview"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 29 16 16 29 3 16Z"/><circle cx="16" cy="16" r="5"/><path d="M16 0v8m0 16v8M0 16h8m16 0h8"/></svg><span>OBSERVER<small>WORLD INTELLIGENCE</small></span></a>
+      <div class="top-center"><span class="status-dot"></span><span>GLOBAL OBSERVATORY</span><span class="header-divider"></span><time id="utc-clock">UTC</time></div>
+      <span class="preview-tag"><span></span>DESIGN PREVIEW <b>·</b> SAMPLE DATA</span>
+    </header>
+
+    <div class="map-stage">
+      <svg id="world-map" viewBox="0 0 1200 620" role="application" aria-label="Interactive world map with fictional sample signals. Drag to pan; scroll to zoom." tabindex="0"></svg>
+      <div class="map-heading"><span class="eyebrow">01 / WORLD VIEW</span><h1>A world of connections.</h1><p id="map-subtitle">Explore a signal. Follow the context.</p></div>
+      <div class="map-coordinates" aria-hidden="true"><span id="view-coordinates">00.00° N / 00.00° E</span><span id="view-scale">GLOBAL</span></div>
+      <div class="map-loading" id="map-loading"><span class="loading-ring"></span>Opening the atlas</div>
+    </div>
+
+    <aside class="explore-tools" aria-label="Explore controls">
+      <div class="search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg><input id="search-input" type="search" placeholder="Find a place or signal" autocomplete="off" aria-label="Find a sample place or signal"><kbd>/</kbd><div id="search-results" class="search-results" hidden></div></div>
+      <nav id="filter-chips" class="filter-chips" aria-label="Signal categories">
+        <button data-category="all" aria-pressed="true" class="active"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="M10 1v4m0 10v4M1 10h4m10 0h4"/></svg>All signals</button>
+        <button data-category="natural" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m2 15 5-10 4 7 3-5 4 8H2Z"/></svg>Natural</button>
+        <button data-category="politics" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3 7 7-4 7 4M4 8h12M5 9v6m5-6v6m5-6v6M3 17h14"/></svg>Politics</button>
+        <button data-category="economy" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3 14 5-5 4 3 5-7M12 5h5v5"/></svg>Economy</button>
+        <button data-category="mobility" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7h9v8H3V7Zm9 3h3l3 3v2h-6M5 15v2m10-2v2"/></svg>Mobility</button>
+      </nav>
+    </aside>
+
+    <aside id="activity" class="activity" aria-label="Sample activity">
+      <div class="section-heading"><span class="eyebrow">IN FOCUS</span><span id="activity-count" class="tiny-count"></span></div>
+      <div id="activity-list" class="activity-list"></div>
+      <button id="replay-arrival" class="replay-button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6a6 6 0 1 1-1 6M4 2v5H1"/></svg>Replay sample arrivals</button>
+    </aside>
+
+    <section id="dossier" class="dossier" aria-label="Selected sample signal" hidden>
+      <div class="dossier-top"><span class="eyebrow">SIGNAL / CONTEXT</span><button id="dossier-close" class="icon-button" aria-label="Close signal details"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div>
+      <div id="dossier-meta" class="dossier-meta"></div><h2 id="dossier-title"></h2><p id="dossier-summary"></p>
+      <nav id="dossier-tabs" class="dossier-tabs" aria-label="Signal detail views"><button data-tab="overview" class="active" aria-pressed="true">Overview</button><button data-tab="timeline" aria-pressed="false">Timeline</button><button data-tab="sources" aria-pressed="false">Sources</button></nav>
+      <div id="dossier-body" class="dossier-body"></div>
+      <footer class="dossier-footer"><button id="dossier-follow" class="follow-button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 3h8v14l-4-3-4 3V3Z"/></svg>Save this sample</button><span>Fictional design scenario</span></footer>
+    </section>
+
+    <nav class="map-navigation" aria-label="Map navigation"><button id="map-home" class="icon-button" title="World overview" aria-label="World overview"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c5 5 5 11 0 16-5-5-5-11 0-16Z"/></svg></button><span></span><button id="map-zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg></button><button id="map-zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12"/></svg></button></nav>
+
+    <section class="time-dock" aria-label="Sample history timeline">
+      <div class="time-top"><div class="time-label"><span class="eyebrow">TIME WINDOW</span><span id="timeline-date">12 OCT 2026</span><span id="timeline-readout" class="time-readout">12:00 UTC</span></div><div class="time-actions"><button id="timeline-play" class="icon-button" aria-label="Play sample history" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z"/></svg></button><button id="timeline-now" class="now-button" aria-pressed="true"><span class="status-dot"></span>Demo now</button></div></div>
+      <div class="time-track"><div id="activity-chart" class="activity-chart" aria-hidden="true"></div><input id="timeline-input" type="range" aria-label="Move through seven days of fictional sample history" min="0" max="100" value="100" step="1"></div>
+      <div id="timeline-ticks" class="timeline-ticks"></div>
+    </section>
+    <footer class="bottom-line"><span><span class="legend-dot"></span>FICTIONAL SIGNALS · DESIGN EXPLORATION</span><span class="map-instructions">DRAG TO EXPLORE <b>·</b> SCROLL TO ZOOM</span><a href="https://www.naturalearthdata.com/about/terms-of-use/" target="_blank" rel="noreferrer">Natural Earth · Public domain</a></footer>
+    <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+  </main><script type="module" src="./map-view.js"></script>
+</body></html>
