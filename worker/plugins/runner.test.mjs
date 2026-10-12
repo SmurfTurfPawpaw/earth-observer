@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFile, readdir } from 'node:fs/promises';
 import { advanceSourcePlugins, startSourcePlugins, PLUGIN_RUNNER_LIMITS } from './runner.js';
 import { SOURCE_PLUGINS } from './registry.js';
+import { PREPARED_USGS_KEYS } from '../prepared-usgs-store.js';
 
 const CLOCK = Date.parse('2026-10-12T02:00:00.000Z'), now = () => CLOCK;
 const UTF8 = new TextEncoder(), gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
@@ -26,12 +27,13 @@ async function fixture(t, { failure = null, held = false } = {}) {
   });
   const directory = new URL('../../drizzle/', import.meta.url);
   for (const name of (await readdir(directory)).filter(name => /^\d{4}_.+\.sql$/.test(name)).sort()) sqlite.exec(await readFile(new URL(name, directory), 'utf8'));
-  const activity = { reads: 0, writes: 0, puts: 0, fetches: [], gets: 0, active: 0, maximumActive: 0 }, objects = new Map(), ready = gate(), finish = gate();
-  let sequence = Promise.resolve();
+  const activity = { reads: 0, writes: 0, puts: 0, fetches: [], gets: 0, active: 0, maximumActive: 0, sql:[],objects:[] }, objects = new Map(),versions=new Map(), ready = gate(), finish = gate();
+  let sequence = Promise.resolve(),serial=0;
   const db = { withSession(value) { assert.equal(value, 'first-primary'); return this; },
     prepare(sql) { const bind = (...values) => ({ sql, values, async all() {
       assert.ok(values.length <= 100); const statement = sqlite.prepare(sql);
       const read = /^\s*(SELECT|WITH)\b/.test(sql);
+      activity.sql.push({sql,values,read});
       if (read || /\bRETURNING\b/i.test(sql)) {
         const results = statement.all(...values), write = !read;
         if (write) activity.writes++; else activity.reads++;
@@ -45,9 +47,13 @@ async function fixture(t, { failure = null, held = false } = {}) {
     }); sequence = operation.catch(() => {}); return operation; },
   };
   const env = { EARTH_DB: db, EARTH_USGS_LIVE_DAY_ENABLED:'1', EARTH_STORE: {
-    async get(key) { activity.gets++; const bytes = objects.get(key); return bytes ? { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) } : null; },
-    async put(key, value, options) { activity.puts++; if (options.onlyIf.get('if-none-match') === '*' && objects.has(key)) return null;
-      const bytes = typeof value === 'string' ? UTF8.encode(value) : new Uint8Array(value); objects.set(key, bytes); return { etag: '"TEST ONLY"' }; },
+    async get(key) { activity.gets++;activity.objects.push({operation:'get',key});const saved = objects.get(key),bytes=saved?new Uint8Array(saved):null;
+      return bytes ? { etag:versions.get(key),size: bytes.byteLength, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) } : null; },
+    async put(key, value, options={}) { activity.puts++;activity.objects.push({operation:'put',key,options});
+      const condition=options.onlyIf;
+      if (condition?.get?.('if-none-match') === '*' && objects.has(key) || condition?.etagMatches&&condition.etagMatches!==versions.get(key)) return null;
+      const bytes = typeof value === 'string' ? UTF8.encode(value) : new Uint8Array(value); objects.set(key, new Uint8Array(bytes));
+      const etag=`fixture-${++serial}`;versions.set(key,etag);return { etag }; },
   } };
   const fetchImpl = async (url, options) => {
     const plugin = SOURCE_PLUGINS.find(item => item.sourceUrl === url); assert.ok(plugin, 'runner admits only reviewed fixed source URLs');
@@ -66,7 +72,8 @@ async function fixture(t, { failure = null, held = false } = {}) {
     } finally { activity.active--; }
   };
   const quiet = () => { assert.deepEqual(activity.fetches, []); assert.equal(activity.reads, 0); assert.equal(activity.writes, 0); assert.equal(activity.puts, 0); assert.equal(activity.gets, 0); };
-  return { env, activity, fetchImpl, quiet, ready, finish, sqlite, options: { now, fetchImpl },
+  return { env, activity, fetchImpl, quiet, ready, finish, sqlite, objects,versions,options: { now, fetchImpl },
+    reset(){activity.fetches.length=0;activity.reads=0;activity.writes=0;activity.puts=0;activity.gets=0;activity.sql.length=0;activity.objects.length=0;},
     count(table) { return Number(sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n); } };
 }
 
@@ -135,14 +142,39 @@ test('one shared wake deadline defers a queued source without acquiring or writi
   await assert.rejects(advanceSourcePlugins(f.env, { ...f.options, deadlineMs: 27001 }), TypeError);
 });
 
-test('not-due source wakes make one bounded state read per source with no provider calls or evidence writes', async t => {
+test('warm not-due source wakes verify reconstructable metadata without provider, membership, factual-body or evidence work', async t => {
   const f = await fixture(t); const stored = await advanceSourcePlugins(f.env, f.options);
   assert.ok(stored.results.every(item => item.status === 'stored'));
-  f.activity.fetches.length = 0; f.activity.reads = 0; f.activity.writes = 0; f.activity.puts = 0; f.activity.gets = 0;
+  assert.equal(stored.results.find(item=>item.pluginId==='usgs-live-day-m2-5-v1').preparation.status,'prepared');
+  f.reset();
   const checked = await advanceSourcePlugins(f.env, f.options);
   assert.ok(checked.results.every(item => item.status === 'not-due' && !item.acquired));
-  assert.equal(f.activity.reads, SOURCE_PLUGINS.length); assert.deepEqual(f.activity.fetches, []);
-  assert.equal(f.activity.writes, 0); assert.equal(f.activity.puts, 0); assert.equal(f.activity.gets, 0);
+  assert.equal(checked.results.find(item=>item.pluginId==='usgs-live-day-m2-5-v1').preparation.status,'ready');
+  assert.equal(f.activity.reads, SOURCE_PLUGINS.length+1); assert.deepEqual(f.activity.fetches, []);
+  assert.equal(f.activity.writes, 0); assert.equal(f.activity.puts, 0); assert.equal(f.activity.gets, 1);
+  assert.deepEqual(f.activity.objects,[{operation:'get',key:PREPARED_USGS_KEYS.current}]);
+  assert.equal(f.activity.sql.filter(item=>item.sql.startsWith('SELECT * FROM earth_plugin_state WHERE plugin_id=?')).length,SOURCE_PLUGINS.length);
+  assert.equal(f.activity.sql.filter(item=>item.sql.startsWith('SELECT c.*')).length,1);
+  assert.equal(f.activity.sql.some(item=>/earth_plugin_membership|earth_plugin_revisions/.test(item.sql)),false);
+});
+
+test('an authorized not-due wake repairs a missing derivative using retained facts, without another immutable source publication',async t=>{
+  const f=await fixture(t),stored=await advanceSourcePlugins(f.env,f.options);
+  assert.equal(stored.results.find(item=>item.pluginId==='usgs-live-day-m2-5-v1').preparation.status,'prepared');
+  const tables=['earth_plugin_captures','earth_plugin_revisions','earth_plugin_membership','earth_plugin_heads'];
+  const before=tables.map(table=>f.count(table));
+  f.objects.delete(PREPARED_USGS_KEYS.current);f.versions.delete(PREPARED_USGS_KEYS.current);f.reset();
+  const repaired=await advanceSourcePlugins(f.env,f.options),source=repaired.results.find(item=>item.pluginId==='usgs-live-day-m2-5-v1');
+  assert.ok(repaired.results.every(item=>item.status==='not-due'&&!item.acquired));assert.equal(source.preparation.status,'prepared');
+  assert.deepEqual(f.activity.fetches,[]);assert.equal(f.activity.writes,0);assert.deepEqual(tables.map(table=>f.count(table)),before);
+  assert.equal(f.activity.reads,SOURCE_PLUGINS.length+7);assert.equal(f.activity.gets,4);assert.equal(f.activity.puts,1);
+  const writes=f.activity.objects.filter(item=>item.operation==='put');
+  assert.equal(writes[0].key,PREPARED_USGS_KEYS.current);assert.equal(writes[0].options.onlyIf.get('if-none-match'),'*');
+  assert.equal(f.activity.objects.some(item=>item.operation==='put'&&item.key.startsWith('plugins/')),false);
+  const gets=f.activity.objects.filter(item=>item.operation==='get').map(item=>item.key);
+  assert.equal(gets.filter(key=>key.startsWith('plugins/')&&key.includes('/facts/')).length,1);
+  assert.equal(gets.filter(key=>key.startsWith('plugins/')&&key.includes('/artifacts/')).length,1);
+  assert.equal(f.objects.has(PREPARED_USGS_KEYS.current),true);
 });
 
 test('the default-disabled scientific source performs no provider or state work until explicit owner enablement',async t=>{
