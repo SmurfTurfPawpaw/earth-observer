@@ -34,7 +34,9 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     maximumRenderTimeChange: Infinity,
     msaaSamples: 2,
     shadows: false,
-    contextOptions: { webgl: { alpha: false, antialias: true } },
+    // Retain the presented frame between demand renders, as the original viewer
+    // did. Embedded browser surfaces can otherwise present a cleared buffer.
+    contextOptions: { webgl: { alpha: false, antialias: true, preserveDrawingBuffer: true } },
   });
   let renderingPolicy, astronomy;
   try {

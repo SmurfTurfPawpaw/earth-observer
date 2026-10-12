@@ -1515,3 +1515,37 @@ no frozen timestamp. Future or malformed history fails with explicit recovery.
 Publication cards remove redundant idle status and reference text while keeping
 source attribution and evidence, and selected UTC has stronger visual weight.
 Actual hosted acceptance follows deployment; these checks do not establish it.
+
+## 06:21 UTC: actual temporal acceptance, collector configuration, presentation defect
+
+Version 46 succeeded at 06:04:23.985Z: app 13465d5e9e7d0f83f4ef454a02584192bf5ade81,
+combined 726b7aaad6a6bee2bf918ccade8a7efc791d1b01, deployment
+appgdep_6acc78495ba88191967759c84d93df90. Environment 7 and public audience 2
+are unchanged. Ninety-six focused checks and combined/portfolio gates passed.
+Root's actual hosted History/known-then reload kept 2025-06-01T12:34:56.123Z,
+rate86400 and pause, with honest missing platform knowledge. Reconstruction
+then showed 127 source events; zoom and World retained exact UTC/lens/rate.
+Live/reload advanced current UTC without frozen time. Invalid future startup
+showed explicit Return to Live, and that action recovered without deleting storage.
+The normal viewport historical screenshot was shown in commentary.
+
+Cloudflare's narrow collector was configured through a reviewed exact-source/
+full-version bootstrap proof, refreshed plan and six staged writes. Pinned bundle
+cac8817f512df979a71cb6c1b2c95703c5226c000e5d78be02435d18ac28d803 read back;
+version b8eacae6-bdf0-4ccc-9bb3-5fdb9edd23e8, deployment
+689bfab7-10e6-4dd7-b04f-dda69f75628d, enabled, dedicated secret present,
+one minute cron, public Worker/preview URLs disabled. Dashboard also shows no
+custom domains or routes. Scheduled runtime/CPU/storage proof remains pending.
+The deployment token expires06:50Z; its actual expiry was verified and the token
+and private handoff material were cleared from the deployment kernels. X25519
+public-key exchange established a private one-use loopback handoff; no API/HMAC
+key was written to files, argv, environment or displayed in outputs.
+
+The user then supplied an actual opaque-black globe image at 06:14:41 UTC with
+controls, advancing clock and separate earthquake labels visible. A root capture
+without reload showed the globe; no native Cesium error panel, app error or saved
+preview was present. This is an unresolved intermittent presentation defect.
+Original gods-eye-view/src/app/viewer.js explicitly retained preserveDrawingBuffer;
+our viewer omitted it. Both use demand rendering. Root announced one bounded
+change restoring that option, with cadence/data/camera unchanged. It is a causal
+comparison, not a proven fix, and requires actual visible idle/tab-return acceptance.
