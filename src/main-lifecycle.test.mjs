@@ -41,7 +41,7 @@ const modules = {
   './core/intelligence.js': 'export function createIntelligencePanel(){throw new Error("Unused optional fixture");}',
   './core/report-dossier.js': 'export function createReportDossierController(){throw new Error("Unused optional fixture");}',
   './core/evidence.js': 'export function createEvidenceNotebook(){throw new Error("Unused optional fixture");}',
-  cesium: 'export const Cartographic={fromCartesian(){}}; export const Math={toDegrees(x){return x;}};',
+  cesium: 'export const Cartographic={fromCartesian(){}}; export const Math={toDegrees(x){return x;}}; export class Cartesian2{} export const Ellipsoid={WGS84:{}};',
 };
 const bundle = build({
   entryPoints: [fileURLToPath(new URL('./main.js', import.meta.url))], bundle: true, write: false,

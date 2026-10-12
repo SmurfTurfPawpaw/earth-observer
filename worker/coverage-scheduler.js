@@ -16,7 +16,7 @@ async function boundedProcess(processSector, options, processMs) {
 export async function runCoverageWake(env, { now = Date.now, processSector, signal: external, processMs = COVERAGE_POLICY.processMs } = {}) {
   if (!Number.isInteger(processMs) || processMs < 1 || processMs > COVERAGE_POLICY.processMs) throw new TypeError('Invalid sector processing deadline');
   const measuredAt = coverageClock(now), base = { schemaVersion: 1, policyId: COVERAGE_POLICY.id, measuredAt,
-    configured: coverageConfigured(env), status: 'unavailable', admitted: false, baseline: [], priority: [] };
+    configured: coverageConfigured(env), status: 'unavailable', admitted: false, baseline: [], catchup: [], priority: [] };
   if (external?.aborted) return { ...base, status: 'cancelled' };
   if (!base.configured || typeof processSector !== 'function') return base;
   const startedAt = Date.now(), controller = new AbortController(), timer = setTimeout(() => controller.abort(new DOMException('Coverage wake deadline', 'TimeoutError')), COVERAGE_POLICY.deadlineMs);
@@ -25,6 +25,7 @@ export async function runCoverageWake(env, { now = Date.now, processSector, sign
     lease = await claimCoverageWake(env, signal);
     if (!lease) return { ...base, status: 'not-due-or-busy' };
     base.admitted = true; base.fence = lease.fence;
+    base.catchupSlotsAtAdmission = lease.catchup_slots; base.catchupSlotsRemaining = lease.catchup_slots;
     await expireCoveragePriority(env, lease, signal);
     const baselineIds = [lease.next_sector, lease.next_sector === 120 ? 1 : lease.next_sector + 1];
     let jobs;
@@ -35,13 +36,20 @@ export async function runCoverageWake(env, { now = Date.now, processSector, sign
       // cannot consume the two baseline sectors reserved for quiet regions.
       jobs = []; base.priorityErrorCode = 'invalid-priority-state';
     }
+    const potentialCatchup = Array.from({ length: Math.min(lease.catchup_slots, COVERAGE_POLICY.catchupPerWake) },
+      (_, index) => (lease.next_sector - 1 + COVERAGE_POLICY.baselinePerWake + index) % COVERAGE_POLICY.sectors + 1);
+    // A priority target on the advancing cursor is already served as catch-up.
+    // An independent priority keeps one optional slot, before any catch-up.
+    const selectedJobs = lease.catchup_slots ? jobs.filter(job => !potentialCatchup.includes(job.sector_id)).slice(0, 1) : jobs;
+    const catchupIds = potentialCatchup.slice(0, COVERAGE_POLICY.tasksPerWake - COVERAGE_POLICY.baselinePerWake - selectedJobs.length);
     const tasks = [...baselineIds.map(sectorId => ({ sectorId, lane: 'baseline', job: null })),
-      ...jobs.map(job => ({ sectorId: job.sector_id, lane: 'priority', job }))];
+      ...selectedJobs.map(job => ({ sectorId: job.sector_id, lane: 'priority', job })),
+      ...catchupIds.map(sectorId => ({ sectorId, lane: 'catchup', job: jobs.find(job => job.sector_id === sectorId) || null }))];
     for (const task of tasks) {
       signal.throwIfAborted(); let result = null, errorCode = null;
-      // Baseline capacity is reserved. Optional priority work waits for another
-      // wake if there is no room for its processing and atomic storage budget.
-      if (task.lane === 'priority' && Date.now() - startedAt > COVERAGE_POLICY.deadlineMs - processMs - COVERAGE_POLICY.operationMs * 2) break;
+      // Baseline capacity is reserved. Optional priority/catch-up waits for
+      // another wake if its processing and atomic storage budget cannot fit.
+      if (task.lane !== 'baseline' && Date.now() - startedAt > COVERAGE_POLICY.deadlineMs - processMs - COVERAGE_POLICY.operationMs * 2) break;
       try { const value = await boundedProcess(processSector, { sector: coverageSector(task.sectorId), lane: task.lane, signal }, processMs);
         result = validateCoverageResult(value, coverageClock(now)); }
       catch (error) { if (signal.aborted) throw error;
@@ -49,7 +57,8 @@ export async function runCoverageWake(env, { now = Date.now, processSector, sign
       const committed = await completeCoverageSector(env, lease, { ...task, result, errorCode }, signal);
       if (!committed) return { ...base, status: 'superseded' };
       base[task.lane].push({ sectorId: task.sectorId, status: result ? 'processed' : 'unavailable', errorCode });
-      if (!result && task.lane === 'baseline') await enqueueCoveragePriority(env,
+      if (task.lane === 'catchup') base.catchupSlotsRemaining--;
+      if (!result && task.lane !== 'priority') await enqueueCoveragePriority(env,
         { sectorId: task.sectorId, reason: 'retry', priority: 0, expiresAt: new Date(Date.parse(coverageClock(now)) + COVERAGE_POLICY.priorityTtlMs).toISOString() }, { now, signal });
     }
     return { ...base, status: 'processed' };

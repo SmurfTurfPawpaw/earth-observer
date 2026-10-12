@@ -85,6 +85,13 @@
       "when": 1791804164736,
       "tag": "0011_coverage_scheduler",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1791806850212,
+      "tag": "0012_coverage_catchup",
+      "breakpoints": true
     }
   ]
 }

@@ -258,6 +258,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       // Spatial adapters report demand through the same admission/lifetime
       // owner as source revisions, visibility and timeline changes.
       module.setDemandRefreshListener?.(() => manager.requestRefresh(id));
+      module.setDemandListener?.(demand => options.onSpatialDemand?.(demand, id));
       return module;
     })().finally(() => { entry.loading = null; });
     return entry.loading;

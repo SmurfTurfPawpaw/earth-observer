@@ -1,7 +1,10 @@
 import { pluginJson } from '../src/core/plugin-evidence.js';
+import { COVERAGE_GRID, coverageSector } from '../src/core/coverage-grid.js';
+export { coverageSector } from '../src/core/coverage-grid.js';
 
-export const COVERAGE_POLICY = Object.freeze({ id: 'coverage-sectors-v1', columns: 12, bands: 10, sectors: 120, wakeClock: 'utc-calendar-minute',
+export const COVERAGE_POLICY = Object.freeze({ id: 'coverage-sectors-v1', ...COVERAGE_GRID, wakeClock: 'utc-calendar-minute',
   nominalSlotMs: 30000, nominalSweepMs: 3600000, wakeDueMs: 60000, baselinePerWake: 2, priorityPerWake: 2,
+  tasksPerWake: 4, catchupPerWake: 2, catchupSlots: 120,
   priorityTasks: 120, priorityTtlMs: 3600000, retryMs: 300000, attempts: 3, leaseMs: 30000,
   deadlineMs: 20000, processMs: 6000, operationMs: 2000, basisBytes: 1536, summaryBytes: 2048, statusBytes: 262144 });
 const DB_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
@@ -10,13 +13,6 @@ const REASONS = Object.freeze(['urgent', 'followed', 'viewport', 'retry']);
 const fail = code => Object.assign(new Error(code), { code });
 export const coverageUtc = value => typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) &&
   Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
-export function coverageSector(id) {
-  if (!Number.isInteger(id) || id < 1 || id > COVERAGE_POLICY.sectors) throw new TypeError('Invalid coverage sector');
-  const column = (id - 1) % COVERAGE_POLICY.columns, band = Math.floor((id - 1) / COVERAGE_POLICY.columns);
-  const latitude = edge => Math.asin(-1 + 2 * edge / COVERAGE_POLICY.bands) * 180 / Math.PI;
-  return Object.freeze({ id, column, band, bounds: Object.freeze({ west: -180 + column * 30, east: -150 + column * 30,
-    south: latitude(band), north: latitude(band + 1) }) });
-}
 export function coverageClock(now = Date.now) {
   const value = typeof now === 'function' ? now() : now;
   if (!Number.isSafeInteger(value) || value < 0 || value > 8640000000000000) throw new TypeError('Invalid coverage clock');
@@ -49,7 +45,8 @@ const admitted = 'EXISTS(SELECT 1 FROM earth_coverage_state WHERE policy_id=? AN
 function state(row) {
   if (!row || row.policy_id !== COVERAGE_POLICY.id || !Number.isSafeInteger(row.fence) || row.fence < 0 ||
       !Number.isInteger(row.next_sector) || row.next_sector < 1 || row.next_sector > 120 || !coverageUtc(row.next_due_at) ||
-      !Number.isSafeInteger(row.sweep_count) || row.sweep_count < 0) throw fail('invalid-coverage-state');
+      !Number.isSafeInteger(row.sweep_count) || row.sweep_count < 0 ||
+      !Number.isInteger(row.catchup_slots) || row.catchup_slots < 0 || row.catchup_slots > COVERAGE_POLICY.catchupSlots) throw fail('invalid-coverage-state');
   return row;
 }
 /** Migration-owned tables only. Authenticated wake initializes rows, never DDL. */
@@ -64,6 +61,8 @@ export async function claimCoverageWake(env, signal) {
   const token = crypto.randomUUID();
   const rows = await coverageRows(env, `UPDATE earth_coverage_state SET fence=fence+1,lease_token=?,
     lease_until=strftime('%Y-%m-%dT%H:%M:%fZ','now','+30 seconds'),admitted_token=NULL,last_wake_at=${DB_NOW},
+    catchup_slots=MIN(${COVERAGE_POLICY.catchupSlots},catchup_slots+CASE WHEN last_wake_at IS NULL THEN 0 ELSE
+      2*MAX(0,CAST(unixepoch(${DB_NOW})/60 AS INTEGER)-CAST(unixepoch(next_due_at)/60 AS INTEGER)) END),
     next_due_at=substr(strftime('%Y-%m-%dT%H:%M:%fZ','now','+60 seconds'),1,16)||':00.000Z'
     WHERE policy_id=? AND next_due_at<=${DB_NOW} AND (lease_until IS NULL OR lease_until<=${DB_NOW})
     RETURNING *,${DB_NOW} AS db_now`, [token, COVERAGE_POLICY.id], signal);
@@ -121,11 +120,15 @@ export function validateCoverageResult(value, measuredAt) {
 /** The first statement admits the entire atomic batch under a live lease. The
  * token fences later statements even if the lease expires during execution. */
 export async function completeCoverageSector(env, lease, { sectorId, lane, job = null, result = null, errorCode = null }, signal) {
+  if (!['baseline', 'catchup', 'priority'].includes(lane)) throw new TypeError('Invalid sector processing lane');
   coverageSector(sectorId); const token = crypto.randomUUID(), accepted = [...leaseValues(lease), token];
-  const isBaseline = lane === 'baseline', next = sectorId === 120 ? 1 : sectorId + 1;
+  const isBaseline = lane === 'baseline' || lane === 'catchup', isCatchup = lane === 'catchup', next = sectorId === 120 ? 1 : sectorId + 1;
   const statements = [sql(env, `UPDATE earth_coverage_state SET admitted_token=?,last_completed_at=${DB_NOW},last_error=?,
-    next_sector=CASE WHEN ?=1 THEN ? ELSE next_sector END,sweep_count=sweep_count+CASE WHEN ?=1 AND ?=120 THEN 1 ELSE 0 END
-    WHERE ${live} RETURNING fence`, [token, errorCode, isBaseline ? 1 : 0, next, isBaseline ? 1 : 0, sectorId, ...leaseValues(lease)]),
+    next_sector=CASE WHEN ?=1 THEN ? ELSE next_sector END,sweep_count=sweep_count+CASE WHEN ?=1 AND ?=120 THEN 1 ELSE 0 END,
+    catchup_slots=catchup_slots-?
+    WHERE ${live} AND catchup_slots>=? AND (?=0 OR next_sector=?) RETURNING fence`,
+    [token, errorCode, isBaseline ? 1 : 0, next, isBaseline ? 1 : 0, sectorId, isCatchup ? 1 : 0,
+      ...leaseValues(lease), isCatchup ? 1 : 0, isBaseline ? 1 : 0, sectorId]),
     sql(env, `UPDATE earth_coverage_cells SET last_attempt_at=${DB_NOW},last_fence=?,status=?,
       failure_count=CASE WHEN ?=1 THEN 0 ELSE failure_count+1 END,
       last_success_at=CASE WHEN ?=1 THEN ${DB_NOW} ELSE last_success_at END,
@@ -157,14 +160,27 @@ export async function enqueueCoveragePriority(env, job, { now = Date.now, signal
   const taskKey = `${job.sectorId}:${job.reason}`, generation = crypto.randomUUID();
   try {
     const results = await batch(env, [sql(env, `DELETE FROM earth_coverage_priority WHERE expires_at<=${DB_NOW}`),
+      // Admit first at this statement's DB clock. Atomic D1 batching hides a
+      // temporary121st row; the final statement removes one eligible victim
+      // only after this exact new generation proves successful admission.
       sql(env, `INSERT INTO earth_coverage_priority(task_key,sector_id,reason,priority,enqueued_at,expires_at,next_attempt_at,attempts,generation)
         SELECT ?,?,?,?,${DB_NOW},?,CASE WHEN ?='retry' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now','+5 minutes') ELSE ${DB_NOW} END,0,? WHERE ?>${DB_NOW}
         AND ?<=strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 hour') AND (EXISTS(SELECT 1 FROM earth_coverage_priority WHERE task_key=?)
-        OR (SELECT COUNT(*) FROM (SELECT task_key FROM earth_coverage_priority LIMIT 120))<120)
+        OR (SELECT COUNT(*) FROM (SELECT task_key FROM earth_coverage_priority LIMIT 121))<120
+        OR ((SELECT COUNT(*) FROM (SELECT task_key FROM earth_coverage_priority LIMIT 121))=120
+          AND EXISTS(SELECT 1 FROM earth_coverage_priority WHERE priority<?)))
         ON CONFLICT(task_key) DO UPDATE SET priority=MAX(earth_coverage_priority.priority,excluded.priority),
           expires_at=MAX(earth_coverage_priority.expires_at,excluded.expires_at),next_attempt_at=excluded.next_attempt_at,attempts=0,generation=excluded.generation
         WHERE excluded.expires_at>earth_coverage_priority.expires_at OR excluded.priority>earth_coverage_priority.priority
-        RETURNING task_key,generation`, [taskKey, job.sectorId, job.reason, job.priority, job.expiresAt, job.reason, generation, job.expiresAt, job.expiresAt, taskKey])], signal);
+        RETURNING task_key,generation`, [taskKey, job.sectorId, job.reason, job.priority, job.expiresAt, job.reason, generation, job.expiresAt, job.expiresAt, taskKey, job.priority]),
+      // Preserve older fair work among the lowest priority. No expiry recheck:
+      // a later DB clock cannot undo the already valid admission or lose a
+      // victim without replacement. Existing-key renewal remains at120 rows.
+      sql(env, `DELETE FROM earth_coverage_priority WHERE task_key=(SELECT task_key FROM earth_coverage_priority
+        WHERE priority<? ORDER BY priority ASC,enqueued_at DESC,task_key DESC LIMIT 1)
+        AND EXISTS(SELECT 1 FROM earth_coverage_priority WHERE task_key=? AND generation=?)
+        AND (SELECT COUNT(*) FROM (SELECT task_key FROM earth_coverage_priority LIMIT 122))=121`,
+        [job.priority, taskKey, generation])], signal);
     return { schemaVersion: 1, configured: true, enqueued: results[1]?.results?.length === 1,
       status: results[1]?.results?.length ? 'enqueued' : 'unchanged-or-capped', taskKey };
   } catch { return { schemaVersion: 1, configured: false, enqueued: false, status: signal?.aborted ? 'cancelled' : 'unavailable' }; }
@@ -196,6 +212,9 @@ export async function readCoverageStatus(env, { now = Date.now, signal } = {}) {
     });
     const result = { ...base, configured: true, available: true, status: 'ready', sectors,
       cursor: { nextSectorId: row.next_sector, completedSweeps: row.sweep_count, nextWakeDueAt: row.next_due_at },
+      catchup: { pendingSlots: row.catchup_slots, maximumSlots: COVERAGE_POLICY.catchupSlots,
+        maximumExtraPerWake: COVERAGE_POLICY.catchupPerWake, maximumTasksPerWake: COVERAGE_POLICY.tasksPerWake,
+        priorityReserved: true, meaning: 'Bounded missed processing opportunities; only actual admitted attempts repay debt. No missed source observations are reconstructed.' },
       wake: { lastAdmittedAt: row.last_wake_at, lastCompletedAt: row.last_completed_at, lastError: row.last_error,
         busy: Boolean(row.lease_token && row.lease_until > measuredAt), leaseUntil: row.lease_until },
       priority: { queued: tasks.filter(task => task.expires_at > measuredAt).length, expired: tasks.filter(task => task.expires_at <= measuredAt).length },

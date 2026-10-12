@@ -19,7 +19,9 @@ import { createPlaceNavigation } from './core/workspace-focus.js';
 import { createWorkspaceRestore } from './core/workspace-restore.js';
 import { installPresentationBridge } from './core/presentation-bridge.js';
 import { createIcon } from './core/icons.js';
-import { Cartographic, Math as CesiumMath } from 'cesium';
+import { createCoverageDemandClient } from './core/coverage-demand-client.js';
+import { extractCameraDemand } from './core/spatial-demand.js';
+import { Cartographic, Math as CesiumMath, Cartesian2, Ellipsoid } from 'cesium';
 
 let viewer;
 let manager;
@@ -29,6 +31,7 @@ let describeBasemap = () => {};
 let contextRecovery;
 let area = null, intelligence, notebook, timeline, updates, worldDossiers, reportDossiers, navigatePlace, panelLoading = {}, locationRevision = 0, warmTimer;
 let workspaceRestore, pendingTemporal = { mode: 'live' };
+let coverageDemand;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -195,7 +198,14 @@ export async function start({ earlySearchIntent } = {}) {
       onRestored: stopFailedScene,
     });
     disposers.push(() => contextRecovery.destroy());
-    manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
+    manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area,
+      onSpatialDemand: () => coverageDemand?.changed() });
+    const diagnosticSession = ['qa', 'stress', 'fleet', 'synthetic'].some(key => new URLSearchParams(location.search).has(key));
+    coverageDemand = createCoverageDemandClient({ enabled: import.meta.env?.PROD === true && !diagnosticSession,
+      getDemand: () => extractCameraDemand(viewer, { Cartographic, Cartesian2, Ellipsoid, Math: CesiumMath }),
+      isLive: () => !destroyed && currentWorkspaceTime().mode === 'live' && !contextRecovery?.isLost() &&
+        ['earthquakes', 'gdacs-notices'].some(id => manager.getState()[id]?.enabled) });
+    disposers.push(() => coverageDemand.destroy());
     shell = createShell(viewer, manager, { getTemporal: currentWorkspaceTime, canShare: () => !destroyed && (!workspaceRestore || workspaceRestore.canCheckpoint()) });
     // Opt-in display path for embedded surfaces. This copies actual completed
     // frames and leaves input/picking on Cesium; it does not simulate data.
@@ -222,6 +232,7 @@ export async function start({ earlySearchIntent } = {}) {
           if (temporal.mode === 'history') viewer.earthTime.setRate?.(temporal.rate); }
         if (temporal.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
         intelligence?.setSceneMode(temporal.mode);
+        coverageDemand.suspend();
       },
       applyArea: setArea,
       applyCamera(view) { const restored = recoverInitialCameraView(viewer, view); setCameraView(viewer, restored.view);
@@ -275,6 +286,7 @@ export async function start({ earlySearchIntent } = {}) {
       onViewChange(view) {
         if (area && (view.alt > 1500000 || distanceKm(view.lat, view.lon, area) > area.radiusKm * 3)) setArea(null);
         rememberWorkspace();
+        coverageDemand.changed();
       },
     }));
     // The initial camera and ordinary search handler are ready; layer delivery
@@ -295,6 +307,7 @@ export async function start({ earlySearchIntent } = {}) {
         if (changed) await manager.setTimelineMode(state.mode);
         if (destroyed || appliedSceneMode !== state.mode) return;
         if (changed) intelligence?.setSceneMode(state.mode);
+        coverageDemand.suspend();
         void worldDossiers.refresh();
         window.dispatchEvent(new CustomEvent('earth-observer:timechange', { detail: state }));
       },
@@ -373,6 +386,7 @@ export async function start({ earlySearchIntent } = {}) {
     document.getElementById('loading').hidden = true;
     viewer.scene.requestRender();
     visibility();
+    coverageDemand.changed();
   } catch (error) {
     if (!destroyed) showError(error);
     await destroy();

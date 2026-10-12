@@ -23,6 +23,8 @@ import { createDocumentInvestigationApiHandler } from './document-investigation-
 import { createObservationApiHandler } from './observation-api.js';
 import { createPreparedUsgsApiHandler } from './prepared-usgs-api.js';
 import { startCoverageWake, createCoverageStatusHandler } from './coverage-runtime.js';
+import { createCoverageDemandHandler } from './coverage-demand.js';
+import { createPreparedScenesApiHandler } from './prepared-scenes-api.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -49,7 +51,9 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
   const handleDocumentApi = createDocumentInvestigationApiHandler({ now });
   const handleObservationApi = createObservationApiHandler({ now });
   const handlePreparedScene = createPreparedUsgsApiHandler({ now });
+  const handleGenericPreparedScene = createPreparedScenesApiHandler({ now });
   const handleCoverageStatus = createCoverageStatusHandler({ now });
+  const handleCoverageDemand = createCoverageDemandHandler({ now });
   let state;
   const admit = makeRateLimiter({ windowMs: 60000, max: 240, globalMax: 4000 });
   const services = (env) => state ||= {
@@ -83,6 +87,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (triggered) return secured(triggered);
         const coverage = await handleCoverageStatus(internal, env);
         if (coverage) return secured(coverage);
+        const functionalInterest = await handleCoverageDemand(internal, env);
+        if (functionalInterest) return secured(functionalInterest);
         const collection = await handleCollection(internal, env, ctx, { now, fetchImpl: providerFetch });
         if (collection) return secured(collection);
         const aircraft = await handleAircraftObservations(internal, env, { now });
@@ -103,6 +109,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (observations) return secured(observations);
         const preparedScene = await handlePreparedScene(internal, env);
         if (preparedScene) return secured(preparedScene);
+        const genericPreparedScene = await handleGenericPreparedScene(internal, env);
+        if (genericPreparedScene) return secured(genericPreparedScene);
         const world = await createWorldModelHandler({ env, now })(internal);
         if (world) return secured(world);
         // Aggregate actions own their methods and never enter public provider caches.

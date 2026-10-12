@@ -96,3 +96,19 @@ test('coverage status owns its route, rejects writes/query injection before read
   const oversized = createCoverageStatusHandler({ read: async () => ({ configured: true, text: 'x'.repeat(300000) }) });
   assert.equal((await oversized(request(), {})).status, 503);
 });
+
+test('an admitted wake prepares both derivative scenes from the same retained inputs without another source read', async () => {
+  let quakeReads = 0, noticeReads = 0; const jobs = [], prepared = [];
+  const env = { EARTH_DB: { prepare() {}, batch() {} }, EARTH_STORE: { get() {}, put() {} } };
+  startCoverageWake(env, { waitUntil(p) { jobs.push(p); } }, { now: () => NOW,
+    processorFactory: (env, options) => createStoredSectorProcessor(env, { ...options,
+      readUsgs: async () => { quakeReads++; return usgs(); }, readGdacs: async () => { noticeReads++; return gdacs(); } }),
+    run: async (_env, { processSector }) => { for (let id = 1; id <= 4; id++) await processSector({ sector: coverageSector(id) });
+      return { admitted: true, status: 'processed' }; },
+    prepareScene: async (_env, key, options) => { const input = await options.readInput(); prepared.push({ key, input }); return { status: 'prepared' }; },
+  });
+  await Promise.all(jobs);
+  assert.equal(quakeReads, 1); assert.equal(noticeReads, 1); assert.equal(prepared.length, 2);
+  assert.equal(prepared.find(p => p.key === 'earthquakes').input.source.capturedAt, utc(-300000));
+  assert.equal(prepared.find(p => p.key === 'gdacs').input.cohort.capturedAt, utc(-600000));
+});

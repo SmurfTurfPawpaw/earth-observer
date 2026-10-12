@@ -16,6 +16,42 @@ const IMAGES = Object.freeze(Object.fromEntries(Object.entries(PATHS).map(([kind
 
 export const MAP_SYMBOL_KINDS = Object.freeze(Object.keys(IMAGES));
 export const mapSymbolImage = kind => IMAGES[kind] || IMAGES.notice;
+export const MAP_CLUSTER_BADGE_LIMITS = Object.freeze({ maximumCount: 500, entries: 64, bytes: 262144 });
+// Fixed vector numerals avoid an external font load or an overlapping label.
+// These image references are bounded here; a native billboard atlas is owned
+// and released by the renderer's complete-edition lifecycle, independently.
+const DIGITS = Object.freeze({
+  0: 'M2 1h3c1 0 2 1 2 3v6c0 2-1 3-2 3H2c-1 0-2-1-2-3V4c0-2 1-3 2-3Z',
+  1: 'M1 3 4 1v12M1 13h6',
+  2: 'M0 3c0-3 7-3 7 0 0 3-7 5-7 8v2h7',
+  3: 'M0 2c2-2 7-1 7 2 0 2-2 3-5 3 3 0 5 1 5 3 0 3-5 4-7 2',
+  4: 'M5 13V1L0 9h7',
+  5: 'M7 1H0v6h4c4 0 4 6 0 6H0',
+  6: 'M7 2c-4-3-7 0-7 5v3c0 4 7 4 7 0 0-4-7-4-7 0',
+  7: 'M0 1h7L2 13',
+  8: 'M3.5 7C-1 7-1 1 3.5 1S8 7 3.5 7Zm0 0C-1 7-1 13 3.5 13S8 7 3.5 7Z',
+  9: 'M0 12c4 3 7 0 7-5V4C7 0 0 0 0 4s7 4 7 0',
+});
+const badges = new Map(); let badgeBytes = 0;
+/** A cell summary has an exact count, separate from its category glyph.
+ * The returned image has no geography, source text, or inferred alert color. */
+export function mapClusterBadge(count, symbol = 'notice') {
+  if (!Number.isSafeInteger(count) || count < 1 || count > MAP_CLUSTER_BADGE_LIMITS.maximumCount) {
+    throw new RangeError('Cluster count must be an exact integer from 1 to 500');
+  }
+  const kind = Object.hasOwn(PATHS, symbol) ? symbol : 'notice', key = `${kind}:${count}`;
+  if (badges.has(key)) { const saved = badges.get(key); badges.delete(key); badges.set(key, saved); return saved; }
+  const digits = String(count), start = (48 - (digits.length * 10 - 3)) / 2;
+  const numeral = [...digits].map((digit, index) =>
+    `<path d="${DIGITS[digit]}" transform="translate(${start + index * 10} 25)"/>`).join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="42" viewBox="0 0 48 42"><rect x="1" y="1" width="46" height="40" rx="10" fill="#15212c" stroke="#a8d8e8" stroke-width="1.5"/><path d="${PATHS[kind]}" transform="translate(14.4 1) scale(.6)" fill="none" stroke="#d9f4fb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="4" y="22" width="40" height="17" rx="5" fill="#e7f5fb"/><g fill="none" stroke="#15212c" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${numeral}</g></svg>`;
+  const value = Object.freeze({ image: 'data:image/svg+xml,' + encodeURIComponent(svg), width: 48, height: 42 });
+  const bytes = value.image.length * 2;
+  while (badges.size && (badges.size >= MAP_CLUSTER_BADGE_LIMITS.entries || badgeBytes + bytes > MAP_CLUSTER_BADGE_LIMITS.bytes)) {
+    const oldest = badges.keys().next().value; badgeBytes -= badges.get(oldest).image.length * 2; badges.delete(oldest);
+  }
+  badges.set(key, value); badgeBytes += bytes; return value;
+}
 const GDACS_TYPES = Object.freeze({ EQ: 'seismic', FL: 'flood', TC: 'cyclone', VO: 'volcano', WF: 'wildfire', DR: 'drought' });
 export const gdacsMapSymbol = record => GDACS_TYPES[record?.eventType] || 'notice';
 /** Color encodes only the reported alert declaration, never inferred impact. */

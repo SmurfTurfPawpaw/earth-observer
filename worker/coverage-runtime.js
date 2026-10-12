@@ -1,20 +1,14 @@
 import { runCoverageWake, enqueueCoveragePriority, readCoverageStatus, coverageSector } from './coverage-scheduler.js';
 import { readPreparedUsgsScene } from './prepared-usgs-store.js';
 import { readWorldSourceItems } from './world-model.js';
+import { coverageSectorAt } from '../src/core/coverage-grid.js';
+import { ensurePreparedScene } from './prepared-scenes-store.js';
 
 export const COVERAGE_STATUS_PATH = '/api/coverage/status';
 export const COVERAGE_RUNTIME_LIMITS = Object.freeze({ deadlineMs: 20000, sourceReadMs: 5000, urgentSectors: 4, responseBytes: 256 * 1024 });
 const pending = new WeakMap(), iso = value => new Date(value).toISOString();
 const utc = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
-const inSector = (record, sector) => {
-  if (!Number.isFinite(record?.lon) || !Number.isFinite(record.lat) || Math.abs(record.lon) > 180 || Math.abs(record.lat) > 90) return false;
-  const lon = ((record.lon + 180) % 360 + 360) % 360 - 180, b = sector.bounds;
-  return lon >= b.west && lon < b.east && record.lat >= b.south && (record.lat < b.north || b.north === 90);
-};
-const sectorAt = record => {
-  for (let id = 1; id <= 120; ++id) if (inSector(record, coverageSector(id))) return id;
-  return null;
-};
+const inSector = (record, sector) => coverageSectorAt(record) === sector.id;
 async function boundedRead(operation, signal) {
   signal.throwIfAborted(); let stop;
   try { return await Promise.race([Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); }),
@@ -54,9 +48,10 @@ export function createStoredSectorProcessor(env, { now = Date.now, signal,
         completeRetainedCohort: true, coverageMeaning: 'Retained seven-day GDACS notice sample; indicative locations, modeled source alerts, not a complete provider archive',
         records: gdacs.items.map(item => item.record), sourceReports: gdacs.items.length, stale: null });
     } else missingSources.push('gdacs');
-    return { admitted, missingSources };
+    return { admitted, missingSources, inputs: { earthquakes: usgs, gdacs } };
   })();
   return {
+    async preparedInput(sourceKey) { const input = await sources(); signal?.throwIfAborted(); return input.inputs[sourceKey]; },
     async processSector({ sector, signal: workSignal }) {
       workSignal?.throwIfAborted(); const input = await sources(); workSignal?.throwIfAborted();
       if (!input.admitted.length) return { available: false };
@@ -79,7 +74,7 @@ export function createStoredSectorProcessor(env, { now = Date.now, signal,
         // It does not establish deaths, consequences, global reach or a new event.
         const warrantsInvestigation = source.sourceId === 'usgs' ? record.eventType === 'earthquake' && record.mag >= 6 : String(record.alertLevel).toLowerCase() === 'red';
         if (!warrantsInvestigation || at === null || at > now() || now() - at >= 3600000) continue;
-        const sectorId = sectorAt(record); if (sectorId === null) continue;
+        const sectorId = coverageSectorAt(record); if (sectorId === null) continue;
         const expiresAt = iso(at + 3600000), previous = candidates.get(sectorId);
         if (!previous || expiresAt > previous.expiresAt) candidates.set(sectorId, { sectorId, reason: 'urgent', priority: 90, expiresAt });
       }
@@ -90,7 +85,7 @@ export function createStoredSectorProcessor(env, { now = Date.now, signal,
 
 /** Separate from the collector's provider admission. Only the authenticated trigger calls this owner. */
 export function startCoverageWake(env, ctx, { now = Date.now, processorFactory = createStoredSectorProcessor,
-  run = runCoverageWake, enqueue = enqueueCoveragePriority } = {}) {
+  run = runCoverageWake, enqueue = enqueueCoveragePriority, prepareScene = ensurePreparedScene } = {}) {
   if (!env?.EARTH_DB?.prepare || !env?.EARTH_DB?.batch || !env?.EARTH_STORE?.get) return { scheduled: false, status: 'unconfigured' };
   if (typeof ctx?.waitUntil !== 'function') return { scheduled: false, status: 'background-unavailable' };
   const owner = env.EARTH_DB;
@@ -107,6 +102,11 @@ export function startCoverageWake(env, ctx, { now = Date.now, processorFactory =
       if (result?.admitted !== true || result.status !== 'processed' || controller.signal.aborted) return result;
       const jobs = await boundedRead(() => processor.urgentSectors(), controller.signal);
       for (const job of jobs) { controller.signal.throwIfAborted(); await enqueue(env, job, { now, signal: controller.signal }); }
+      // One derivative preparation per source after durable admission. All
+      // sectors reuse the same verified stored inputs; no visitor/provider work.
+      if (typeof processor.preparedInput === 'function') await Promise.allSettled(['earthquakes', 'gdacs'].map(sourceKey =>
+        boundedRead(() => prepareScene(env, sourceKey, { now, signal: controller.signal,
+          readInput: () => processor.preparedInput(sourceKey) }), controller.signal)));
       return result;
     } catch { return { configured: true, status: 'unavailable' }; }
     finally { clearTimeout(timer); }

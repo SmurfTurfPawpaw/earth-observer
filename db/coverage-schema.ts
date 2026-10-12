@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, check } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 // Fixed-size monitoring projections. Evidence/history remains in its source tables.
 // Claims and completion use the primary database clock and a fenced owner lease.
@@ -7,8 +8,8 @@ export const coverageState = sqliteTable('earth_coverage_state', {
   nextDueAt: text('next_due_at').notNull(), fence: integer('fence').notNull(),
   leaseToken: text('lease_token'), leaseUntil: text('lease_until'), admittedToken: text('admitted_token'),
   lastWakeAt: text('last_wake_at'), lastCompletedAt: text('last_completed_at'), lastError: text('last_error'),
-  sweepCount: integer('sweep_count').notNull(),
-});
+  sweepCount: integer('sweep_count').notNull(), catchupSlots: integer('catchup_slots').notNull().default(0),
+}, table => [check('earth_coverage_catchup_bound', sql`typeof(${table.catchupSlots}) = 'integer' AND ${table.catchupSlots} >= 0 AND ${table.catchupSlots} <= 120`)]);
 export const coverageCells = sqliteTable('earth_coverage_cells', {
   sectorId: integer('sector_id').primaryKey(), lastAttemptAt: text('last_attempt_at'),
   lastSuccessAt: text('last_success_at'), status: text('status').notNull(),

@@ -1,6 +1,8 @@
 import { pluginJson } from './plugin-evidence.js';
 import { validateUsgsLiveDayFacts, USGS_LIVE_DAY } from './usgs-live-day.js';
 import { pluginRevision } from './live-updates.js';
+import { PREPARED_SCENE_POLICY, PREPARED_SCENE_SOURCES, preparedSceneSource, comparePreparedSceneSources,
+  validatePreparedRegionalScene, applyPreparedSceneDelta } from './prepared-scene-contract.js';
 
 export const REGIONAL_SCENE_POLICY = 'usgs-seismic-geographic-grid-v1';
 export const REGIONAL_SCENE_LIMITS = Object.freeze({ bytes: 270 * 1024, entries: 16, cacheBytes: 2 * 1024 * 1024,
@@ -145,6 +147,33 @@ export function normalizeRegionalSceneDelivery(value, demand, { base = null, now
     browserCache: false, pending: false });
 }
 
+/** Generic second-source transport uses the shared source contract, not a copied decoder. */
+export function normalizePreparedSceneDelivery(value, demand, { sourceKey, base = null, now = Date.now } = {}) {
+  const selection = regionalSelection(demand);
+  if (!Object.hasOwn(PREPARED_SCENE_SOURCES, sourceKey) || !value || value.schemaVersion !== 1 || value.configured !== true ||
+      value.available !== true || value.pending !== false || value.policyId !== PREPARED_SCENE_POLICY || value.sourceKey !== sourceKey ||
+      value.kind !== 'prepared-scene-delivery' || !['snapshot', 'delta'].includes(value.transport) || typeof value.snapshotRequired !== 'boolean') invalid();
+  const source = preparedSceneSource(sourceKey, value.source, { now }), check = value.check;
+  if (sourceKey === 'gdacs') {
+    if (check !== null || value.stale !== null || value.sourceGenerationAgeMs !== null) invalid();
+  } else if (check === null ? value.stale !== null || value.sourceGenerationAgeMs !== null :
+      !keys(check, ['checkedAt', 'nextCheckAt', 'lastSuccessfulAt', 'status', 'sourceGeneratedAt']) ||
+      ![check.checkedAt, check.nextCheckAt, check.lastSuccessfulAt, check.sourceGeneratedAt].every(utc) ||
+      [check.checkedAt, check.lastSuccessfulAt, check.sourceGeneratedAt].some(item => Date.parse(item) > now() + 300000) ||
+      typeof check.status !== 'string' || !check.status || check.status.length > 80 || typeof value.stale !== 'boolean' ||
+      !Number.isFinite(value.sourceGenerationAgeMs) || value.sourceGenerationAgeMs < 0) invalid();
+  const scene = value.transport === 'snapshot' ? value.delta === null ? validatePreparedRegionalScene(value.scene, { sourceKey, selection, now }) : invalid() :
+    value.scene === null && base && !value.snapshotRequired ? applyPreparedSceneDelta(base, value.delta, { sourceKey, now }) : invalid();
+  if (!same(scene.source, source)) invalid();
+  if (base && scene.version === base.version) {
+    const facts = view => ({ ...view, contentDigest: null, features: [...view.features].sort((a, b) => a.id.localeCompare(b.id)),
+      clusters: [...view.clusters].sort((a, b) => a.id.localeCompare(b.id)), unmappedFeatures: [...view.unmappedFeatures].sort((a, b) => a.id.localeCompare(b.id)) });
+    if (!same(facts(scene), facts(base))) invalid();
+  }
+  return freeze({ scene, source, check, stale: value.stale, sourceGenerationAgeMs: value.sourceGenerationAgeMs,
+    browserReadAt: now(), browserCache: false, pending: false });
+}
+
 async function readJson(response, signal) {
   const length = response.headers.get('content-length');
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > REGIONAL_SCENE_LIMITS.bytes) ||
@@ -163,18 +192,25 @@ async function readJson(response, signal) {
 
 /** One current camera demand and bounded complete-view LRU. GETs only the fixed stored endpoint. */
 export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...args), now = Date.now,
-  baseUrl = import.meta.env?.BASE_URL || '/', deadlineMs = REGIONAL_SCENE_LIMITS.deadlineMs } = {}) {
+  baseUrl = import.meta.env?.BASE_URL || '/', deadlineMs = REGIONAL_SCENE_LIMITS.deadlineMs, sourceKey,
+  retryDelayMs = 2000 } = {}) {
   if (typeof fetchImpl !== 'function' || typeof now !== 'function' || !['/', '/earth/'].includes(baseUrl) ||
-      !Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > REGIONAL_SCENE_LIMITS.deadlineMs) invalid();
-  const cache = new Map(); let cacheBytes = 0, active, expected, knownSource, destroyed = false, owner = 0, selectedKey = null;
+      !Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > REGIONAL_SCENE_LIMITS.deadlineMs ||
+      sourceKey !== undefined && !Object.hasOwn(PREPARED_SCENE_SOURCES, sourceKey) ||
+      !Number.isInteger(retryDelayMs) || retryDelayMs < 1 || retryDelayMs > 2000) invalid();
+  const cache = new Map(); let cacheBytes = 0, active, expected, knownSource, dirty = false, destroyed = false, owner = 0, selectedKey = null;
+  const compare = (left, right) => sourceKey ? comparePreparedSceneSources(sourceKey, left, right) :
+    same(left, right) ? 0 : left.fence === right.fence ? null : left.fence > right.fence ? 1 : -1;
   const current = (request, signal, key) => !destroyed && active === request && !signal.aborted && selectedKey === key;
   const cached = key => {
     const entry = cache.get(key); if (!entry) return null;
-    if (now() - entry.savedAt > REGIONAL_SCENE_LIMITS.cacheAgeMs || !compatible(entry.view.source, expected)) { cache.delete(key); cacheBytes -= entry.bytes; return null; }
+    const order = knownSource ? compare(entry.view.source, knownSource) : 0;
+    if (now() - entry.savedAt > REGIONAL_SCENE_LIMITS.cacheAgeMs || !compatible(entry.view.source, expected) || order === null || order < 0) {
+      cache.delete(key); cacheBytes -= entry.bytes; return null; }
     cache.delete(key); cache.set(key, entry); return entry;
   };
   const decorate = (entry, fromCache) => freeze({ ...entry.view, browserCache: fromCache,
-    stale: fromCache || entry.view.stale || entry.view.check?.status !== 'ready' || entry.view.sourceGenerationAgeMs !== null &&
+    stale: fromCache || entry.view.stale || entry.view.check !== null && entry.view.check?.status !== 'ready' || entry.view.sourceGenerationAgeMs !== null &&
       entry.view.sourceGenerationAgeMs + Math.max(0, now() - entry.savedAt) > 120000,
     sourceGenerationAgeMs: entry.view.sourceGenerationAgeMs === null ? null : entry.view.sourceGenerationAgeMs + Math.max(0, now() - entry.savedAt),
     browserReadAt: now() });
@@ -191,12 +227,13 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
   return {
     select(demand) { const key = regionalSelectionKey(demand); if (key === selectedKey) return false; cancel(); selectedKey = key; return true; },
     invalidate(revision) {
+      if (sourceKey === 'gdacs') { if (revision !== undefined) return false; dirty = true; cancel(); return true; }
       if (revision !== undefined) {
         const value = pluginRevision(revision);
         if (value?.pluginId !== USGS_LIVE_DAY.pluginId || expected && value.fence <= expected.fence) return false;
         expected = { fence: value.fence, receiptId: value.receiptId, factsDigest: value.factsDigest };
       }
-      cancel(); return true;
+      dirty = true; cancel(); return true;
     },
     cancel,
     async load(demand, { signal: external, onCached = () => {} } = {}) {
@@ -209,32 +246,45 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
       const assertCurrent = () => { signal.throwIfAborted(); if (revision !== owner || !current(request, signal, key)) throw abort(); };
       try {
         const operation = (async () => {
-          assertCurrent(); const prior = cached(key); if (prior) { await onCached(decorate(prior, true)); assertCurrent(); }
-          for (let attempt = 0; attempt < 2; attempt++) {
+          assertCurrent(); const prior = cached(key); if (prior && !dirty) { await onCached(decorate(prior, true)); assertCurrent(); }
+          let pendingRetries = 0, fullRecovery = false;
+          for (;;) {
             const params = new URLSearchParams({ level: String(selection.level), cells: selection.cells.map(cell => cell.join(':')).join(','), mode: selection.mode });
             if (expected) params.set('fence', String(expected.fence));
-            if (prior && attempt === 0) params.set('baseVersion', prior.view.scene.version);
-            assertCurrent(); const response = await fetchImpl(`${baseUrl}api/layers/earthquakes/scene?${params}`, { method: 'GET', credentials: 'omit',
+            if (sourceKey) params.set('source', sourceKey);
+            if (prior && !fullRecovery) params.set('baseVersion', prior.view.scene.version);
+            const endpoint = sourceKey ? 'api/layers/scenes' : 'api/layers/earthquakes/scene';
+            assertCurrent(); const response = await fetchImpl(`${baseUrl}${endpoint}?${params}`, { method: 'GET', credentials: 'omit',
               cache: 'no-store', redirect: 'error', signal }); assertCurrent();
             if (response.status === 409 || response.status === 503) {
               const value = await readJson(response, signal); assertCurrent();
               if (value?.schemaVersion !== 1 || value.available !== false || value.scene !== null || value.delta !== null) invalid();
-              return freeze({ pending: true, scene: null, source: null, check: null, errorCode: value.pending === true ?
-                response.status === 409 ? 'source-fence-not-ready' : 'scene-preparation-pending' : 'stored-scene-unavailable' });
+              if (sourceKey && (value.kind !== 'prepared-scene-delivery' || value.sourceKey !== sourceKey || value.policyId !== PREPARED_SCENE_POLICY)) invalid();
+              if (sourceKey && value.configured === true && value.pending === true && pendingRetries < 2) {
+                pendingRetries++; await new Promise((resolve, reject) => {
+                  const stopped = () => { clearTimeout(delay); signal.removeEventListener('abort', stopped); reject(signal.reason || abort()); },
+                    delay = setTimeout(() => { signal.removeEventListener('abort', stopped); resolve(); }, retryDelayMs);
+                  signal.addEventListener('abort', stopped, { once: true }); if (signal.aborted) stopped();
+                }); assertCurrent(); continue;
+              }
+              const codes = ['scene-byte-budget', 'scene-preparation-pending', 'source-fence-not-ready', 'stored-scene-unavailable'];
+              return freeze({ pending: true, preparing: value.pending === true, scene: null, source: null, check: null,
+                errorCode: codes.includes(value.errorCode) ? value.errorCode : value.pending === true ?
+                  response.status === 409 ? 'source-fence-not-ready' : 'scene-preparation-pending' : 'stored-scene-unavailable' });
             }
             if (!response.ok) { void response.body?.cancel?.(); throw new Error('Stored regional scene unavailable'); }
             const value = await readJson(response, signal); assertCurrent();
             let view;
-            try { view = normalizeRegionalSceneDelivery(value, selection, { base: attempt === 0 ? prior?.view.scene : null, now }); }
-            catch (error) { if (prior && attempt === 0 && value?.transport === 'delta') continue; throw error; }
-            if (!compatible(view.source, expected) || knownSource && (view.source.fence < knownSource.fence ||
-              view.source.fence === knownSource.fence && !same(view.source, knownSource))) invalid();
-            assertCurrent(); knownSource = view.source;
-            if (!expected || view.source.fence > expected.fence) expected = { fence: view.source.fence,
+            try { view = sourceKey ? normalizePreparedSceneDelivery(value, selection, { sourceKey, base: !fullRecovery ? prior?.view.scene : null, now }) :
+              normalizeRegionalSceneDelivery(value, selection, { base: !fullRecovery ? prior?.view.scene : null, now }); }
+            catch (error) { if (prior && !fullRecovery && value?.transport === 'delta') { fullRecovery = true; continue; } throw error; }
+            const order = knownSource ? compare(view.source, knownSource) : 0;
+            if (!compatible(view.source, expected) || order === null || order < 0) invalid();
+            assertCurrent(); knownSource = view.source; dirty = false;
+            if (sourceKey !== 'gdacs' && (!expected || view.source.fence > expected.fence)) expected = { fence: view.source.fence,
               receiptId: view.source.receiptId, factsDigest: view.source.factsDigest };
             put(key, view); return view;
           }
-          invalid();
         })();
         const aborted = new Promise((_, reject) => { stop = () => reject(signal.reason || abort()); signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop(); });
         return await Promise.race([operation, aborted]);

@@ -5,7 +5,7 @@ const CODE_LOADERS = {
   wind: () => Promise.all([import('../layers/wind/index.js'), import('../layers/wind/source.js')]),
   cyclones: () => Promise.all([import('../layers/cyclones/index.js'), import('../layers/cyclones/source.js')]),
   earthquakes: () => Promise.all([import('../layers/earthquakes/prepared-layer.js'), import('./regional-scene-client.js')]),
-  gdacs: () => Promise.all([import('../layers/gdacs/index.js'), import('../layers/gdacs/source.js')]),
+  gdacs: () => Promise.all([import('../layers/gdacs/prepared-layer.js'), import('./regional-scene-client.js')]),
   perimeters: () => Promise.all([import('../app/layers/perimeters.js'), import('../layers/perimeters/source.js')]),
   imagery: () => Promise.all([import('../app/layers/recentImagery.js'), import('../layers/recentImagery/source.js')]),
   satellites: () => Promise.all([import('../app/layers/satellites.js'), import('../layers/satellites/source.js')]),
@@ -171,11 +171,11 @@ export async function createLayer(id, { services = {}, fetchImpl, getLocalArea, 
   }
   if (id === 'earthquakes') {
     const [engine, source] = modules;
-    return engine.createPreparedEarthquakesLayer({ client: source.createRegionalSceneClient({ fetchImpl }) });
+    return engine.createPreparedEarthquakesLayer({ client: source.createRegionalSceneClient({ fetchImpl, sourceKey: 'earthquakes' }) });
   }
   if (id === 'gdacs-notices') {
     const [engine, source] = modules;
-    return engine.createGdacsNoticesLayer({ source: source.createGdacsNoticeSource({ fetchImpl }) });
+    return engine.createPreparedGdacsLayer({ client: source.createRegionalSceneClient({ fetchImpl, sourceKey: 'gdacs' }) });
   }
   if (id === 'fire-perimeters') {
     const [adapter, source] = modules;

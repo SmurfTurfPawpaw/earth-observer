@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as Cesium from 'cesium';
-import { createMapBillboard, mapSymbolImage, gdacsMapSymbol, gdacsAlertColor, MAP_SYMBOL_KINDS } from './map-symbols.js';
+import { createMapBillboard, mapSymbolImage, gdacsMapSymbol, gdacsAlertColor, MAP_SYMBOL_KINDS, mapClusterBadge, MAP_CLUSTER_BADGE_LIMITS } from './map-symbols.js';
 
 test('source categories reuse seven fixed atlas images and never interpolate provider markup or URLs', () => {
   const images = new Set(MAP_SYMBOL_KINDS.map(mapSymbolImage));
@@ -39,4 +39,44 @@ test('GDACS alert coloring depends only on the source declaration and keeps unkn
   assert.equal(gdacsAlertColor('Orange'), gdacsAlertColor('orange'));
   assert.equal(gdacsAlertColor(null), gdacsAlertColor('unexpected'));
   assert.equal(gdacsAlertColor('https://foreign.invalid/'), gdacsAlertColor(null));
+});
+
+test('category summaries keep exact one-, two- and three-digit counts in a separate native billboard badge', () => {
+  for (const count of [1, 12, 500]) {
+    const badge = mapClusterBadge(count, 'seismic');
+    assert.equal(Object.isFrozen(badge), true);
+    const svg = decodeURIComponent(badge.image.slice('data:image/svg+xml,'.length));
+    const digitTransforms = [...svg.matchAll(/transform="translate\(([\d.]+) 25\)"/g)].map(match => Number(match[1]));
+    assert.equal(digitTransforms.length, String(count).length, 'No count abbreviation or dropped digit');
+    assert.ok(digitTransforms[0] >= 4 && digitTransforms.at(-1) + 7 <= 44, 'Numerals fit the distinct count block');
+    for (let index = 1; index < digitTransforms.length; index++) assert.ok(digitTransforms[index] - digitTransforms[index - 1] >= 10);
+    assert.doesNotMatch(svg, /<text|<image|href=|foreignObject|<script/i, 'Artwork needs no font, provider image or external resource');
+    const native = new Cesium.BillboardGraphics({ image: badge.image, width: badge.width, height: badge.height });
+    const at = Cesium.JulianDate.now();
+    assert.equal(native.image.getValue(at), badge.image);
+    assert.equal(native.width.getValue(at), 48); assert.equal(native.height.getValue(at), 42);
+    assert.equal(native.disableDepthTestDistance, undefined, 'Badge does not override normal globe occlusion');
+  }
+  assert.notEqual(mapClusterBadge(12, 'seismic').image, mapClusterBadge(12, 'flood').image);
+  assert.notEqual(mapClusterBadge(12, 'flood').image, mapClusterBadge(13, 'flood').image);
+});
+
+test('cluster artwork admits only exact bounded counts and fixed semantic categories', () => {
+  for (const count of [0, -1, 501, 1.5, NaN, Infinity, '12', null, undefined]) assert.throws(() => mapClusterBadge(count), RangeError);
+  const neutral = mapClusterBadge(12, 'notice');
+  for (const symbol of ['constructor', 'toString', '<script>bad</script>', 'https://foreign.invalid/icon']) {
+    assert.equal(mapClusterBadge(12, symbol), neutral);
+  }
+  assert.equal(mapClusterBadge(12, 'seismic'), mapClusterBadge(12, 'seismic'), 'Same count/category shares one image reference');
+});
+
+test('bounded badge cache evicts old image references while keeping recently reused artwork', () => {
+  const first = mapClusterBadge(1, 'cyclone');
+  for (let count = 2; count <= MAP_CLUSTER_BADGE_LIMITS.entries + 2; count++) mapClusterBadge(count, 'cyclone');
+  const recent = mapClusterBadge(MAP_CLUSTER_BADGE_LIMITS.entries + 2, 'cyclone');
+  const rebuilt = mapClusterBadge(1, 'cyclone');
+  assert.notEqual(rebuilt, first, 'Growing count variations cannot retain every generated object');
+  assert.equal(rebuilt.image, first.image, 'Eviction changes no category/count facts');
+  assert.equal(mapClusterBadge(MAP_CLUSTER_BADGE_LIMITS.entries + 2, 'cyclone'), recent);
+  assert.ok(rebuilt.image.length * 2 < MAP_CLUSTER_BADGE_LIMITS.bytes);
 });
