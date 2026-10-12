@@ -51,7 +51,7 @@ function publications() {
     counts: { returned: 1, more: true } };
 }
 function fixture(fetchImpl = async (url) => Response.json(url.startsWith('/api/publications') ? publications() : gas()), options = {}) {
-  const listeners = new Map(), timers = new Map(); let id = 0, now = 0, feedCreates = 0, feedOpens = 0, feedCloses = 0, feedDestroys = 0;
+  const listeners = new Map(), timers = new Map(); let id = 0, now = Date.parse('2026-10-12T04:10:00.000Z'), feedCreates = 0, feedOpens = 0, feedCloses = 0, feedDestroys = 0;
   const updates = new Set();
   const documentRef = { hidden: false, createElement: (tag) => new Element(tag, documentRef), createElementNS: (_namespace, tag) => new Element(tag, documentRef),
     addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); }, removeEventListener(type, fn) { listeners.get(type)?.delete(fn); } };
@@ -67,6 +67,129 @@ function fixture(fetchImpl = async (url) => Response.json(url.startsWith('/api/p
 }
 const update = (payload, fence) => ({ type: 'plugin', schemaVersion: 1, pluginId: payload.plugin.id, scopeId: payload.plugin.scopeId,
   receiptId: payload.receipt.id, fence, factsDigest: payload.receipt.factsDigest, recordedAt: payload.receipt.recordedAt });
+
+test('institutional context captures exact UTC/lens while playback and source updates cannot drive background reads', async () => {
+  let scene = { mode: 'history', at: '2026-10-12T04:05:00.000Z', lens: 'reconstruction', playing: true }, current = publications();
+  const f = fixture(async () => Response.json(current), { getScene: () => scene });
+  await f.panel.select('publications'); await f.panel.open();
+  const query = () => new URL(f.requests.at(-1)[0], 'https://example.test').searchParams;
+  assert.equal(query().get('at'), scene.at); assert.equal(query().get('knownAt'), null); assert.equal(f.timers.size, 0);
+  const snapshotAt = scene.at;
+  for (let second = 1; second <= 20; second++) {
+    scene = { ...scene, at: new Date(Date.parse(snapshotAt) + second * 1000).toISOString() };
+    await f.panel.commitScene({ ...scene, reason: 'playback' });
+  }
+  assert.equal(f.requests.length, 1); assert.equal(scene.playing, true);
+  assert.match(visibleText(f.container), /publications through 2026-10-12 04:05:00 UTC/);
+  current = edition(current, 'f'); f.emit(update(current, 1)); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.requests.length, 1); assert.equal(f.timers.size, 0);
+  await f.panel.refresh(); assert.equal(query().get('at'), scene.at); assert.equal(f.requests.length, 2); assert.equal(scene.playing, true);
+  scene = { ...scene, at: '2026-10-12T04:06:00.000Z', playing: false, lens: 'known-then' };
+  await f.panel.commitScene({ ...scene, reason: 'pause' }); assert.equal(query().get('knownAt'), scene.at); assert.equal(f.requests.length, 3);
+  assert.match(visibleText(f.container), /platform knew then/); assert.doesNotMatch(visibleText(f.container), /Stored source checked/);
+  scene = { ...scene, lens: 'reconstruction' }; await f.panel.commitScene({ ...scene, reason: 'lens' });
+  assert.equal(query().get('knownAt'), null); assert.equal(f.requests.length, 4, 'distinct lenses cannot share a latest-evidence cache entry');
+  scene = { ...scene, lens: 'known-then' }; await f.panel.commitScene({ ...scene, reason: 'lens' }); assert.equal(f.requests.length, 4, 'the exact knowledge snapshot is reusable');
+  scene = { mode: 'live', at: '2026-10-12T04:10:00.000Z', lens: 'known-then', playing: false };
+  await f.panel.commitScene({ ...scene, reason: 'live' }); assert.equal(query().get('at'), null); assert.equal(query().get('knownAt'), null); assert.equal(f.timers.size, 1);
+  f.panel.destroy();
+});
+
+test('same-source committed time changes abort ownership and late responses cannot cross a dated context snapshot', async () => {
+  let scene = { mode: 'history', at: '2026-10-12T04:05:00.000Z', lens: 'reconstruction' };
+  const pending = [], f = fixture((url, init) => new Promise(resolve => pending.push({ url, signal: init.signal, resolve })), { getScene: () => scene });
+  await f.panel.select('publications'); const first = f.panel.open(); assert.equal(pending.length, 1);
+  scene = { ...scene, at: '2026-10-12T04:06:00.000Z' }; const second = f.panel.commitScene({ ...scene, reason: 'seek' });
+  assert.equal(pending[0].signal.aborted, true); assert.equal(pending.length, 2);
+  const newer = publications(); newer.items[0].title = 'Chosen context B'; pending[1].resolve(Response.json(newer)); await second;
+  const older = publications(); older.items[0].title = 'Obsolete context A'; pending[0].resolve(Response.json(older)); await first;
+  assert.match(visibleText(f.container), /Chosen context B/); assert.doesNotMatch(visibleText(f.container), /Obsolete context A/);
+  scene = { ...scene, lens: 'known-then' }; const hiddenRead = f.panel.commitScene({ ...scene, reason: 'lens' });
+  f.visibility(true); assert.equal(pending[2].signal.aborted, true);
+  pending[2].resolve(Response.json(older)); await hiddenRead; assert.doesNotMatch(visibleText(f.container), /Obsolete context A/);
+  f.panel.close(); f.visibility(false); assert.equal(f.requests.length, 3, 'hidden/closed state cannot wake a new stored read');
+  f.panel.destroy();
+});
+
+test('a delayed matching SSE dirties older Live/reconstruction caches while the matched and known-then snapshots remain reusable', async () => {
+  const earlier = publications(), cutoff = '2026-10-12T04:05:00.000Z'; let current = earlier, scene = { mode: 'live' };
+  const f = fixture(async url => {
+    const query = new URL(url, 'https://example.test').searchParams;
+    return Response.json(query.has('knownAt') ? earlier : current);
+  }, { getScene: () => scene });
+  await f.panel.select('publications'); await f.panel.open();
+  scene = { mode: 'history', at: cutoff, lens: 'known-then' }; await f.panel.commitScene({ ...scene, reason: 'lens' });
+  current = edition(earlier, 'f'); current.receipt.capturedAt = '2026-10-12T04:05:59.000Z'; current.receipt.recordedAt = '2026-10-12T04:06:00.000Z';
+  for (const item of current.items) {
+    item.lastRecordedAt = current.receipt.recordedAt;
+    item.evidence = { ...item.evidence, capturedAt: current.receipt.capturedAt, recordedAt: current.receipt.recordedAt };
+  }
+  scene = { ...scene, lens: 'reconstruction' }; await f.panel.commitScene({ ...scene, reason: 'lens' }); assert.equal(f.requests.length, 3);
+  f.emit(update(current, 1)); await new Promise(resolve => setImmediate(resolve));
+  await f.panel.open(); assert.equal(f.requests.length, 3, 'the displayed matching receipt stays clean');
+  scene = { mode: 'live' }; await f.panel.commitScene({ ...scene, reason: 'live' });
+  assert.equal(f.requests.length, 4, 'known newer receipt invalidates the older Live cache before the early dedup return');
+  assert.ok(f.container.textContent.includes(current.receipt.rawSha256));
+  scene = { mode: 'history', at: cutoff, lens: 'known-then' }; await f.panel.commitScene({ ...scene, reason: 'lens' });
+  assert.equal(f.requests.length, 4, 'a correction recorded after the fixed knowledge cutoff does not dirty that snapshot');
+  assert.ok(f.container.textContent.includes(earlier.receipt.rawSha256)); f.panel.destroy();
+});
+
+test('context snapshot cache evicts by both six-entry LRU and the shared decoded-byte budget', async () => {
+  let scene = { mode: 'history', at: '2026-10-12T04:02:00.000Z', lens: 'reconstruction' };
+  const f = fixture(async () => Response.json(publications()), { getScene: () => scene });
+  await f.panel.select('publications'); await f.panel.open();
+  for (let minute = 3; minute <= 8; minute++) { scene = { ...scene, at: `2026-10-12T04:0${minute}:00.000Z` }; await f.panel.commitScene({ ...scene, reason: 'seek' }); }
+  assert.equal(f.requests.length, 7);
+  scene = { ...scene, at: '2026-10-12T04:02:00.000Z' }; await f.panel.commitScene({ ...scene, reason: 'seek' }); assert.equal(f.requests.length, 8, 'seventh snapshot evicts the least recent first snapshot');
+  scene = { ...scene, at: '2026-10-12T04:07:00.000Z' }; await f.panel.commitScene({ ...scene, reason: 'seek' }); assert.equal(f.requests.length, 8, 'an unexpired recent compatible snapshot is reused');
+  f.panel.destroy();
+  const large = publications(); large.artifact.padding = 'x'.repeat(140000);
+  const g = fixture(async () => Response.json(large), { getScene: () => scene }); await g.panel.select('publications'); await g.panel.open();
+  scene = { ...scene, at: '2026-10-12T04:08:00.000Z' }; await g.panel.commitScene({ ...scene, reason: 'seek' });
+  scene = { ...scene, at: '2026-10-12T04:07:00.000Z' }; await g.panel.commitScene({ ...scene, reason: 'seek' });
+  assert.equal(g.requests.length, 3, 'two individually admitted bodies exceed the aggregate byte budget, so the first must be read again'); g.panel.destroy();
+});
+
+test('a selected historical publication scope rejects later facts and gives an honest empty knowledge view without a provider fallback', async () => {
+  let scene = { mode: 'history', at: '2026-10-11T11:00:00.000Z', lens: 'reconstruction' }, current = publications();
+  const f = fixture(async () => Response.json(current), { getScene: () => scene }); await f.panel.select('publications');
+  assert.equal(await f.panel.open(), false); assert.match(visibleText(f.container), /do not match the selected publication UTC/);
+  assert.doesNotMatch(visibleText(f.container), /Original release/);
+  scene = { mode: 'history', at: '2026-10-12T04:00:59.999Z', lens: 'known-then' };
+  assert.equal(await f.panel.commitScene({ ...scene, reason: 'lens' }), false); assert.match(visibleText(f.container), /knowledge cutoff/);
+  current = { ...publications(), available: false, receipt: null, artifact: null, items: [], counts: { returned: 0, more: false }, explanation: 'No retained source receipt was available by the selected knowledge time.' };
+  await f.panel.refresh(); assert.match(visibleText(f.container), /No retained source receipt was available/); assert.equal(f.requests.length, 3);
+  scene = { mode: 'history', at: '2027-01-01T00:00:00.000Z', lens: 'reconstruction' }; await f.panel.commitScene({ ...scene, reason: 'seek' });
+  assert.equal(f.requests.length, 3); assert.match(visibleText(f.container), /Future institutional publications are unavailable/); f.panel.destroy();
+});
+
+test('latest-only PDF inspection cannot enter a historical context and becomes available again in Live', async () => {
+  const ec = await commission(); let scene = { mode: 'history', at: '2026-10-12T04:05:00.000Z', lens: 'reconstruction' }, imports = 0;
+  const f = fixture(async () => Response.json(ec), { getScene: () => scene, loadDocument() { imports++; throw Error('Test-only lazy boundary'); } });
+  await f.panel.select('commission'); await f.panel.open();
+  const button = elements(f.container).find(el => el.tagName === 'button' && el.textContent === 'Document examination · Live only');
+  assert(button?.disabled); assert.match(button.title, /Return to Live/); button.trigger('click'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(imports, 0); assert.equal(f.requests.length, 1);
+  scene = { mode: 'live' }; await f.panel.commitScene({ ...scene, reason: 'live' });
+  const liveButton = elements(f.container).find(el => el.tagName === 'button' && el.textContent === 'Inspect document'); assert.equal(liveButton.disabled, false);
+  assert.equal(f.requests.length, 2); assert.equal(imports, 0); f.panel.destroy();
+});
+
+test('explicit purpose/source selection captures advancing globe UTC without interrupting playback or surviving terminal cleanup', async () => {
+  const ec = await commission(); let scene = { mode: 'history', at: '2026-10-12T04:05:00.000Z', lens: 'reconstruction', playing: true }, captures = 0;
+  const f = fixture(async url => Response.json(url.includes('plugin=ec-press-v1') ? ec : url.startsWith('/api/publications') ? publications() : gas()), { getScene: () => { captures++; return scene; } });
+  await f.panel.select('publications'); await f.panel.open();
+  scene = { ...scene, at: '2026-10-12T04:06:00.000Z' }; await f.panel.select('commission');
+  assert.equal(new URL(f.requests.at(-1)[0], 'https://example.test').searchParams.get('at'), scene.at); assert.equal(scene.playing, true);
+  await f.panel.select('gas'); assert.equal(f.requests.at(-1)[0], '/api/dossiers/belgium-natural-gas-origins');
+  scene = { ...scene, at: '2026-10-12T04:07:00.000Z' }; await f.panel.select('publications');
+  assert.equal(new URL(f.requests.at(-1)[0], 'https://example.test').searchParams.get('at'), scene.at); assert.equal(scene.playing, true);
+  f.panel.destroy(); const requests = f.requests.length, readCount = captures;
+  await f.panel.open(); await f.panel.refresh(); await f.panel.commitScene({ ...scene, reason: 'pause' }); f.panel.setSceneMode('live'); await f.panel.select('commission');
+  assert.equal(captures, readCount, 'disposed controls cannot read a destroyed viewer through getScene'); assert.equal(f.requests.length, requests);
+  assert.equal(f.timers.size, 0); assert.equal(f.updateListeners.size, 0); assert.equal(f.container.children.length, 0);
+});
 test('purpose navigation remembers the publication source and only the visible selected view acquires stored data', async () => {
   const ec = await commission(), f = fixture(async url => Response.json(url.includes('plugin=ec-press-v1') ? ec : url.startsWith('/api/publications') ? publications() : gas()));
   const nav = elements(f.container).find(el => el.className === 'context-navigation');
@@ -93,14 +216,14 @@ function edition(payload, marker, facts = payload.receipt.factsDigest) {
 
 test('closed construction and selection do not fetch; one context source owns lazy delivery and opening a dossier preserves historical UTC semantics', async () => {
   const f = fixture(); assert.equal(f.requests.length, 0); assert.equal(f.stats().feedCreates, 0);
-  await f.panel.select('gas'); assert.equal(f.requests.length, 0); f.panel.setSceneMode('history'); await f.panel.open();
+  await f.panel.select('gas'); assert.equal(f.requests.length, 0); await f.panel.commitScene({ mode: 'history', at: '2026-10-12T04:05:00.000Z', lens: 'reconstruction' }); await f.panel.open();
   assert.equal(f.requests.length, 1); assert.equal(f.requests[0][0], '/api/dossiers/belgium-natural-gas-origins'); assert.equal(f.stats().feedCreates, 0);
   assert.match(f.container.textContent, /Annual reported imports · 2024/); assert.match(f.container.textContent, /Current context · source dates do not follow map time/);
   assert.match(f.container.textContent, /2024 reported imports/); assert.match(f.container.textContent, /Source retrieved2026-10-12 04:00:00 UTC/);
   assert.match(f.container.textContent, /Source revised2026-10-09 21:00:00 UTC/);
   await f.panel.select('feeds'); assert.equal(f.stats().feedCreates, 1); assert.equal(f.stats().feedOpens, 1); assert.equal(f.timers.size, 0);
   await f.panel.select('publications'); assert.equal(f.stats().feedCloses, 1); assert.equal(f.requests.length, 2);
-  assert.equal(f.requests[1][0], '/api/publications?plugin=ecb-press-v1&limit=20'); assert.match(f.container.textContent, /Published 2026-10-11 12:00:00 UTC/);
+  assert.equal(new URL(f.requests[1][0], 'https://example.test').searchParams.get('at'), '2026-10-12T04:05:00.000Z'); assert.match(f.container.textContent, /Published 2026-10-11 12:00:00 UTC/);
   assert.match(f.container.textContent, /First retained 2026-10-12 04:01:00 UTC/); assert.match(f.container.textContent, /absence is not withdrawal/);
   assert.ok(!elements(f.container).some((el) => el.tagName === 'img'), 'Provider titles remain text');
   f.panel.destroy(); assert.equal(f.stats().feedDestroys, 1); assert.equal(f.timers.size, 0);
@@ -413,10 +536,10 @@ test('Inspect document is fixed-item-only and lazy; Back preserves the publicati
   const nav = elements(f.container).find(el => el.className === 'context-navigation'), source = elements(f.container).find(el => el.className === 'context-source');
   const title = elements(f.container).find(el => el.className === 'plugin-title'), subtitle = elements(f.container).find(el => el.className === 'plugin-subtitle');
   assert.equal(Boolean(nav.hidden), false); assert.equal(source.hidden, false);
-  f.panel.setSceneMode('history'); buttons[0].trigger('click');
+  buttons[0].trigger('click');
   await waitFor(() => elements(f.container).filter(el => el.className === 'document-statement').length === 4, 'the retained original examination');
   assert.equal(imports, 1); assert.equal(f.requests.length, 2); assert.equal(f.requests[1][0], '/api/documents/ec-statement-26-2127');
-  assert.match(visibleText(f.container), /Source statements · not independently corroborated/); assert.match(visibleText(f.container), /Current context · source dates do not follow map time/);
+  assert.match(visibleText(f.container), /Source statements · not independently corroborated/);
   const documentHost = elements(f.container).find(el => el.className === 'plugin-document');
   assert.equal(nav.hidden, true); assert.equal(source.hidden, true); assert.equal(title.hidden, true); assert.equal(subtitle.hidden, true);
   assert.equal(Boolean(elements(f.container).find(el => el.className === 'plugin-refresh' && el.textContent === 'Refresh stored examination').hidden), false);

@@ -64,6 +64,29 @@ function response(at = null, points = [], range = baseRange, extra = {}) {
     coverage: { availableRange: range, requestedRange, segments: [requestedRange], gaps: [], complete: true, truncated: false, status: 'complete' }, ...extra });
 }
 
+test('context commits expose exact selected UTC and pause, while accelerated clock ticks stay local', async () => {
+  const f = fixture(), commits = [], at = '2025-06-08T00:00:00.000Z', p = await point('context-clock', at);
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef,
+    onContextCommit: state => commits.push(state), fetchImpl: async url => {
+      const query = new URL(url, 'https://example.test').searchParams;
+      return response(query.get('at'), query.has('metadata') ? [] : [p]);
+    } });
+  assert.equal(commits.length, 0);
+  await timeline.seek(at); assert.equal(commits.length, 1); assert.equal(commits[0].reason, 'seek');
+  assert.equal(commits[0].at, at); assert.equal(commits[0].lens, 'reconstruction'); assert.equal(timeline.getContextState().at, at);
+  const controls = elements(f.container.parentElement), rate = controls.find(element => element.id === 'timeline-rate'), play = controls.find(element => element.id === 'timeline-play');
+  rate.value = '86400'; rate.trigger('change'); play.trigger('click'); await waitFor(() => f.sceneClock.getState().playing, 'historical playback');
+  assert.equal(f.sceneClock.getState().playing, true); f.timing.advance(1000); await settle();
+  assert.equal(commits.length, 1, 'clock tick and retained playback advance must not become context reads');
+  assert.equal(timeline.getContextState().at, '2025-06-09T00:00:00.000Z');
+  play.trigger('click'); assert.equal(f.sceneClock.getState().playing, false); assert.equal(commits.length, 2);
+  assert.equal(commits[1].reason, 'pause'); assert.equal(commits[1].at, f.sceneClock.getState().at);
+  timeline.live(); assert.equal(commits.at(-1).reason, 'live'); assert.equal(commits.at(-1).mode, 'live');
+  const lens = controls.find(element => element.id === 'timeline-lens'); lens.value = 'known-then'; lens.trigger('change');
+  assert.equal(commits.at(-1).reason, 'lens'); assert.equal(timeline.getContextState().lens, 'known-then');
+  timeline.destroy(); f.sceneClock.destroy();
+});
+
 test('calendar uses origin coverage across years, retains UTC through renewal, and crosses midnight without transferring an unchanged buffer', async () => {
   const f = fixture(), requests = [], beforeMidnight = '2025-06-01T23:59:50.000Z'; let metadataCalls = 0;
   const old = await point('earlier', '2025-06-01T20:00:00.000Z'), upcoming = await point('upcoming', '2025-06-02T00:00:20.000Z');

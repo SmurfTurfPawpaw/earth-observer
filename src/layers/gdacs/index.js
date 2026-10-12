@@ -7,7 +7,7 @@ const noticeId = item => `gdacs-notice:${item.itemId}`;
 const sourceDate = value => value ? new Date(value).toISOString().replace('T', ' ').replace('Z', ' UTC') : 'Date not reported';
 
 /** Constant source notices, not inferred world incidents or historical features. */
-export function createGdacsNoticesLayer({ source } = {}) {
+export function createGdacsNoticesLayer({ source, documentRef = globalThis.document } = {}) {
   if (typeof source?.getSnapshot !== 'function') throw new TypeError('GDACS notices require a stored cohort source');
   let viewer, dataSource, request, enabled = false, localArea, snapshot, error, listener;
   let previous = new Map();
@@ -71,12 +71,19 @@ export function createGdacsNoticesLayer({ source } = {}) {
       } finally { if (request === owner) request = null; }
     },
     setParams(values) {
-      if (!enabled || !/^item:[a-f0-9]{64}$/.test(values?.inspectItem || '')) return false;
+      if (!enabled || !dataSource?.show || documentRef?.hidden || viewer?.isDestroyed?.() ||
+          viewer?.earthTime?.getState?.()?.mode === 'history' || !/^item:[a-f0-9]{64}$/.test(values?.inspectItem || '')) return false;
       const entity = dataSource?.entities.getById(`gdacs-notice:${values.inspectItem}`);
-      if (!entity) return false;
+      if (!entity || !previous.has(entity.id)) return false;
       // An unlocated notice is a source-context selection with no position or
       // graphics. Inspection never manufactures a pin or moves scene/camera.
-      viewer.selectedEntity = entity; viewer.scene?.requestRender?.(); return true;
+      if (viewer.selectedEntity === entity) {
+        // Layers can obscure the dossier while keeping Cesium's selection.
+        // Re-present its current evidence without a clear/reselect transition.
+        if (typeof viewer.selectedEntityChanged?.raiseEvent !== 'function') return false;
+        viewer.selectedEntityChanged.raiseEvent(entity);
+      } else viewer.selectedEntity = entity;
+      viewer.scene?.requestRender?.(); return true;
     },
     getParams() { return {}; },
     getRowControls() {

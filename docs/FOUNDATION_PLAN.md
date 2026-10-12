@@ -320,3 +320,24 @@ whole-bucket growth or replace retention policy. Re-examine the evidence-to-expl
 contracts before starting predictions or adding more feeds. Keep the remaining time
 for coherent release proof and the review handoff; all-source history, permanent
 execution and ongoing investigative synthesis remain separate completion gates.
+
+## 04:27 UTC dependency reassessment
+
+The v42 browser ownership slice is published. Normal-viewport buffer release and
+current source selection are verified; extreme-resolution legibility is still a
+separate unresolved acceptance question because override screenshots were inconsistent.
+Do not claim lossless 4K labels or attribute the earlier browser crash to these buffers.
+
+Repair explicit notice reactivation through the existing selection event. Prioritize
+the source-time seam next: institution publication context must use the globe's actual
+UTC and evidence lens, with bounded cache ownership and canceled obsolete requests.
+Committed seeks/lens changes and manual refresh may update that context; accelerated
+playback must not trigger per-tick network activity or imply an undated panel is current.
+The fixed latest-only document examination remains unavailable in historical context.
+
+Gate this package on cutoff admission, delayed response exclusion, cache bounds,
+Live restoration and actual dated browser journeys. Later causal explanation and
+forecast phases need stable entities, dated relationships and analysis revision
+contracts. More providers do not resolve those missing foundations. Reserve time for
+the final coherent release and handoff at 06:39:10 UTC; the temporary collector stops
+then, and no permanent hosting dependency is considered fulfilled by this session.

@@ -2,8 +2,9 @@ import { worldTime, isWorldDigest } from './world-identity.js';
 import { pluginRevision, newerPluginRevision, PLUGIN_UPDATE_SCOPES } from './live-updates.js';
 import { createGasExposureScenario } from './gas-scenario.js';
 import { createIcon } from './icons.js';
+import { institutionalContextTime, institutionalContextKey, institutionalContextUrl, validateInstitutionalContextTime } from './institutional-context-time.js';
 
-export const PLUGIN_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, publications: 40, years: 10, origins: 20, refreshMs: 300000 });
+export const PLUGIN_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, cacheEntries: 6, publications: 40, years: 10, origins: 20, refreshMs: 300000 });
 const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', pluginId: 'eurostat-gas-origins-v1', url: '/api/dossiers/belgium-natural-gas-origins', kind: 'dataset-dossier' },
   publications: { label: 'ECB releases', title: 'ECB institutional releases', subtitle: 'Original publications · European Central Bank', pluginId: 'ecb-press-v1', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' },
   commission: { label: 'Commission', title: 'European Commission publications', subtitle: 'Original publication metadata · European Commission / European Union', pluginId: 'ec-press-v1', url: '/api/publications?plugin=ec-press-v1&limit=20', kind: 'publication-feed-overview' } });
@@ -91,12 +92,12 @@ async function readStored(response, signal) {
     for (;;) { signal.throwIfAborted(); const { done, value } = await reader.read(); signal.throwIfAborted(); if (done) break;
       size += value.byteLength; if (size > PLUGIN_DOSSIER_LIMITS.bytes) { cancel(); throw new Error('Stored context exceeds its delivery bound'); } chunks.push(value); }
     const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    return JSON.parse(new TextDecoder().decode(bytes));
+    return { value: JSON.parse(new TextDecoder().decode(bytes)), bytes: size };
   } finally { signal.removeEventListener('abort', cancel); reader.releaseLock(); }
 }
 
 /** One existing context workspace; only its selected, visible source owns delivery. */
-export function createPluginDossierPanel({ container, createFeed, subscribeUpdates, fetchImpl = (...args) => fetch(...args), documentRef = container?.ownerDocument || globalThis.document,
+export function createPluginDossierPanel({ container, createFeed, subscribeUpdates, getScene, fetchImpl = (...args) => fetch(...args), documentRef = container?.ownerDocument || globalThis.document,
   windowRef = documentRef?.defaultView || globalThis.window, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
   loadDocument = () => import('./document-dossier.js') } = {}) {
   if (!container || !documentRef || typeof createFeed !== 'function') throw new TypeError('Source context needs a container and current-feed delegate');
@@ -117,13 +118,45 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
   const content = node('div', 'plugin-content'), documentHost = node('section', 'plugin-document'), refresh = node('button', 'plugin-refresh', 'Refresh stored context'); refresh.type = 'button'; documentHost.hidden = true;
   dossierHost.append(title, subtitle, status, content, documentHost, refresh); container.replaceChildren(nav, sourceField, scope, feedHost, dossierHost);
   let view = 'feeds', opened = false, destroyed = false, generation = 0, request, pending, timer, feed, feedPending, mode = 'live', rendered = null, followupRequested = false;
+  let contextTime = institutionalContextTime(getScene?.(), now()), cacheBytes = 0;
+  mode = contextTime.mode;
   const dirty = new Set(), updates = new Map(); let evidenceBindings = [], scenario;
   let documentSelection, documentController, documentModule, documentEpoch = 0;
   const documentButtons = new Map();
   const stopTimer = () => { if (timer !== undefined) clearTimeoutImpl(timer); timer = undefined; };
   const cancel = () => { ++generation; ++documentEpoch; documentController?.close(); scenario?.suspend(); request?.abort(); request = null; pending = null; followupRequested = false; stopTimer(); dossierHost.setAttribute('aria-busy', 'false'); refresh.disabled = false; };
+  const institutional = id => id === 'publications' || id === 'commission';
+  const keyFor = id => institutional(id) ? institutionalContextKey(id, contextTime) : id;
+  function cached(key) {
+    const value = cache.get(key); if (value) { cache.delete(key); cache.set(key, value); } return value;
+  }
+  function retain(key, value) {
+    const previous = cache.get(key); if (previous) { cacheBytes -= previous.bytes; cache.delete(key); }
+    while (cache.size && (cache.size >= PLUGIN_DOSSIER_LIMITS.cacheEntries || cacheBytes + value.bytes > PLUGIN_DOSSIER_LIMITS.bytes)) {
+      const [oldKey, older] = cache.entries().next().value; cache.delete(oldKey); cacheBytes -= older.bytes;
+    }
+    cache.set(key, value); cacheBytes += value.bytes;
+  }
+  function timeScope() {
+    scope.hidden = mode !== 'history';
+    scope.textContent = !institutional(view) ? 'Current context · source dates do not follow map time.'
+      : !contextTime.available ? contextTime.explanation
+        : `Context snapshot · publications through ${displayTime(contextTime.at)} · ${contextTime.knownAt ? 'platform knew then' : 'retrospective retained revisions'}. Playback does not advance this snapshot; Refresh uses globe time.`;
+    refresh.textContent = documentSelection ? 'Refresh stored examination' : institutional(view) && mode === 'history' ? 'Refresh at globe time' : 'Refresh stored context';
+  }
+  function captureScene(scene, { commit = false } = {}) {
+    if (destroyed) return Promise.resolve(false);
+    const current = scene === undefined ? getScene?.() : scene;
+    const next = institutionalContextTime(current || contextTime, now()), changed = institutionalContextKey(view, next) !== keyFor(view);
+    contextTime = next; mode = next.mode; feed?.setSceneMode?.(mode);
+    if (changed && institutional(view)) {
+      cancel(); if (documentSelection) clearDocument(); rendered = null; presentation();
+    }
+    timeScope();
+    return commit && opened && institutional(view) && changed ? load() : Promise.resolve(false);
+  }
   function arm() {
-    stopTimer(); if (!opened || destroyed || documentRef.hidden || view === 'feeds' || documentSelection) return;
+    stopTimer(); if (!opened || destroyed || documentRef.hidden || view === 'feeds' || documentSelection || institutional(view) && mode === 'history') return;
     timer = setTimeoutImpl(() => { timer = undefined; void load(true); }, PLUGIN_DOSSIER_LIMITS.refreshMs);
   }
   function evidence(payload, extra = [], label = 'Source and retained evidence') {
@@ -132,7 +165,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     const facts = node('dl', 'plugin-facts');
     bindFacts(facts, payload, [['Source retrieved', p => displayTime(p.receipt.capturedAt)], ['Receipt recorded', p => displayTime(p.receipt.recordedAt)],
       ['Source revised', p => p.receipt.sourceUpdatedAt ? displayTime(p.receipt.sourceUpdatedAt) : null],
-      ['Stored source checked', p => displayTime(p.check?.checkedAt)], ...extra,
+      ['Stored source checked', p => institutional(view) && mode === 'history' ? null : displayTime(p.check?.checkedAt)], ...extra,
       ['Raw SHA-256', p => p.receipt.rawSha256], ['Facts SHA-256', p => p.receipt.factsDigest], ['Artifact SHA-256', p => p.receipt.artifactSha256]]);
     details.append(facts); return details;
   }
@@ -224,7 +257,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     };
   }
   function render(payload) {
-    const signature = JSON.stringify([view, payload.available, payload.explanation, payload.available && (view === 'gas' ?
+    const signature = JSON.stringify([keyFor(view), payload.available, payload.explanation, payload.available && (view === 'gas' ?
       [payload.receipt.factsDigest, payload.artifact.policyId] : payload.items.map(item => [item.itemId, item.revision]))]);
     if (rendered === signature) { refreshEvidence(payload); if (view === 'gas') scenario?.update(payload); return; }
     rendered = signature; evidenceBindings = []; documentButtons.clear(); content.replaceChildren();
@@ -267,7 +300,9 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
         if (view === 'commission') article.append(node('p', 'plugin-note', `${EC_DOCUMENT_TYPES[item.documentType]} · ${item.documentReference}`));
         if (view === 'commission' && item.url === INSPECTABLE_DOCUMENT && item.documentReference === 'statement_26_2127' && item.documentType === 'statement') {
           const inspect = node('button', 'plugin-refresh', 'Inspect document'); inspect.type = 'button';
-          inspect.setAttribute('aria-label', `Inspect original document: ${item.title}`);
+          inspect.disabled = mode === 'history';
+          if (inspect.disabled) { inspect.textContent = 'Document examination · Live only'; inspect.title = 'Return to Live to inspect the latest retained PDF examination.'; }
+          inspect.setAttribute('aria-label', mode === 'history' ? 'Return to Live to inspect the latest retained original document.' : `Inspect original document: ${item.title}`);
           inspect.addEventListener('click', () => { void inspectDocument(item, inspect); }); documentButtons.set(item.itemId, inspect); article.append(inspect);
         }
         const knowledge = node('p', 'plugin-note', `First retained ${displayTime(item.firstRecordedAt)} · latest retained ${displayTime(item.lastRecordedAt)}`);
@@ -284,7 +319,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
         details.append(facts); article.append(details); list.append(article);
       }
       if (!payload.items.length) list.append(node('p', 'plugin-note', 'No institutional releases are retained in this bounded view.'));
-      const feedEvidence = evidence(payload, [], 'Latest feed receipt');
+      const feedEvidence = evidence(payload, [], contextTime.knownAt ? 'Feed receipt at the knowledge cutoff' : 'Latest feed receipt');
       if (view === 'commission') {
         feedEvidence.append(node('p', 'plugin-note', 'Policy tags are publisher metadata, not verified claims or incident locations. The linked publication is an original institutional source, not independent corroboration.'),
           node('p', 'plugin-note', text(artifact.limitations, 4000) ? artifact.limitations : 'The rolling provider feed is not a complete historical archive.'));
@@ -299,11 +334,11 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     for (const [id, button] of buttons) button.setAttribute('aria-pressed', String(id === purpose));
     sourceField.hidden = sources.length < 2; sourceSelect.setAttribute('aria-label', purpose === 'publications' ? 'Publication source' : 'Context source');
     sourceSelect.replaceChildren(...sources.map(id => { const option = node('option', '', VIEWS[id]?.label || 'Current reports'); option.value = id; return option; })); sourceSelect.value = view;
-    feedHost.hidden = view !== 'feeds'; dossierHost.hidden = view === 'feeds'; scope.hidden = mode !== 'history';
+    feedHost.hidden = view !== 'feeds'; dossierHost.hidden = view === 'feeds'; timeScope();
     if (view !== 'feeds') {
       title.textContent = view === 'gas' ? 'Belgian natural-gas origins' : VIEWS[view].title;
       subtitle.textContent = view === 'gas' ? 'Annual reported imports · source-backed dataset' : VIEWS[view].subtitle;
-      const saved = cache.get(view); rendered = null; if (saved) render(saved.payload); else content.replaceChildren(node('p', 'plugin-note', 'Stored source context loads when selected.'));
+      const saved = cached(keyFor(view)); rendered = null; if (saved) render(saved.payload); else content.replaceChildren(node('p', 'plugin-note', 'Stored source context loads when selected.'));
     }
   }
   function documentPresentation() {
@@ -318,7 +353,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     }
   }
   async function openDocument(focus = false) {
-    if (!documentSelection || destroyed || !opened || documentRef.hidden || view !== 'commission') return false;
+    if (!documentSelection || destroyed || !opened || documentRef.hidden || view !== 'commission' || mode === 'history') return false;
     const selected = documentSelection, owner = ++documentEpoch;
     if (!documentController) documentHost.textContent = 'Loading stored document view…';
     try {
@@ -345,7 +380,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     (documentButtons.get(previous?.item.itemId) || previous?.button || sourceSelect).focus?.();
   }
   function inspectDocument(item, button) {
-    if (destroyed || !opened || documentRef.hidden || view !== 'commission' || item.url !== INSPECTABLE_DOCUMENT) return Promise.resolve(false);
+    if (destroyed || !opened || documentRef.hidden || view !== 'commission' || mode === 'history' || item.url !== INSPECTABLE_DOCUMENT) return Promise.resolve(false);
     cancel(); documentSelection = { item, button }; documentPresentation(); return openDocument(true);
   }
   async function openFeed() {
@@ -360,16 +395,20 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     if (documentSelection) return documentController ? force ? documentController.refresh() : documentController.open({ item: documentSelection.item }) : openDocument();
     if (!opened || destroyed || documentRef.hidden || view === 'feeds') return Promise.resolve(false);
     if (pending) return pending;
-    const saved = cache.get(view); if (!force && !dirty.has(view) && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? 'Retained source context' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
+    if (institutional(view) && !contextTime.available) { render({ available: false, explanation: contextTime.explanation }); status.textContent = 'Historical source context unavailable'; return Promise.resolve(false); }
+    const key = keyFor(view), saved = cached(key), frozen = { ...contextTime };
+    const isDirty = saved?.dirty || (!(institutional(view) && frozen.knownAt) && dirty.has(view));
+    if (!force && !isDirty && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? 'Retained source context' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
     const selected = view, owner = ++generation, initialUpdate = updates.get(view), controller = new AbortController(), signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
     followupRequested = false;
     request = controller; stopTimer(); refresh.disabled = true; dossierHost.setAttribute('aria-busy', 'true'); status.textContent = saved ? 'Checking stored updates · previous context remains available…' : 'Loading stored source context…';
     const work = (async () => {
       try {
-        const response = await fetchImpl(VIEWS[selected].url, { signal, cache: 'no-store', headers: { Accept: 'application/json' } });
-        const payload = normalizePluginDossier(await readStored(response, signal), selected); signal.throwIfAborted();
-        if (destroyed || !opened || documentRef.hidden || selected !== view || owner !== generation) return false;
-        cache.set(selected, { payload, at: now() });
+        const response = await fetchImpl(institutional(selected) ? institutionalContextUrl(VIEWS[selected].url, frozen) : VIEWS[selected].url, { signal, cache: 'no-store', headers: { Accept: 'application/json' } });
+        const body = await readStored(response, signal), payload = normalizePluginDossier(body.value, selected);
+        if (institutional(selected)) validateInstitutionalContextTime(payload, frozen); signal.throwIfAborted();
+        if (destroyed || !opened || documentRef.hidden || selected !== view || owner !== generation || key !== keyFor(view)) return false;
+        retain(key, { payload, at: now(), bytes: body.bytes, view: selected, context: frozen, dirty: false });
         if (updates.get(selected) === initialUpdate || updates.get(selected)?.receiptId === payload.receipt?.id) dirty.delete(selected);
         render(payload); status.textContent = payload.available ? 'Retained source context' : 'Source artifact unavailable'; return true;
       } catch (error) {
@@ -378,7 +417,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
       } finally {
         if (!destroyed && owner === generation) {
           pending = null; request = null; refresh.disabled = false; dossierHost.setAttribute('aria-busy', 'false');
-          if (followupRequested && dirty.has(selected) && opened && !documentRef.hidden && selected === view) void load(true); else arm();
+          if (followupRequested && dirty.has(selected) && opened && !documentRef.hidden && selected === view && !(institutional(view) && mode === 'history')) void load(true); else arm();
         }
       }
     })(); pending = work; return work;
@@ -386,25 +425,29 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
   async function select(id) { if (destroyed || id !== 'feeds' && !Object.hasOwn(VIEWS, id)) return false;
     if (documentSelection) clearDocument();
     remembered.set(purposeFor(id), id); if (id !== view) { cancel(); feed?.close(); view = id; presentation(); }
+    if (opened) void captureScene();
     return opened ? view === 'feeds' ? openFeed() : load() : false; }
-  const refreshClick = () => { void load(true); }; refresh.addEventListener('click', refreshClick);
-  const visibility = () => { if (documentRef.hidden) { cancel(); feed?.close(); } else if (opened) void (view === 'feeds' ? openFeed() : load()); };
-  const reconnect = () => { if (opened && view !== 'feeds') void load(true); };
+  const refreshClick = () => { if (destroyed) return Promise.resolve(false); if (institutional(view)) void captureScene(); return load(true); }; refresh.addEventListener('click', refreshClick);
+  const visibility = () => { if (destroyed) return; if (documentRef.hidden) { cancel(); feed?.close(); } else if (opened) void (view === 'feeds' ? openFeed() : load()); };
+  const reconnect = () => { if (opened && view !== 'feeds' && !(institutional(view) && mode === 'history')) void load(true); };
   const unsubscribeUpdates = typeof subscribeUpdates === 'function' ? subscribeUpdates(event => {
     if (destroyed || event?.type !== 'plugin') return;
     const revision = pluginRevision(event), selected = revision && Object.keys(VIEWS).find(id => VIEWS[id].pluginId === revision.pluginId);
     if (!revision || !selected || !newerPluginRevision(revision, updates.get(selected))) return;
     updates.set(selected, revision);
-    if (cache.get(selected)?.payload.receipt?.id === revision.receiptId) return;
+    for (const entry of cache.values()) if (entry.view === selected && (!institutional(selected) || !entry.context.knownAt) && entry.payload.receipt?.id !== revision.receiptId) entry.dirty = true;
+    if (cache.get(keyFor(selected))?.payload.receipt?.id === revision.receiptId) return;
     dirty.add(selected);
     if (selected === 'gas') scenario?.invalidate();
     if (!opened || documentRef.hidden || view !== selected) return;
+    if (institutional(view) && mode === 'history') { if (!contextTime.knownAt) status.textContent = 'New retained context may be available · Refresh at globe time.'; return; }
     if (documentSelection) { documentController?.invalidate(); return; }
     if (pending) followupRequested = true; else void load(true);
   }) : null;
   documentRef.addEventListener?.('visibilitychange', visibility); windowRef?.addEventListener?.('online', reconnect); presentation();
-  return { select, getView: () => view, setSceneMode(value) { mode = value === 'history' ? 'history' : 'live'; scope.hidden = mode !== 'history'; feed?.setSceneMode?.(mode); },
-    open() { if (destroyed) return Promise.resolve(false); opened = true; return view === 'feeds' ? openFeed() : load(); },
+  return { select, getView: () => view, setSceneMode(value) { if (!destroyed) void captureScene({ ...(getScene?.() || contextTime), mode: value === 'history' ? 'history' : 'live' }); },
+    commitScene(state) { if (destroyed || ['playback', 'tick', 'frame'].includes(state?.reason)) return Promise.resolve(false); return captureScene(state, { commit: true }); },
+    open() { if (destroyed) return Promise.resolve(false); void captureScene(); opened = true; return view === 'feeds' ? openFeed() : load(); },
     close() { opened = false; cancel(); feed?.close(); }, refresh: refreshClick,
     destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); documentController?.destroy(); documentSelection = null; documentButtons.clear(); scenario?.destroy(); feed?.destroy(); unsubscribeUpdates?.(); cache.clear(); dirty.clear(); updates.clear(); evidenceBindings = [];
       for (const [button, fn] of bindings) button.removeEventListener('click', fn); sourceSelect.removeEventListener('change', sourceChange); refresh.removeEventListener('click', refreshClick);

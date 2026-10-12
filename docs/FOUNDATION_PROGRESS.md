@@ -1258,3 +1258,77 @@ Calculated RGBA pixel storage is at most 16 MiB per backing, not a process/GPU
 memory measurement. At 4K the effective overlay DPR is below one: browser
 legibility remains an acceptance question and should not be described as lossless.
 The Cesium selection SVG now uses the atlas accent instead of default neon green.
+
+## 04:27 UTC: v42 browser ownership released; temporal evidence is next
+
+App 20cb2e4181a8e7a2cdb0e745224bbc2480daf14b and combined source
+26afd2f25d8bb6b47edda3309ef09cc62bb64a72 produced the tested archive, SHA256
+d0929a5761072e5315b040fcab63205ce39f3e3f96beee9fdd8bb07e182ba444.
+Saved Site version 42 deployed successfully as appgdep_6acc5ea729e08191a7064e78be66d7bf
+at 04:15:35.187Z, environment revision 7 and public audience unchanged.
+The combined artifact is 56,012,872 bytes, gzip 40,728,124; exact integration and
+portfolio checks passed. Source synchronization uses committed Git blobs and excludes
+the separate local operator retention work.
+
+Actual normal-viewport browser checks found the expected new bootstrap asset.
+Ordinary earthquake labels used a 1280 by 720 shared backing with detection at zero;
+after disabling their layer and completing fades, both auxiliary backings were zero.
+Selection uses the intended accent. The current GDACS cyclone source revision changed
+from 03:58:34 to 04:16:33 UTC while source/cohort evidence remained distinct. This does
+not establish a new disaster or corroborated impact. The initial bounded host error
+sample contained one canceled stream and no memory-limit outcome.
+
+Viewport overrides exposed inconsistent screenshot capture dimensions/cropping.
+The override was reset and normal rendering verified. Extreme-resolution legibility
+and this package's mobile visual acceptance remain unverified; diagnostic captures
+are not treated as acceptance evidence. A same-notice reactivation journey exposed a
+real presentation defect: Layers obscured the dossier, but reselecting its retained
+Cesium entity did not emit a selection change. The narrow local fix deliberately
+re-presents the existing selection and still rejects inactive or historical notices.
+
+Re-examination prioritizes dated institutional evidence before broad causal analysis.
+ECB and Commission publication views should follow explicit globe time and distinguish
+reconstruction from what the platform retained at that cutoff. During accelerated
+playback, use an explicitly dated context snapshot and refresh action rather than a
+network request every frame. Current source-only PDF examination must remain scoped
+to Live. General relationships, corroboration and forecast evaluation remain later gates.
+
+The follow-up five-minute owner log sample returned 33 invocations, all with `ok`
+outcomes: thirteen approximately 40-second update streams, five collector triggers
+and stored source reads. Script b86e02ea-81c4-4482-beb4-768b53b989c4 is associated
+with the active v42 delivery; this mapping is inferred, not a build identifier
+returned by the log API. Sanitized proof: .qa/v42-hosted-log-followup.json.
+
+At 04:29:16Z the fixed stored seismic reader returned 51 records, a complete
+receipt captured 04:26:04.683Z and published 04:26:05.544Z. Its latest successful
+check was 04:29:06.141Z, source generation 04:28:34Z, status ready and source age
+42,294 ms. The retained factual edition was older without implying failed
+acquisition. Proof: .qa/v42-freshness-proof.json. This is one actual stored read;
+it does not establish source delivery latency or a new event merely from a count.
+
+## 04:32 UTC: dated institutional context package prepared
+
+Sixty-one focused checks passed together across institutional time, the publication
+panel, timeline, GDACS selection ownership, source capabilities and entry lifecycle.
+The new institutional snapshot uses actual scene UTC and evidence lens, bounded
+source/time cache keys, publication/knowledge cutoff admission and canceled obsolete
+delivery. Accelerated playback remains local; opening, explicit source selection,
+pause, committed seek/lens and manual refresh capture scene time. Latest-only PDF
+inspection is scoped to Live. Annual gas context keeps its independent source year.
+
+Independent review caught a source-switch seam before release: a newly chosen
+institution could otherwise reuse the earlier playback snapshot. It now captures
+current globe time without pausing. Terminal guards also prevent disposed callbacks
+from consulting viewer state. The rendering identity includes source, mode, lens
+and UTC, so returning Live restores current actions even for identical item facts.
+The existing backend query/storage contracts are reused; no provider route is added.
+
+A second independent review found a delayed source-event cache race: a matched
+historical reconstruction receipt could leave an older Live cache clean. Differing
+Live/reconstruction entries now become dirty before the current-entry match check;
+fixed known-then snapshots remain reusable. Its new regression passed before staging.
+
+The GDACS same-notice presentation fix passed its installed-Cesium ownership fixture
+and independent listener/guard review. Exact integrated build and hosted historical
+publication, Live restoration and repeated keyboard notice journeys remain release
+gates. See INSTITUTIONAL_TIME.md for scope, limits and interaction semantics.

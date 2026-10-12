@@ -18,7 +18,7 @@ const magnitude = (item) => item.magnitude ?? item.reportedFacts?.magnitude;
 const sourceId = (item) => item.sourceRecordId || item.evidence?.sourceRecordId;
 
 /** One calm calendar; frame-local origin filtering never fetches source data. */
-export function createTimeline({ container, viewer, fetchImpl, onTimeChange = () => {}, onNavigate,
+export function createTimeline({ container, viewer, fetchImpl, onTimeChange = () => {}, onContextCommit = () => {}, onNavigate,
   documentRef = container?.ownerDocument || globalThis.document, setTimeoutImpl = globalThis.setTimeout,
   clearTimeoutImpl = globalThis.clearTimeout, now = Date.now, monotonicNow,
   windowRef = documentRef?.defaultView || globalThis.window } = {}) {
@@ -71,6 +71,8 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   const sceneTime = fallbackClock || viewer.earthTime;
   if (fallbackClock && viewer.earthTime.getState().mode === 'history') fallbackClock.seek(viewer.earthTime.getState().at);
   const setTime = (at) => { viewer.earthTime.setTime(at); fallbackClock?.setTime(at); };
+  const getContextState = () => ({ ...sceneTime.getState(), lens: controller?.getState().lens || lens.value });
+  const commitContext = reason => { if (!destroyed) void onContextCommit({ ...getContextState(), reason }); };
   const markers = new Map(), markerColor = Cesium.Color.fromCssColorString('#9ddcc9'), markerOutline = Cesium.Color.fromCssColorString('#17212c');
   function clearMarkers() {
     renderedMarkers = '';
@@ -148,7 +150,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
       slider.value = String(Math.max(Number(slider.min), Math.min(Number(slider.max), Math.floor(Date.parse(at) / 1000)))); slider.setAttribute('aria-valuetext', utc(at));
       if (documentRef.activeElement !== date) date.value = at.slice(0, 19);
     }
-    if (playIntent && !selecting && !state.playing && state.mode === 'history') { playIntent = false; retainPausedScene(state.at); if (!container.open) controller?.close(); }
+    if (playIntent && !selecting && !state.playing && state.mode === 'history') { playIntent = false; retainPausedScene(state.at); if (!container.open) controller?.close(); commitContext('pause'); }
     if (!playIntent || selecting || !state.playing || !selected?.opened) return;
     if (controller.advance(state.at)) void controller.prefetch(); else void selectTime(state.at, true);
   }
@@ -201,7 +203,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     }
   }
   controller = createWorldSceneController({ fetchImpl, documentRef, windowRef, now, setTimeoutImpl, clearTimeoutImpl, onChange: render });
-  async function selectTime(at, resume = false, selectedLens = lens.value) {
+  async function selectTime(at, resume = false, selectedLens = lens.value, reason = 'seek') {
     const canonical = stamp(at); if (!canonical || destroyed) return false;
     const owner = ++seekOwner; playIntent = resume; selecting = true; dragging = false; sceneTime.pause?.(); clearMarkers(); controller.prepare(canonical, selectedLens);
     const currentCoverage = sceneTime.getState().coverage;
@@ -217,7 +219,8 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
       selecting = false;
       if (accepted && playIntent && controller.peek(canonical, selectedLens)) playIntent = sceneTime.play?.() === true; else playIntent = false;
       if (accepted && playIntent) void controller.prefetch();
-      if (!container.open && !playIntent) controller.close(); syncClock(); return accepted;
+      if (!container.open && !playIntent) controller.close(); syncClock();
+      if (!resume || reason === 'lens') commitContext(reason); return accepted;
     } finally { if (owner === seekOwner) { selecting = false; syncClock(); } }
   }
   const toggle = () => { syncClock(); if (container.open) void controller.open(); else if (!playIntent && !selecting) controller.close(); };
@@ -231,13 +234,13 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     void selectTime(new Date(Math.max(start, Math.min(end, current + direction * distance))).toISOString());
   };
   const previous = () => step(-1), next = () => step(1);
-  const goLive = (event) => { event?.stopPropagation?.(); ++seekOwner; playIntent = false; selecting = false; dragging = false; setTime(null); controller.live(); clearMarkers(); syncClock(); void onTimeChange({ mode: 'live', at: null }); if (!container.open) controller.close(); };
+  const goLive = (event) => { event?.stopPropagation?.(); ++seekOwner; playIntent = false; selecting = false; dragging = false; setTime(null); controller.live(); clearMarkers(); syncClock(); void onTimeChange({ mode: 'live', at: null }); commitContext('live'); if (!container.open) controller.close(); };
   const playPause = async (event) => {
     event?.stopPropagation?.();
     if (sceneTime.getState().playing || selecting && playIntent) {
       ++seekOwner; playIntent = false; selecting = false; sceneTime.pause?.();
       const frozen = sceneTime.getState(); if (frozen.mode === 'history') retainPausedScene(frozen.at);
-      syncClock(); if (!container.open) controller.close(); return;
+      syncClock(); if (!container.open) controller.close(); commitContext('pause'); return;
     }
     const owner = ++seekOwner; playIntent = true; selecting = true; syncClock();
     await controller.open(); if (destroyed || owner !== seekOwner || !playIntent) return;
@@ -248,7 +251,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   };
   const changeRate = (event) => { event?.stopPropagation?.(); sceneTime.setRate?.(Number(rate.value)); };
   const chooseDate = () => { const at = timelineDateUtc(date.value); if (at) void selectTime(at); };
-  const changeLens = () => { if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value); else controller.setLens(lens.value); };
+  const changeLens = () => { if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value, 'lens'); else { controller.setLens(lens.value); commitContext('lens'); } };
   const light = () => { const enabled = !viewer.earthTime.getState().lighting; viewer.earthTime.setLighting(enabled); sunlight.setAttribute('aria-pressed', String(enabled)); };
   const refresh = async () => { await controller.refresh(); if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value); };
   const bindings = [[container, 'toggle', toggle], [slider, 'input', drag], [slider, 'change', choose], [date, 'change', chooseDate], [back, 'click', previous], [forward, 'click', next], [play, 'click', playPause], [rate, 'change', changeRate], [live, 'click', goLive], [lens, 'change', changeLens], [sunlight, 'click', light], [reload, 'click', refresh]];
@@ -260,7 +263,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     const state = sceneTime.getState(); if (!destroyed && !documentRef.hidden && state.mode === 'history' && state.playing) showMarkers(controller.frame(state.at));
   });
   render(controller.getState()); syncClock(); if (container.open) void controller.open();
-  return { getState: controller.getState, live: goLive, seek: (at) => selectTime(at), destroy() {
+  return { getState: controller.getState, getContextState, live: goLive, seek: (at) => selectTime(at), destroy() {
     if (destroyed) return; destroyed = true; ++seekOwner; sceneTime.pause?.(); controller.destroy(); clearMarkers(); unsubscribeClock?.(); unsubscribeFrame?.(); fallbackClock?.destroy();
     for (const [element, name, callback] of bindings) element.removeEventListener(name, callback);
     readout.remove?.(); transport.remove?.(); if (!existingDock) dock.replaceWith?.(container);

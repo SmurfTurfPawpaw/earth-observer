@@ -133,6 +133,7 @@ async function handlePanel({ panel, open }) {
       document.querySelector('#news-panel .panel-note').textContent = 'Explore reports, datasets and original publications.';
       document.getElementById('news-status').hidden = true;
       intelligence = createPluginDossierPanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, subscribeUpdates: updates.subscribe,
+        getScene: () => timeline?.getContextState() || { ...viewer.earthTime.getState(), lens: 'reconstruction' },
         createFeed: async (container) => {
           const [{ createIntelligencePanel }, { createReportDossierController }] = await Promise.all([
             import('./core/intelligence.js'), import('./core/report-dossier.js'),
@@ -151,7 +152,7 @@ async function handlePanel({ panel, open }) {
           });
         },
       });
-      intelligence.setSceneMode(viewer.earthTime.getState().mode);
+      void intelligence.commitScene(timeline?.getContextState() || { ...viewer.earthTime.getState(), lens: 'reconstruction' });
     } else {
       const { createEvidenceNotebook } = await import('./core/evidence.js');
       if (destroyed) return;
@@ -232,6 +233,7 @@ export async function start() {
     disposers.push(installScenePreview(viewer, { store, cameraView, getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
     let appliedSceneMode = 'live';
     timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch,
+      onContextCommit: (state) => intelligence?.commitScene(state),
       async onTimeChange(state) {
         if (destroyed) return;
         const changed = appliedSceneMode !== state.mode;

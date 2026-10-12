@@ -22,12 +22,17 @@ async function view({ episode = '1', unlocated = false, corrected = false, empty
     operational: { status: 'unknown', checkedAt: null }, history: { replay: false, future: false }, browserCache: cached ? 'STALE' : null,
     browserCachedAt: cached ? Date.now() - 1000 : null };
 }
-function harness(source) {
+function harness(source, { documentRef = { hidden: false } } = {}) {
   const sources = []; let renders = 0;
   const viewer = { dataSources: { add: value => sources.push(value), remove: value => sources.splice(sources.indexOf(value), 1) },
     scene: { requestRender() { renders++; } }, camera: { flyTo() { throw new Error('GDACS inspection must not move the camera'); } },
     earthTime: { seek() { throw new Error('GDACS inspection must not change scene UTC'); } } };
-  const layer = createGdacsNoticesLayer({ source }); layer.init(viewer); layer.enable();
+  viewer._selectedEntityChanged = new Cesium.Event();
+  Object.defineProperties(viewer, {
+    selectedEntity: Object.getOwnPropertyDescriptor(Cesium.Viewer.prototype, 'selectedEntity'),
+    selectedEntityChanged: Object.getOwnPropertyDescriptor(Cesium.Viewer.prototype, 'selectedEntityChanged'),
+  });
+  const layer = createGdacsNoticesLayer({ source, documentRef }); layer.init(viewer); layer.enable();
   return { layer, viewer, sources, get renders() { return renders; } };
 }
 
@@ -86,4 +91,35 @@ test('failed reads preserve a valid picked notice and dated evidence instead of 
   assert.equal(await h.layer.update(), false); assert.equal(h.viewer.selectedEntity, selected);
   const stats = h.layer.getStats(); assert.equal(stats.lastUpdate, Date.parse(PUBLISHED)); assert.equal(stats.status, 'unavailable'); assert.equal(stats.stale, true);
   assert.equal(stats.checkedAt, null); assert.equal(stats.observedAt, null); assert.equal(typeof stats.coverage, 'string'); h.layer.destroy(); assert.equal(h.sources.length, 0);
+});
+
+test('repeated notice activation re-presents the current selection without clear/reselect or stale inactive admission', async () => {
+  let snapshot = await view(), reads = 0, mode = 'live';
+  const documentRef = { hidden: false }, h = harness({ getSnapshot: async () => { reads++; return snapshot; } }, { documentRef });
+  h.viewer.earthTime.getState = () => ({ mode });
+  await h.layer.update();
+  const entity = h.sources[0].entities.values[0], action = h.layer.getRowControls().items[0].params, events = [];
+  let presentationOpen = false, appearances = 0, departures = 0;
+  h.viewer._selectionIndicator = { viewModel: { animateAppear() { appearances++; }, animateDepart() { departures++; } } };
+  h.viewer.selectedEntityChanged.addEventListener(selected => { events.push(selected); presentationOpen = Boolean(selected); });
+  assert.equal(h.layer.setParams(action), true); assert.equal(presentationOpen, true);
+  presentationOpen = false; // Opening Layers hides the dossier, preserving selection.
+  assert.equal(h.viewer.selectedEntity, entity); assert.equal(h.layer.setParams(action), true);
+  assert.equal(presentationOpen, true); assert.equal(events.length, 2); assert.equal(events.every(value => value === entity), true);
+  assert.equal(appearances, 1); assert.equal(departures, 0); assert.equal(reads, 1);
+
+  snapshot = await view({ corrected: true }); await h.layer.update();
+  presentationOpen = false; assert.equal(h.layer.setParams(action), true); assert.equal(presentationOpen, true);
+  assert.equal(gdacsNoticeSelection(events.at(-1), Cesium.JulianDate.now()).notice.item.revision, snapshot.items[0].revision);
+  assert.equal(h.sources[0].entities.values[0], entity); assert.equal(appearances, 1); assert.equal(reads, 2);
+
+  const emitted = events.length;
+  documentRef.hidden = true; assert.equal(h.layer.setParams(action), false); documentRef.hidden = false;
+  mode = 'history'; assert.equal(h.layer.setParams(action), false); mode = 'live';
+  h.layer.disable(); assert.equal(h.layer.setParams(action), false); h.layer.enable();
+  assert.equal(h.layer.setParams({ inspectItem: `item:${'a'.repeat(64)}` }), false);
+  assert.equal(events.length, emitted); assert.equal(reads, 2);
+  snapshot = await view({ empty: true }); await h.layer.update();
+  assert.equal(h.layer.setParams(action), false, 'An old row cannot revive absent cohort membership');
+  h.layer.destroy(); assert.equal(h.layer.setParams(action), false);
 });
