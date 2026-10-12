@@ -377,3 +377,24 @@ Verify early Enter and the native notice-to-details-to-source keyboard sequence
 against that exact saved production version. Keep optional retention accounting
 excluded until authenticated hosted acceptance. Review stream delivery capacity
 and the historical-session persistence contract before more feeds or analysis.
+
+## 05:16 UTC released interaction and capacity reassessment
+
+The exact v45 release passed actual delayed-startup replay and native keyboard
+notice-to-details-to-source focus. Temporary tab networking controls were reset.
+Do not broaden tests merely because the package passed: retain this evidence and
+move to the operating handoff. Normal geographic search still supports a bounded
+place list or coordinates, rather than arbitrary natural-language investigation.
+
+The next operating gate is permanent execution plus measured delivery capacity.
+Current grouped stream reads share work locally, but nominal short reconnects and
+per-viewer stored source polls can create substantial daily request/storage work.
+STREAM_CAPACITY.md separates the illustrative model from real hosted samples.
+Do not claim 300-user capacity from 300 searches or the small two-client gate.
+Preserve validated factual editions and operational dates before sharing reads.
+
+The next product seam is one temporal workspace/navigation codec, before general
+relationship analysis or broader crawling. Camera/layer reload proof does not
+establish historical UTC/lens replay. NEXT_PHASES.md makes that dependency explicit.
+Prepare a truthful review document with deployed scope, actual evidence, local
+unfinished slices, permanent-host/account dependencies and the 06:39:10Z boundary.

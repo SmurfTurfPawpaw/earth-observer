@@ -23,7 +23,7 @@ platform goal. Passing a foundation slice does not complete the global objective
 | 1 Acquisition | Partial hosted proof | Manual cloud and temporary laptop collection verified; permanent cloud wake unproven; GitHub collector is manual-only |
 | 2 Evidence/world model | Published core and typed pilots | Immutable revisions, atomic receipts, durable research recovery; four typed plugin scopes admitted to hosted storage |
 | 3 Shared time | Published scoped replay | Two-year USGS M4.5+ reconstruction and distinct known-then lens; other history remains source-limited |
-| 4 Design/performance | Published baseline; refining | Normal release adoption, UTC date/play/zoom, compact publication context verified; native keyboard/early-search follow-up next |
+| 4 Design/performance | Published baseline; refining | Normal release adoption, UTC date/play/zoom, compact context, actual native keyboard focus and delayed-startup search verified; mobile/extreme-resolution and audience capacity gates remain |
 | 5 Investigation/release | Published narrow pilots; broad work ahead | Actual source-only USGS detail work, one Commission PDF with four page-one statements, annual gas calculator; broader journalism, cited relationships and forecast evaluation absent |
 
 ## Decision log
@@ -1444,3 +1444,35 @@ Collector operating documentation now identifies the production GitHub workflow
 as manual dispatch only. Its finite two-minute acceptance run is not a permanent
 collector; earlier scheduled trial notes are explicitly historical. No account,
 credential, provider, workflow, schema, source-time or audience changes are included.
+
+## 05:16 UTC: v45 released and actual interaction gates passed
+
+App 55423b3347fb48e413f923813c9f963bd150fbc3 and combined source
+402e1b3893253eca6674121d728fe163f0c67baa produced archive SHA256
+f25b204f316637a085e97f53a71aace878d6f8878e2f6d4cf2ffd6ab86c2b856.
+Saved Site version 45 deployed as appgdep_6acc6c2fe62c8191a22fde21ee2fb4e9
+at 05:12:39.754Z, environment revision 7 and public audience revision 2 unchanged.
+The exact combined artifact is 56,016,790 bytes, gzip 40,731,319. Routing,
+source boundaries and 3,049 portfolio assertions passed; bootstrap is
+index-cW5gZwgf.js and main is main-BmPPYwjz.js. Existing optional chunk warnings
+remain; Node timing is not Cloudflare CPU or a user-perceived loading measurement.
+
+Root observed the normal hosted search and the controlled delayed startup case.
+The latter used tab-only cache/service-worker bypass and 1,500 ms network latency
+with 1 MB/s throughput, all restored to normal after the check. At the early
+Enter stage the disabled submit showed Search queued until the globe is ready,
+while the camera remained Brussels. On readiness the exact 48.8566, 2.3522 input
+moved the camera to Paris at 90 km; the explicit earthquake layer remained enabled
+and queue status cleared. This is an observed handoff, not instant map-tile loading.
+
+Actual native Enter on Tropical Cyclone ISAIAS-26 focused clear-selection, the
+visible Close feature details button. The next native Tab focused the original
+GDACS notice link. Source episode 20 and source revision 04:58:59Z remained source
+metadata; no new disaster or independent corroboration is inferred. Screenshot
+published-foundation-v45-native-notice-focus.png was shown in commentary. Root
+drove the browser; agents reviewed code/captures, not independent browser sessions.
+
+NEXT_PHASES.md now includes temporal workspace persistence as an explicit gate,
+keeps proposed relationship/scenario MCP operations future-facing, and bounds
+baseline coverage to admitted sources. STREAM_CAPACITY.md records the model and
+its assumptions; it is not a 300-client load test or a verified free allowance.

@@ -16,13 +16,36 @@ read back from storage, a failed wake recovers without duplicate publication, an
 actual source/capture/publication/display dates and operating costs are measured.
 A nominal one-minute trigger is not a promise of one-minute provider delivery.
 
+Budget delivery independently of source acquisition. The small deployed stream
+sample is successful, but does not establish audience-scale capacity. Review the
+explicit assumptions in STREAM_CAPACITY.md before increasing concurrent viewers.
+
 Measure bounded logical references separately from unique physical objects and
 growth. The local optional operator retention audit has no authenticated hosted
 acceptance. Do not use it to claim whole-bucket accounting, retention expiry or
 unlimited free storage. Review immutable asset delivery before approaching the
 combined Worker's code/memory limits; preserve actual portfolio bytes and routes.
 
-## 2. Define entities, claims and dated relationships
+## 2. Finish temporal workspace and navigation ownership
+
+Current reload restores camera and layers, then returns Live. It does not retain
+the historical UTC, evidence lens or replay rate. Agree and implement one shared
+scene codec before broadening research: preserve existing v1/v3 Live links, and
+version explicit History UTC/lens separately from a Live view that resumes now.
+Saved History restores paused. An explicit link outranks local saved state;
+unavailable coverage must preserve the requested date and show its gap.
+
+All camera, layer, share and startup writers must use the same codec; adding time
+to Share alone lets other writers strip it. Restore time/lens before live layer
+activation, cancel superseded restores and suppress intermediate persistence.
+
+Gate: legacy and new round trips, exact UTC/lens/rate preservation, no autoplay
+on History reload, elapsed-time Live restoration, explicit-link priority, malformed
+or future History handling, and cancellation without a provider request. Sharing
+a time is not sharing an immutable evidence edition. This is a proposed next
+contract; no unused codec or new persistence module has been added.
+
+## 3. Define entities, claims and dated relationships
 
 Reuse stable source-item identities in src/core/world-model.js and typed receipt,
 revision and membership ownership in worker/plugins/store.js. Add source-mapped
@@ -38,7 +61,7 @@ Gate: corrections keep stable identity; merges and splits are reversible; a
 relation resolves to retained evidence; a historical knowledge view admits no
 later relation or claim. Unknown location, independence or valid time stays unknown.
 
-## 3. Deliver one living explanatory dossier
+## 4. Deliver one living explanatory dossier
 
 Extend the existing cited Commission statement and Belgian annual gas scenario
 mechanics into a carefully chosen explanation, using relevant retained evidence.
@@ -56,7 +79,7 @@ sources cannot inflate confidence; changing evidence visibly supersedes an analy
 knowledge replay excludes later analysis as well as later source revisions. Start
 with one useful explanation that passes these gates before general autonomous research.
 
-## 4. Make future scenarios reproducible, then evaluate forecasts
+## 5. Make future scenarios reproducible, then evaluate forecasts
 
 First durably version the existing gas-scenario.js deterministic hypothetical
 arithmetic: baseline receipt, assumptions, calculation policy and outputs. Its
@@ -71,25 +94,27 @@ retrospective calculations cannot masquerade as predictions issued in the past;
 unobserved outcomes remain unevaluated. Show current explanation and a distinct
 scenario action in one dossier, without adding a second competing dashboard.
 
-## 5. Prioritize global research and delivery without losing coverage
+## 6. Prioritize global research and delivery without losing coverage
 
-Keep baseline global collection. Reserve bounded capacity for significant changes,
+Keep bounded baseline collection for admitted sources and their stated coverage.
+Reserve bounded capacity for significant changes,
 visible geographic cells, followed stories and explicit opt-in demand. Separate
 acquisition, investigation, prepared tile/time delivery and rendering queues.
 Camera movement can prioritize delivery and research; it cannot decide credibility.
 Repeated searches can justify reviewed indexing coverage, not automatic arbitrary
 URL crawling or manufactured confidence. Synthetic QA remains separate from demand.
 
-Gate: unviewed regions keep baseline coverage; panning creates bounded coalesced
+Gate: unviewed regions keep the admitted sources' baseline coverage; panning creates bounded coalesced
 work; expensive jobs cannot starve collection; historical playback issues no
 per-frame acquisition; privacy-preserving demand collection has an actual user policy.
 
-## 6. Extend reviewed plugins and the calm interface
+## 7. Extend reviewed plugins and the calm interface
 
 Extend worker/plugins/registry.js with explicit source/analysis capabilities, rights,
-coverage, clocks, lineage, resource limits and replay semantics. MCP tools in
-worker/site-mcp.js expose the same bounded stored dossier, relationship and scenario
-operations. Authentication and an actual connected owner must be proven before
+coverage, clocks, lineage, resource limits and replay semantics. Extend MCP tools in
+worker/site-mcp.js to expose the same bounded stored relationship and scenario
+operations once those operations exist. Current MCP metadata does not establish
+that capability. Authentication and an actual connected owner must be proven before
 enabling writer access. MCP metadata alone is not an installed integration or scheduler.
 
 Keep a single visual hierarchy: spatial evidence on the globe; one explanation
