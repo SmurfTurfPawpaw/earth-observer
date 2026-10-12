@@ -20,11 +20,11 @@ platform goal. Passing a foundation slice does not complete the global objective
 | Phase | Status | Evidence / next gate |
 | --- | --- | --- |
 | 0 Baseline and contracts | Established | Preserved WIP, real deployment provenance, reviewed source/design contracts |
-| 1 Acquisition | Partial hosted proof | Manual cloud and temporary laptop collection verified; scheduled cloud wake still unproven |
-| 2 Evidence/world model | Published core | Immutable revisions, atomic receipts, durable research recovery; typed plugins locally verified |
+| 1 Acquisition | Partial hosted proof | Manual cloud and temporary laptop collection verified; permanent cloud wake unproven; GitHub collector is manual-only |
+| 2 Evidence/world model | Published core and typed pilots | Immutable revisions, atomic receipts, durable research recovery; four typed plugin scopes admitted to hosted storage |
 | 3 Shared time | Published scoped replay | Two-year USGS M4.5+ reconstruction and distinct known-then lens; other history remains source-limited |
-| 4 Design/performance | Published baseline; refining | Normal release adoption, UTC date/play/zoom verified; compact context package next |
-| 5 Investigation/release | In progress | One actual cited USGS detail job; broader journalism, mechanisms and scenario evaluation still ahead |
+| 4 Design/performance | Published baseline; refining | Normal release adoption, UTC date/play/zoom, compact publication context verified; native keyboard/early-search follow-up next |
+| 5 Investigation/release | Published narrow pilots; broad work ahead | Actual source-only USGS detail work, one Commission PDF with four page-one statements, annual gas calculator; broader journalism, cited relationships and forecast evaluation absent |
 
 ## Decision log
 
@@ -1370,3 +1370,77 @@ Pointer picks, background source corrections and failed actions cannot inherit
 keyboard intent. Fifty-seven focused selection, ownership, publication, temporal
 and lifecycle checks passed together. Actual deployed keyboard and visual proof
 remain separate acceptance gates. Optional retention accounting stays excluded.
+
+## 05:05 UTC: v44 deployed journeys and native ordering correction
+
+App 9c2aef1502c0907cf62becad3e11e992d31d7da7 and combined source
+d506767e5104a8551df0b0578cfb44b3c2803822 produced archive SHA256
+75142d88802ec8e3e8526fa80fe9bccd0a1e81ecc07361a07c1841232104014a.
+Saved Site version 44 deployed as appgdep_6acc677d3b308191984f3eeb8047775d
+at 04:52:42.116Z, environment revision 7 and public audience unchanged.
+The exact combined artifact is 56,015,770 bytes, gzip 40,730,395. Integrated
+routing, source boundaries and 3,049 portfolio assertions passed. The preceding
+57-check command omitted the entry lifecycle file due to an incorrect path;
+the correct src/main-lifecycle.test.mjs was run separately afterward, all four
+checks passing before the subsequent startup seam changes. Do not count missing
+test-path arguments as executed acceptance.
+
+Actual normal browser captures show the first original publication above the
+fold in both Live and History, with the exact historical UTC/lens still visible.
+Both captures were displayed in commentary. Brussels resolved to 50.8503/4.3517
+and 90 km altitude, zoom-in reached 58.5 km and zoom-out 78.975 km, and reload
+restored that camera with the explicit empty layers value intact. This shared URL
+journey did not request location; it does not prove permission-free first visits.
+Camera/layer restoration is not whole historical-workspace restoration: UTC/lens
+currently return Live on reload, an explicit later contract gap.
+
+The native Enter journey failed v44 focus acceptance despite the local fixture:
+the browser checkpoints microtasks between capture and target listeners, clearing
+the one-action intent too soon. The corrected local slice retains intent through
+the click task and admits focus only while that original event is dispatching.
+The fixture now reproduces per-listener microtask checkpoints and excludes a
+later background selection even before timer expiry. Thirteen focused checks
+passed and independent review found no blocker; deployed native proof is pending.
+
+A cold-start Enter was also ignored while the static submit was disabled. The
+next startup slice queues one bounded explicit query, cancels it on edits or
+failure, and replays only through the existing navigation handler once ready.
+It preserves layer intent and suppresses unexpected initial location prompting
+after an explicit search. This package does not introduce a geocoder or AI search.
+
+At 04:56:54Z a fixed public stored seismic read returned 53 records, status ready,
+latest successful check 04:56:33.385Z and source generation 04:55:34Z. Source age
+80,187 ms differed from factual edition age 81,791 ms; stale was false. Actual
+browser delivery subsequently showed the same 53 records and source date.
+Proof: .qa/v44-freshness-proof.json. Counts are seismic source reports, not a
+claim of 53 newly occurring earthquakes or independent confirmations.
+
+The bounded five-minute log follow-up returned 28 invocations, all ok: fourteen
+approximately 40-second update streams and five collector calls. Script
+3b4db21f-fab9-4536-afc0-70fb88c7df47 is associated with the active v44 release
+by time; logs do not identify the application build SHA. Collector CPU in this
+sample was 281–817 ms. This is the managed Site backend, not proof that the
+prepared Cloudflare signer or its selected plan satisfies CPU/cost limits.
+Sanitized proof: .qa/v44-hosted-log-followup.json. No scale test was performed.
+
+## 05:10 UTC: v45 interaction package prepared
+
+The corrected native focus slice and the seven-file startup intent slice are frozen.
+Bootstrap now imports and explicitly starts the app, handing ownership of one
+bounded early search to main. Navigation readiness precedes replay; saved camera
+restoration cannot overwrite it afterward. Explicit early search suppresses
+automatic initial location, including unsupported queries that show guidance.
+Input edits, Escape, reset, hiding, startup failure and teardown cancel pending
+intent. Normal ready searches retain the existing native form handler.
+
+Root reviewed both runtime slices; independent agent reviews found no blocker.
+The actual 76-check command passed bootstrap, main lifecycle, early search,
+shell selection, GDACS ownership, publication dossier, institutional source time
+and world timeline checks. Native deployed focus and an observed startup queue
+remain separate acceptance gates. Keystrokes before bootstrap itself executes
+cannot be captured; no instant startup or hardware latency guarantee is implied.
+
+Collector operating documentation now identifies the production GitHub workflow
+as manual dispatch only. Its finite two-minute acceptance run is not a permanent
+collector; earlier scheduled trial notes are explicitly historical. No account,
+credential, provider, workflow, schema, source-time or audience changes are included.

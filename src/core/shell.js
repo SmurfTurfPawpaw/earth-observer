@@ -113,7 +113,7 @@ export function createShell(viewer, manager) {
   // Keep the desktop preference intact when a narrow screen temporarily closes it.
   const uiState = readUiState(storage);
   const ledger = createCreditLedger(viewer.cesiumWidget.creditDisplay, (html, onScreen) => new Cesium.Credit(html, onScreen));
-  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, pendingLayerNames = [], keyboardNoticeAction;
+  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, pendingLayerNames = [], keyboardNoticeAction, keyboardNoticeActionTimer;
   const remember = () => writeUiState(storage, uiState);
   const textSizeControl = el('label', 'text-size-control');
   const textSizeMark = el('span', '', 'Aa'); textSizeMark.setAttribute('aria-hidden', 'true');
@@ -351,10 +351,15 @@ export function createShell(viewer, manager) {
         const itemId = /^record:(item:[a-f0-9]{64})$/.exec(button?.dataset.controlKey || '')?.[1];
         const state = manager.getState()[layer.id];
         if (!itemId || !controls.contains(button) || button.disabled || !state?.enabled || state.timelinePaused) return;
-        // The row owns this keyboard activation. Only its synchronous matching
-        // selection may hand off focus; later revisions/picks cannot inherit it.
-        const action = { itemId }; keyboardNoticeAction = action;
-        queueMicrotask(() => { if (keyboardNoticeAction === action) keyboardNoticeAction = undefined; });
+        // Native event dispatch may checkpoint microtasks between listeners.
+        // Keep intent through this click task; only its active synchronous
+        // selection may hand off focus, never later revisions or picks.
+        clearTimeout(keyboardNoticeActionTimer);
+        const action = { itemId, event }; keyboardNoticeAction = action;
+        keyboardNoticeActionTimer = setTimeout(() => {
+          if (keyboardNoticeAction === action) keyboardNoticeAction = undefined;
+          keyboardNoticeActionTimer = undefined;
+        }, 0);
       };
       controls.addEventListener('click', keyboardAction, true);
       cleanup.push(() => controls.removeEventListener('click', keyboardAction, true));
@@ -431,7 +436,8 @@ export function createShell(viewer, manager) {
   const select = (entity) => {
     if (destroyed) return;
     const action = keyboardNoticeAction; keyboardNoticeAction = undefined;
-    const focusNotice = Boolean(action && gdacsNoticeSelection(entity, viewer.clock.currentTime)?.notice.item.itemId === action.itemId);
+    clearTimeout(keyboardNoticeActionTimer); keyboardNoticeActionTimer = undefined;
+    const focusNotice = Boolean(action && action.event.eventPhase > 0 && gdacsNoticeSelection(entity, viewer.clock.currentTime)?.notice.item.itemId === action.itemId);
     stopSelectionDetails();
     if (!entity) { closePanel('selection', { restoreSelection: false }); return; }
     const detailFields = el('div', 'selection-fields');
@@ -565,7 +571,7 @@ export function createShell(viewer, manager) {
       if (radiusKm !== undefined && [10, 25, 50, 100, 250].includes(Number(radiusKm))) document.getElementById('local-radius').value = String(radiusKm);
     },
     destroy() {
-      destroyed = true; keyboardNoticeAction = undefined; clearTimeout(noticeTimer);
+      destroyed = true; keyboardNoticeAction = undefined; clearTimeout(keyboardNoticeActionTimer); keyboardNoticeActionTimer = undefined; clearTimeout(noticeTimer);
       cleanup.splice(0).reverse().forEach((dispose) => dispose?.());
       for (const dispose of mounted.values()) dispose();
       ledger.clear(); rows.clear(); mounted.clear(); creditItems.clear(); panelListeners.clear();

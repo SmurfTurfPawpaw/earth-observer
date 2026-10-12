@@ -30,8 +30,9 @@ laptop bridge also runs, so new feed receipts cannot be attributed to that cloud
 Current GitHub additional-product terms, effective August 27, 2026, restrict Actions
 use, including service/serverless usage. Free public-runner pricing does not establish
 permission to operate an always-running production collection service. The proposed
-50-minute recurring loop was withdrawn. The next source package removes the automatic
-hosted-collector schedule while preserving short manual acceptance. Existing bounded
+50-minute recurring loop was withdrawn. Version 39 removed the automatic
+hosted-collector schedule while preserving short manual acceptance. The committed
+workflow accepts `workflow_dispatch` only, with a two-minute job bound. Existing bounded
 software/data publication is a separate purpose; do not generalize it into a service.
 [Current Actions terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features#actions),
 [schedule limits](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
@@ -124,11 +125,17 @@ bounded compute path. Move only that missing function after measuring limits.
 
 GitHub schedules run no faster than every five minutes and may be delayed or
 dropped under load. Public-repository schedules can be disabled after 60 days
-without activity. Preserve the existing workflow as a measured fallback, not the
-only proof of a continuously running system.
+without activity. The historical collector schedule did not establish dependable
+cadence and was removed. The current workflow is finite manual verification, not
+an unattended fallback after the supervised bridge stops.
 [GitHub schedule behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
-## Verified existing GitHub fallback
+## Historical GitHub operating evidence and withdrawn schedule proposal
+
+This section preserves the 11 October inspection and initial proposal. It does
+not describe a current automatic collector schedule. Current operating ownership
+is stated in the October 12 reassessment above; the committed collector workflow
+is manual-only. Existing bounded software/data publication workflows are separate.
 
 Read-only account/repository inspection at 2026-10-11 22:13 UTC confirmed
 `SmurfTurfPawpaw/earth-observer` is public, active, unarchived, with default branch
@@ -157,7 +164,7 @@ installation, build/test suite, cache churn or retained provider data in GitHub.
 Store captures and prepared results in the existing Sites D1/R2 instead.
 [Current Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
 
-A small future workflow can use an off-hour-boundary 5/15-minute `schedule` plus
+The initial proposal considered an off-hour-boundary 5/15-minute `schedule` plus
 `workflow_dispatch`, a separate collection concurrency group, `contents: read`,
 a short job timeout and a single fixed HTTPS collection request. It should check
 the endpoint response and allowlisted persisted status, fail on a real storage
@@ -166,7 +173,7 @@ have committed. Server D1 must admit due sources, preserve conditional-fetch
 validators and enforce retry/backoff; an Action wake does not itself mean every
 source supplied new data. Keep GKG decoding in its separate bounded Node job.
 
-Repository Actions secret names and environment names were both empty; no secret
+At that 22:13 UTC inspection, repository Actions secret names and environment names were both empty; no secret
 values were read. The built-in `GITHUB_TOKEN` authorizes GitHub operations, not
 the Sites collector. A production trigger therefore still needs securely
 provisioned server authorization. Prefer a new collect-only machine capability,
@@ -175,11 +182,11 @@ also authorizes publication/heartbeat/aircraft actions. The scoped HMAC/replay
 contract described for the private controller can serve this route too. Never
 place credentials in workflow text, URL arguments, browser code or logs; never
 admit arbitrary target URLs, actions or publication packets from the workflow.
-Use only owner-controlled `schedule`/`workflow_dispatch`, not untrusted pull
-request code with a write credential.
+The current collector uses owner-invoked `workflow_dispatch` only. Untrusted pull
+request code must never receive a write credential.
 [Actions secret handling](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
 
-Activation requires the reviewed workflow and scoped server contract on the
+The historical scheduled-trial gate required the reviewed workflow and scoped server contract on the
 default branch, secret provisioning without disclosure, one explicit dispatch
 write/readback and then two actual scheduled captures with no laptop/visitor
 acquisition. Record expected wake time, run start, source check, capture and
@@ -188,9 +195,9 @@ GitHub documents a five-minute minimum, default-branch execution, high-load dela
 or dropped jobs and 60-day inactivity disabling; moving off the top of the hour
 reduces contention but supplies no freshness guarantee. Jobs are finite: standard
 hosted execution ends at six hours. Do not simulate an always-on server with
-long sleep loops or recurrent self-dispatch. This route is immediately feasible
-on verified existing accounts once its narrow authorization is configured, but
-cannot satisfy a guaranteed minute acquisition profile.
+long sleep loops or recurrent self-dispatch. A successful finite trial establishes
+that invocation's authenticated write/read path; it neither authorizes a production
+Actions service nor satisfies a guaranteed minute acquisition profile.
 [Schedule limits](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule),
 [Runner execution limits](https://docs.github.com/en/actions/reference/limits).
 
@@ -204,7 +211,7 @@ The read-only audit made no account, secret, workflow, schedule or deployment
 changes and did not trigger any run. The implementation package below is a later
 local change; it records preparation, not activation.
 
-### Prepared collect-only fallback package
+### Collect-only capability and current manual verification
 
 `worker/collector-trigger.js` now implements a handler factory for normalized
 `POST /api/collector/trigger`; the public client URL is compiled to
@@ -241,12 +248,13 @@ response cap and allowlisted status/count output. It never prints the key, raw
 response, signature, provider content or error stack. It performs no blind retry
 after an uncertain request.
 
-`.github/workflows/hosted-collector.yml` is optional and disabled unless root sets
-repository variable `EARTH_HOSTED_COLLECTOR_ENABLED='1'` and provisions the new
+`.github/workflows/hosted-collector.yml` permits finite `workflow_dispatch` only,
+gated by repository variable `EARTH_HOSTED_COLLECTOR_ENABLED='1'` and the
 Actions secret `EARTH_TRIGGER_HMAC_KEY`. Only the fixed client step receives the
-key. It runs on ordinary `ubuntu-latest`, default `main` of the owned repository,
-every five minutes at minutes 3/8/13/.../58 plus explicit dispatch, with a separate
-noncanceling concurrency group and two-minute job cap. Checkout/setup-node use
+key. It runs once on ordinary `ubuntu-latest`, restricted to default `main` of the
+owned repository, with a separate noncanceling concurrency group and two-minute
+job cap. There is no `schedule`, repeating signer loop or self-dispatch. The former
+five-minute collector schedule was removed in version 39. Checkout/setup-node use
 official v4 commit references verified from the Actions repositories; checkout
 does not persist GitHub credentials. No npm/build/artifact/cache steps run.
 
@@ -257,9 +265,9 @@ bounded client behavior. Root owns mount integration, tested publication, secure
 secret/enable-variable provisioning and independent run/readback verification.
 No account, secret, variable, workflow run or deployment was changed by this
 package's implementation. The current one-minute prepared-data staleness policy
-must not be silently presented as guaranteed fresh between five-minute wakes.
+must not be presented as guaranteed fresh without a verified permanent timer.
 
-### Root activation evidence after the package
+### Historical root activation evidence: 11 October 22:30 UTC
 
 Root reports Site v26/app `6ba6e7e` published, runtime environment revision 4, and
 one signed manual hosted collection at 2026-10-11 22:30:39 UTC. It stored 360
@@ -270,8 +278,10 @@ scheduled reliability or comprehensive world coverage. The GDELT producer was
 still at its 21:45 publication with declared missing intervals.
 
 Root provisioned the new GitHub secret and enable variable and dispatched
-workflow run `38180737793`. Its result and two actual scheduled captures still
-need to be observed. Root owns all activation and credentials. A cloud gate
+workflow run `38180737793`. At that handoff, its result and two actual scheduled
+captures had not yet been observed. Later trial outcomes and removal of the
+automatic collector schedule are recorded in FOUNDATION_PROGRESS.md. Root owns
+all activation and credentials. A permanent cloud gate
 requires run IDs/event types/commit SHAs, source check/capture/publication times
 and persisted status/history readback with no laptop/manual acquisition between
 scheduled runs. Identical source facts need not create a new factual revision.

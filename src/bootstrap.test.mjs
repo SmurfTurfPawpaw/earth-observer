@@ -75,7 +75,10 @@ const bootstrapBundle = build({
     plugin.onResolve({ filter: /^\.\/main\.js$/ }, () => ({ path: 'main', namespace: 'fixture' }));
     plugin.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({ contents: path === 'preview'
       ? 'export function showSavedScene(){globalThis.previewCalls++; return Promise.resolve();}'
-      : 'globalThis.mainCalls++;', loader: 'js' }));
+      : `export function start({earlySearchIntent}={}){globalThis.mainCalls++;
+          const form=document.getElementById('search-form'), button=form?.querySelector('button[type="submit"]');
+          if(form){form.addEventListener('submit',event=>{event.preventDefault();globalThis.searchSubmissions.push(document.getElementById('search').value);});button.disabled=false;}
+          earlySearchIntent?.ready();return Promise.resolve();}`, loader: 'js' }));
   } }],
 }).then((result) => result.outputFiles[0].text);
 
@@ -86,6 +89,12 @@ async function productionFixture({ alreadyLoaded = false, releaseUpdates = false
   const registrations = [], workerGate = Promise.withResolvers();
   const nodes = { loading: { hidden: false }, error: { hidden: true }, 'error-message': {}, notification: { hidden: true },
     reload: { addEventListener(name, fn, options) { retryListeners.set(name, { fn, once: options?.once }); } } };
+  nodes.search = new EventTarget(); nodes.search.value = ''; nodes.search.ownerDocument = f.document;
+  nodes['search-status'] = { textContent: '' };
+  const searchButton = { disabled: true }, searchForm = new EventTarget();
+  searchForm.querySelector = () => searchButton;
+  searchForm.requestSubmit = () => searchForm.dispatchEvent(new Event('submit', { cancelable: true }));
+  nodes['search-form'] = searchForm;
   const label = { textContent: '' };
   f.document.getElementById = (id) => nodes[id];
   f.document.querySelector = (selector) => selector === 'link[data-globe-engine]' ? { href: '/earth/cesium/1.138.0/Cesium.js' } : label;
@@ -94,7 +103,7 @@ async function productionFixture({ alreadyLoaded = false, releaseUpdates = false
       ...(releaseUpdates ? { register(url, options) { registrations.push({ url, options }); return workerGate.promise; } } : {}),
       controller: { scriptURL: 'https://example.com/earth/sw.js', postMessage: (message) => sent.push(message) } } },
     setTimeout: f.setTimeoutImpl, clearTimeout: f.clearTimeoutImpl,
-    location: { origin: 'https://example.com', href: 'https://example.com/earth/', pathname: '/earth/', reload() { reloads++; } }, console: { error: (...args) => logs.push(args) }, previewCalls: 0, mainCalls: 0,
+    location: { origin: 'https://example.com', href: 'https://example.com/earth/', pathname: '/earth/', reload() { reloads++; } }, console: { error: (...args) => logs.push(args) }, previewCalls: 0, mainCalls: 0, searchSubmissions: [],
     ...(alreadyLoaded ? { Cesium: {} } : {}) };
   vm.runInNewContext(await bootstrapBundle, context);
   const flush = async () => { for (let step = 0; step < 8; step++) await Promise.resolve(); };
@@ -139,4 +148,20 @@ test('production starts its worker release check before the engine finishes, and
   assert.equal(f.context.mainCalls, 0); f.scripts[0].emit('load'); await f.flush();
   assert.equal(f.context.mainCalls, 1); assert.equal(f.nodes.error.hidden, true);
   f.workerGate.reject(new Error('Update connection unavailable')); await f.flush(); assert.equal(f.context.mainCalls, 1); assert.equal(f.nodes.error.hidden, true);
+});
+
+test('production captures early Enter and transfers it once to explicit startup; an engine failure discards the pending action', async () => {
+  const enter = input => { const event = new Event('keydown', { cancelable: true }); Object.defineProperty(event, 'key', { value: 'Enter' }); input.dispatchEvent(event); return event; };
+  const f = await productionFixture(); f.nodes.search.value = 'Brussels';
+  assert.equal(enter(f.nodes.search).defaultPrevented, true);
+  assert.match(f.nodes['search-status'].textContent, /queued/); assert.equal(f.context.mainCalls, 0);
+  assert.equal(f.context.searchSubmissions.length, 0);
+  f.scripts[0].emit('load'); await f.flush();
+  assert.equal(f.context.mainCalls, 1); assert.deepEqual([...f.context.searchSubmissions], ['Brussels']);
+  assert.equal(f.nodes['search-status'].textContent, '');
+  f.scripts[0].captured.get('load')(); await f.flush(); assert.equal(f.context.searchSubmissions.length, 1);
+  const failed = await productionFixture(); failed.nodes.search.value = '51, 3'; enter(failed.nodes.search);
+  failed.scripts[0].emit('error'); await failed.flush();
+  assert.equal(failed.nodes['search-status'].textContent, ''); assert.equal(failed.context.mainCalls, 0);
+  failed.scripts[0].captured.get('load')(); await failed.flush(); assert.equal(failed.context.searchSubmissions.length, 0);
 });

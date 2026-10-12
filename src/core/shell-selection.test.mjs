@@ -74,8 +74,8 @@ test('scientific report types and correction clocks remain source statements rat
   assert.equal(liveEarthquakeSelection(entity({ ...facts, sourceUrl }), at).sourceUrl, sourceUrl);
 });
 
-// Minimal local DOM: models capture/bubble ownership and hidden/inert focus,
-// without claiming native keyboard layout, CSS visibility or browser acceptance.
+// Minimal local DOM: models capture/bubble ownership, per-listener microtask
+// checkpoints and hidden/inert focus; native keyboard/CSS acceptance is separate.
 function shellDocument() {
   const walk = node => [node, ...node.children.flatMap(walk)];
   class Element {
@@ -123,11 +123,27 @@ function shellDocument() {
     dispatchEvent(event) {
       if (!event.target) Object.defineProperty(event, 'target', { value: this, configurable: true });
       const ancestry = []; for (let current = this; current; current = current.parentElement) ancestry.push(current);
-      for (const current of ancestry.slice().reverse()) for (const listener of current.listeners.slice()) if (listener.type === event.type && listener.capture) listener.fn(event);
-      for (const current of ancestry) for (const listener of current.listeners.slice()) if (listener.type === event.type && !listener.capture) listener.fn(event);
+      for (const current of ancestry.slice().reverse()) for (const listener of current.listeners.slice()) if (listener.type === event.type && listener.capture) {
+        Object.defineProperty(event, 'eventPhase', { value: current === this ? 2 : 1, configurable: true }); listener.fn(event);
+      }
+      for (const current of ancestry) for (const listener of current.listeners.slice()) if (listener.type === event.type && !listener.capture) {
+        Object.defineProperty(event, 'eventPhase', { value: current === this ? 2 : 3, configurable: true }); listener.fn(event);
+      }
+      Object.defineProperty(event, 'eventPhase', { value: 0, configurable: true });
       return true;
     }
     click(detail = 0) { this.dispatchEvent({ type: 'click', detail, target: this, preventDefault() {}, stopPropagation() {} }); }
+    async nativeClick(detail = 0) {
+      const event = { type: 'click', detail, target: this, eventPhase: 0, preventDefault() {}, stopPropagation() {} };
+      const ancestry = []; for (let current = this; current; current = current.parentElement) ancestry.push(current);
+      for (const current of ancestry.slice().reverse()) for (const listener of current.listeners.slice()) if (listener.type === 'click' && listener.capture) {
+        event.eventPhase = current === this ? 2 : 1; listener.fn(event); await Promise.resolve();
+      }
+      for (const current of ancestry) for (const listener of current.listeners.slice()) if (listener.type === 'click' && !listener.capture) {
+        event.eventPhase = current === this ? 2 : 3; listener.fn(event); await Promise.resolve();
+      }
+      event.eventPhase = 0;
+    }
     focus() { if (this.isConnected && !this.disabled && !this.closest('[hidden], [inert]')) doc.activeElement = this; }
     getBoundingClientRect() { return { height: 40, width: 1280 }; }
   }
@@ -190,11 +206,11 @@ async function mountedShell(t) {
 }
 
 test('keyboard GDACS row activation hands focus from the inert Layers workspace to visible feature details and its next source link', async t => {
-  const f = await mountedShell(t), close = f.get('clear-selection'); f.button.focus(); f.button.click(0);
+  const f = await mountedShell(t), close = f.get('clear-selection'); f.button.focus(); await f.button.nativeClick(0);
   assert.equal(f.doc.activeElement, close); assert.equal(f.get('selection').hidden, false); assert.equal(f.get('sidebar').inert, true);
   assert.equal(close.getAttribute('aria-label'), 'Close feature details'); f.doc.tab();
   assert.equal(f.doc.activeElement.className, 'world-source'); assert.equal(f.doc.activeElement.href, 'https://www.gdacs.org/report.aspx?eventid=1001&eventtype=FL&episodeid=1');
-  const selected = f.viewer.selectedEntity; f.shell.openSidebar(); f.button.focus(); f.button.click(0);
+  const selected = f.viewer.selectedEntity; f.shell.openSidebar(); f.button.focus(); await f.button.nativeClick(0);
   assert.equal(f.viewer.selectedEntity, selected); assert.equal(f.doc.activeElement, close); assert.equal(f.reads, 1, 'reopening requests no new source data');
 });
 
@@ -205,8 +221,8 @@ test('pointer/background selections, unfulfilled keyboard actions and disposed r
   selected.name = 'TEST ONLY background title update'; await new Promise(resolve => setTimeout(resolve, 1050));
   assert.equal(f.doc.activeElement, north, 'the real entity property repaint does not hand off keyboard focus');
   f.shell.openSidebar(); const original = f.layer.setParams; f.layer.setParams = () => false;
-  f.button.focus(); f.button.click(0); await Promise.resolve(); f.layer.setParams = original;
-  north.focus(); f.viewer.selectedEntityChanged.raiseEvent(selected); assert.equal(f.doc.activeElement, north, 'a failed row action expires instead of arming a later selection');
+  f.button.focus(); await f.button.nativeClick(0); f.layer.setParams = original;
+  north.focus(); f.viewer.selectedEntityChanged.raiseEvent(selected); assert.equal(f.doc.activeElement, north, 'a failed click cannot hand off focus after dispatch, even before its task timer expires');
   f.shell.openSidebar(); f.layer.setParams = () => { f.viewer.selectedEntity = new Cesium.Entity({ id: 'unrelated:TEST_ONLY', name: 'TEST ONLY irrelevant selection' }); return false; };
   f.button.focus(); f.button.click(0); assert.notEqual(f.doc.activeElement, f.get('clear-selection'), 'an unrelated entity cannot consume this notice action as a focus handoff');
   await Promise.resolve(); f.layer.setParams = original;
@@ -214,4 +230,18 @@ test('pointer/background selections, unfulfilled keyboard actions and disposed r
   f.get('clear-selection').click(0); assert.equal(f.doc.activeElement, f.get('toggle-news'), 'the existing report close focus return remains intact');
   north.focus(); f.shell.destroy(); f.button.click(0); f.viewer.selectedEntityChanged.raiseEvent(selected); f.shell.selectEntity(selected);
   assert.equal(f.doc.activeElement, north); assert.equal(f.reads, 1);
+});
+
+test('shell teardown cancels an unconsumed keyboard notice intent before its end-task expiry', async t => {
+  const f = await mountedShell(t), pending = new Set(), nativeSetTimeout = globalThis.setTimeout, nativeClearTimeout = globalThis.clearTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    const timer = nativeSetTimeout(() => { pending.delete(timer); callback(...args); }, delay);
+    if (delay === 0) pending.add(timer); return timer;
+  });
+  t.mock.method(globalThis, 'clearTimeout', timer => { pending.delete(timer); nativeClearTimeout(timer); });
+  f.layer.setParams = () => false; f.button.focus(); await f.button.nativeClick(0);
+  assert.equal(pending.size, 1, 'the click intent survives capture/target microtask checkpoints until the event task ends');
+  f.shell.destroy(); assert.equal(pending.size, 0, 'terminal cleanup removes the unconsumed expiry timer');
+  const focus = f.doc.activeElement; await f.button.nativeClick(0);
+  assert.equal(f.doc.activeElement, focus); assert.equal(pending.size, 0, 'disposed controls neither focus nor rearm the intent');
 });

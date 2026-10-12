@@ -356,3 +356,24 @@ explicit layer intent, one workspace and unchanged source-time contracts. Then
 verify newcomer search, zoom and reload/session behavior, and assess the resulting
 friction before proposing more controls. Permanent execution, broader retained
 history and cited analysis remain unfinished dependencies in NEXT_PHASES.md.
+
+## 05:10 UTC interaction gate reassessment
+
+The v44 native keyboard focus gate failed despite its synchronous local fixture.
+The corrected slice keeps one matching action through the click task and admits
+focus only during dispatch of that event. Its fixture now checkpoints microtasks
+between listeners. Independent review found no blocker; hosted native acceptance
+remains mandatory before declaring the interaction repaired.
+
+An early search must not disappear while startup disables its submit button.
+Bootstrap owns one bounded intent, then hands it to the existing navigation
+handler after camera readiness. Editing, hiding, cancellation, teardown and startup
+failure discard it. Explicit intent supersedes automatic location. This is a
+startup handoff, not a new place provider, data request or search index.
+
+Publish these frozen slices together with corrected collector operating notes.
+Seventy-six focused checks passed across the eight actual named test files.
+Verify early Enter and the native notice-to-details-to-source keyboard sequence
+against that exact saved production version. Keep optional retention accounting
+excluded until authenticated hosted acceptance. Review stream delivery capacity
+and the historical-session persistence contract before more feeds or analysis.

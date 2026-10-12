@@ -15,8 +15,9 @@ action or body; redirects, cookies and arbitrary source URLs are not admitted.
 
 No Cloudflare account was connected, Worker deployed or secret provisioned by this
 change. These files alone do not establish unattended collection. The current
-GitHub `hosted-collector.yml` workflow remains the explicit five-minute fallback;
-minute execution needs independent account access and actual runtime verification.
+GitHub `hosted-collector.yml` workflow supports finite, owner-invoked verification
+through `workflow_dispatch` only; it has no automatic collection schedule. Minute
+execution needs independent account access and actual runtime verification.
 
 1. Use an authenticated Cloudflare account with permission to deploy this Worker,
    manage its Cron Trigger and set its secret. Obtain account selection through the
@@ -35,9 +36,9 @@ minute execution needs independent account access and actual runtime verificatio
    browser dependency. Read the hosted source/world receipts and original source
    dates, inspect Cron outcomes/logs, and measure CPU against the selected plan.
    A manual trigger or configuration health response alone does not pass this gate.
-6. After minute execution is proven reliable, disable the five-minute GitHub
-   trigger to avoid competing timers. Retain it as a documented fallback rather
-   than silently running two acquisition schedules.
+6. Keep the manual GitHub workflow for bounded deployment acceptance. Its former
+   automatic collector schedule was removed; it is not a second production timer
+   or an unattended fallback if this minute Worker stops.
 
 `wrangler secret put EARTH_TRIGGER_HMAC_KEY` is an interactive provisioning option;
 it also deploys a new Worker version. Stage the disabled configuration first and

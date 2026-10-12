@@ -7,7 +7,7 @@ import { build } from 'esbuild';
 // Execute the real entry and native context-recovery controller. Downstream
 // owners are observable fixtures; their existing suites cover their disposal.
 const modules = {
-  './core/viewer.js': 'export function createGlobeViewer(){return globalThis.fixture.viewer;}',
+  './core/viewer.js': 'export function createGlobeViewer(){if(globalThis.fixture.startupError)throw globalThis.fixture.startupError;return globalThis.fixture.viewer;}',
   './core/layer-manager.js': 'export const STORAGE_KEY="layers"; export function createLayerManager(){return globalThis.fixture.manager;}',
   './core/catalog.js': 'export const LAYERS=[{id:"earthquakes"},{id:"flights"}];',
   './core/shell.js': 'export function createShell(){return globalThis.fixture.shell;}',
@@ -55,10 +55,11 @@ function event() {
   return { addEventListener(fn) { callbacks.add(fn); return () => callbacks.delete(fn); },
     emit(...args) { for (const fn of [...callbacks]) fn(...args); }, callbacks };
 }
-async function fixture({ automatic = false, permission = Promise.resolve({ state: 'granted' }), closeGate } = {}) {
+async function fixture({ automatic = false, permission = Promise.resolve({ state: 'granted' }), closeGate, restorationGate,
+  intentFactory, startupError, hidden = false } = {}) {
   const f = { calls: [], cameraWrites: [], layerRestores: [], sessionSaves: 0, preferenceRemovals: 0, geoCalls: 0,
     geo: Promise.withResolvers(), initial: { view: { lat: 50, lon: 4, alt: 90000 }, area: null, layers: ['earthquakes'], requestLocation: automatic },
-    timers: new Map(), nextTimer: 0, streamActive: false, rafActive: true, clockActive: true, viewerDestroyed: false, logs: [] };
+    timers: new Map(), nextTimer: 0, streamActive: false, rafActive: true, clockActive: true, viewerDestroyed: false, logs: [], startupError };
   const nodes = new Map();
   const node = id => {
     if (!nodes.has(id)) {
@@ -67,7 +68,7 @@ async function fixture({ automatic = false, permission = Promise.resolve({ state
     }
     return nodes.get(id);
   };
-  const document = new EventTarget(); document.hidden = false; document.getElementById = node;
+  const document = new EventTarget(); document.hidden = hidden; document.getElementById = node;
   document.querySelector = node;
   const window = new EventTarget();
   const canvas = new EventTarget(), renderError = event(), postRender = event();
@@ -81,7 +82,7 @@ async function fixture({ automatic = false, permission = Promise.resolve({ state
   const requested = { earthquakes: { enabled: true }, flights: { enabled: false } };
   const modulesById = Object.fromEntries(Object.keys(requested).map(id => [id, { disable() { f.calls.push(`${id}:stop`); if (id === 'flights') f.rafActive = false; } }]));
   f.manager = { getState: () => requested, getLayerParams: () => ({}), setLocalArea(value) { f.area = value; },
-    restore(ids) { f.layerRestores.push(ids); return Promise.resolve(); }, subscribe: () => () => {}, preload: () => Promise.resolve(),
+    restore(ids) { f.layerRestores.push(ids); return restorationGate?.promise || Promise.resolve(); }, subscribe: () => () => {}, preload: () => Promise.resolve(),
     getLayer: id => modulesById[id], isTimelinePaused: () => false, requestRefresh() {},
     async setTimelineMode(mode) { f.calls.push(`mode:${mode}`); },
     destroy() { f.calls.push('manager:destroy'); f.timers.clear(); return closeGate?.promise ?? Promise.resolve(); } };
@@ -93,9 +94,11 @@ async function fixture({ automatic = false, permission = Promise.resolve({ state
     setTimeout(fn, delay) { const id = ++f.nextTimer; f.timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { f.timers.delete(id); },
     console: { error: (...args) => f.logs.push(args) }, queueMicrotask };
   vm.runInNewContext(await bundle, context);
+  assert.equal(f.cameraWrites.length, 0, 'Importing main does not own an implicit second startup');
+  const starting = context.application.start({ earlySearchIntent: intentFactory?.(f) });
   await flush();
   const loseGraphics = () => { const loss = new Event('webglcontextlost', { cancelable: true }); canvas.dispatchEvent(loss); return loss; };
-  return { ...f, f, node, document, window, canvas, context, renderError, loseGraphics,
+  return { ...f, f, node, document, window, canvas, context, renderError, loseGraphics, starting,
     locate: () => { const click = new Event('click'); node('locate').dispatchEvent(click); },
     navigate: () => f.navigation.onPlace({ lat: 51, lon: 5 }), flush };
 }
@@ -158,4 +161,27 @@ test('tab visibility and retained-history transitions do not dispose a healthy s
   await u.f.timeOptions.onTimeChange({ mode: 'history' });
   assert.equal(u.f.calls.includes('manager:destroy'), false); assert.equal(u.f.viewerDestroyed, false);
   await u.context.application.destroy();
+});
+
+test('early search readiness follows the initial camera and navigation handlers without waiting for layer restoration or invoking automatic location', async () => {
+  const restorationGate = Promise.withResolvers(); let ready = 0, cleaned = 0, finished = false;
+  const u = await fixture({ automatic: true, restorationGate, intentFactory: f => ({
+    ready() { ready++; assert.equal(f.cameraWrites.length, 1); assert.equal(typeof f.navigation.onPlace, 'function');
+      // An explicit unsupported query is still a submitted user intent, so it
+      // must not trigger an unexpected location prompt as a fallback.
+      return true; }, destroy() { cleaned++; },
+  }) });
+  void u.starting.then(() => { finished = true; }); await u.flush();
+  assert.equal(ready, 1); assert.equal(finished, false); assert.equal(u.f.geoCalls, 0); assert.equal(u.f.layerRestores.length, 1);
+  restorationGate.resolve(); await u.starting; assert.equal(ready, 1); await u.context.application.destroy(); assert.equal(cleaned, 1);
+});
+
+test('startup failure disposes pending search without readiness, and hidden readiness cannot start automatic location', async () => {
+  let ready = 0, cleaned = 0;
+  const failed = await fixture({ startupError: new Error('Fixture renderer failed'), intentFactory: () => ({ ready() { ready++; return true; }, destroy() { cleaned++; } }) });
+  await failed.starting; assert.equal(ready, 0); assert.equal(cleaned, 1); assert.equal(failed.node('error').hidden, false);
+  assert.match(failed.node('error-message').textContent, /Fixture renderer failed/); assert.equal(failed.f.geoCalls, 0);
+  await failed.context.application.destroy(); assert.equal(cleaned, 1);
+  const hidden = await fixture({ automatic: true, hidden: true, intentFactory: () => ({ ready() { return false; }, destroy() {} }) });
+  assert.equal(hidden.f.geoCalls, 0); assert.equal(hidden.f.viewer.useDefaultRenderLoop, false); await hidden.context.application.destroy();
 });

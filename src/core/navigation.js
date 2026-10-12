@@ -63,7 +63,7 @@ export function installNavigation(viewer, { onPlace = () => {}, onViewChange = (
     event.preventDefault();
     const place = resolvePlace(search.value);
     const status = document.getElementById('search-status');
-    if (!place) { status.textContent = 'Choose a saved place from the suggestions, or enter latitude, longitude.'; return; }
+    if (!place) { status.textContent = 'Choose a supported place from the suggestions, or enter latitude, longitude.'; return; }
     status.textContent = '';
     if (onPlace(place) !== true) setCameraView(viewer, { ...HOME_VIEW, lat: place.lat, lon: place.lon, alt: 90000 }, true);
   };

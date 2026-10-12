@@ -164,7 +164,9 @@ async function handlePanel({ panel, open }) {
   await (panel === 'news' ? intelligence : notebook)?.open();
 }
 
-export async function start() {
+export async function start({ earlySearchIntent } = {}) {
+  if (destroyed) { earlySearchIntent?.destroy(); return; }
+  disposers.push(() => earlySearchIntent?.destroy());
   try {
     const initial = initialWorkspace(location.hash, loadSession(), LAYERS.map((layer) => layer.id));
     viewer = createGlobeViewer({
@@ -228,6 +230,9 @@ export async function start() {
         rememberWorkspace();
       },
     }));
+    // The initial camera and ordinary search handler are ready; layer delivery
+    // remains independent. An explicit early search supersedes automatic locate.
+    const earlySearchReplayed = earlySearchIntent?.ready() === true;
     disposers.push(manager.subscribe(rememberWorkspace));
     disposers.push(shell.subscribePanels(handlePanel));
     disposers.push(installScenePreview(viewer, { store, cameraView, getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
@@ -306,7 +311,7 @@ export async function start() {
     });
     disposers.push(firstFrame);
     visibility();
-    if (initial.requestLocation) void locate({ automatic: true });
+    if (initial.requestLocation && !earlySearchReplayed && !document.hidden) void locate({ automatic: true });
     // Startup must finish before optional code warming or offline-cache installation.
     warmTimer = setTimeout(() => {
       if (destroyed || contextRecovery.isLost()) return;
@@ -352,4 +357,3 @@ export async function destroy() {
 // bfcache keeps the existing session alive; actual unload disposes owned work.
 window.addEventListener('pagehide', (event) => { if (!event.persisted) destroy(); });
 if (import.meta.hot) import.meta.hot.dispose(destroy);
-start();

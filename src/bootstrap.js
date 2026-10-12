@@ -1,6 +1,10 @@
 import { showSavedScene } from './core/scene-preview.js';
 import { loadEngineScript } from './bootstrap-engine.js';
 import { installReleaseUpdates } from './core/release-updates.js';
+import { createEarlySearchIntent } from './core/early-search-intent.js';
+const searchForm = document.getElementById('search-form');
+const earlySearchIntent = searchForm ? createEarlySearchIntent({ form: searchForm,
+  input: document.getElementById('search'), status: document.getElementById('search-status') }) : null;
 if (import.meta.env.PROD) installReleaseUpdates({ scope: import.meta.env?.BASE_URL || '/' });
 // The worker reports actual network fallback; observations retain their own source times.
 navigator.serviceWorker?.addEventListener('message', (event) => {
@@ -22,8 +26,10 @@ async function boot() {
     }
     const label = document.querySelector('#loading p');
     if (label) label.textContent = 'Opening the globe…';
-    await import('./main.js');
+    const app = await import('./main.js');
+    await app.start({ earlySearchIntent });
   } catch (error) {
+    earlySearchIntent?.destroy();
     document.getElementById('loading').hidden = true;
     document.getElementById('error').hidden = false;
     document.getElementById('error-message').textContent = error.message;
