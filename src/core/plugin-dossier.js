@@ -1,4 +1,4 @@
-import { worldTime, isWorldDigest } from './world-model.js';
+import { worldTime, isWorldDigest } from './world-identity.js';
 import { pluginRevision, newerPluginRevision, PLUGIN_UPDATE_SCOPES } from './live-updates.js';
 import { createGasExposureScenario } from './gas-scenario.js';
 

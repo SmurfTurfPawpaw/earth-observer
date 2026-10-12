@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { createSceneClock } from './scene-clock.js';
-import { worldTime } from './world-model.js';
+import { worldTime } from './world-identity.js';
 import { createWorldSceneController } from './world-scene-controller.js';
 
 const stamp = (value) => { try { return worldTime(value); } catch { return null; } };

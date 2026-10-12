@@ -1,4 +1,4 @@
-import { worldHash } from './world-model.js';
+import { worldHash } from './world-identity.js';
 import { WORLD_SCENE_SCOPE } from './world-scene-controller.js';
 
 const MAX_BYTES = 256 * 1024;

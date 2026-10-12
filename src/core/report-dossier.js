@@ -1,5 +1,6 @@
 import { canonicalDiscoveryRecord } from './discovery-index.js';
-import { worldRevision, worldHash, createWorldSourceItem, provisionalWorldEvent, worldTime } from './world-model.js';
+import { worldRevision, createWorldSourceItem, provisionalWorldEvent } from './world-model.js';
+import { worldHash, worldTime } from './world-identity.js';
 import { matchingWorldEvent } from './world-dossier-bridge.js';
 
 const MAX_BYTES = 256 * 1024;

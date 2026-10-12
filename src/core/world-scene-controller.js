@@ -1,4 +1,4 @@
-import { worldTime, worldHash, isWorldDigest } from './world-model.js';
+import { worldTime, worldHash, isWorldDigest } from './world-identity.js';
 
 export const WORLD_SCENE_SCOPE = 'usgs-catalog-m4.5-v1';
 export const WORLD_SCENE_REFRESH_MS = 60000;

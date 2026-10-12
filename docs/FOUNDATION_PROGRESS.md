@@ -587,3 +587,11 @@ The first exact build exposed a 21 KB increase in the initial map module from
 eager report-code imports. Publication is held while that controller moves into
 the optional Current feeds import boundary. The next exact artifact must prove
 the delivery change; no initial-build size is represented as a live improvement.
+
+The optional import alone saved only about 3 KB because the shared domain module
+still pulled discovery normalization into the map chunk. Pure UTC/hash identities
+are now separated into world-identity.js, with compatible world-model re-exports.
+Scene consumers depend only on that pure contract; optional report inspection
+keeps its domain projection work. Stable IDs, factual revisions, knowledge dates,
+historical buffering and cancellation pass 23 focused existing/new checks. This
+is a dependency-boundary correction, rather than duplicate hashing logic.
