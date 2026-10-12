@@ -300,12 +300,15 @@ test('actual compact collector route repairs research admission after a lost bac
   const response = await handleCollection(post(), f.env, { waitUntil(task) { tasks.push(task); } }, { now: f.now, fetchImpl });
   assert.equal(response.status, 200); const compact = await response.json();
   assertCompact(compact, stamp(61_000), initial.prepared.inputDigest); assert.equal(compact.updatesPublished, false);
-  assert.equal(compact.research.scheduled, true); assert.equal(tasks.length, 1); assert.deepEqual(captures(f), before);
-  const research = await tasks[0]; assert.equal(research.mode, 'due-only'); assert.equal(research.admissionRepaired, true);
+  assert.equal(compact.research.scheduled, true); assert.equal(compact.sourcePlugins.scheduled, true);
+  assert.equal(tasks.length, 2); assert.deepEqual(captures(f), before);
+  const research = (await Promise.all(tasks)).find(result => result?.mode === 'due-only');
+  assert.ok(research); assert.equal(research.admissionRepaired, true);
   assert.equal(research.jobAccepted, true); assert.equal(research.jobState, 'succeeded'); assert.equal(f.count('earth_investigation_jobs'), 1);
   f.clock(122_000); const idleTasks = [];
   const idle = await handleCollection(post(), f.env, { waitUntil(task) { idleTasks.push(task); } }, { now: f.now, fetchImpl });
-  assert.equal(idle.status, 200); const advanced = await idleTasks[0];
+  assert.equal(idle.status, 200); const advanced = (await Promise.all(idleTasks)).find(result => result?.mode === 'due-only');
+  assert.ok(advanced);
   assert.equal(advanced.admissionRepaired, false); assert.equal(advanced.enqueueCount, 0); assert.equal(advanced.jobStarted, false);
   assert.deepEqual(captures(f), before); assert.equal(f.count('earth_investigation_jobs'), 1);
 });

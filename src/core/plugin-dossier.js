@@ -1,8 +1,10 @@
 import { worldTime, isWorldDigest } from './world-model.js';
+import { pluginRevision, newerPluginRevision, PLUGIN_UPDATE_SCOPES } from './live-updates.js';
+import { createGasExposureScenario } from './gas-scenario.js';
 
 export const PLUGIN_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, publications: 40, years: 10, origins: 20, refreshMs: 300000 });
-const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', url: '/api/dossiers/belgium-natural-gas-origins', kind: 'dataset-dossier' },
-  publications: { label: 'ECB releases', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' } });
+const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', pluginId: 'eurostat-gas-origins-v1', url: '/api/dossiers/belgium-natural-gas-origins', kind: 'dataset-dossier' },
+  publications: { label: 'ECB releases', pluginId: 'ecb-press-v1', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' } });
 const time = (value) => { try { return worldTime(value); } catch { return null; } };
 const displayTime = (value) => time(value)?.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') || 'Not supplied';
 const text = (value, bound = 1000) => typeof value === 'string' && value.length > 0 && value.length <= bound;
@@ -17,7 +19,7 @@ const sourceUrl = (value, view) => {
 export function normalizePluginDossier(value, view) {
   const spec = VIEWS[view];
   if (!spec || value?.schemaVersion !== 1 || typeof value.configured !== 'boolean' || typeof value.available !== 'boolean' ||
-    !text(value.plugin?.id, 100) || !text(value.plugin.scopeId, 100) || !sourceUrl(value.plugin.sourceUrl, view)) throw new Error('Stored source context has an incompatible contract');
+    value.plugin?.id !== spec.pluginId || value.plugin.scopeId !== PLUGIN_UPDATE_SCOPES[spec.pluginId] || !sourceUrl(value.plugin.sourceUrl, view)) throw new Error('Stored source context has an incompatible contract');
   if (!value.available) return value;
   if (!value.configured) throw new Error('Stored source context is unavailable');
   const receipt = value.receipt, artifact = value.artifact;
@@ -73,7 +75,7 @@ async function readStored(response, signal) {
 }
 
 /** One existing context workspace; only its selected, visible source owns delivery. */
-export function createPluginDossierPanel({ container, createFeed, fetchImpl = (...args) => fetch(...args), documentRef = container?.ownerDocument || globalThis.document,
+export function createPluginDossierPanel({ container, createFeed, subscribeUpdates, fetchImpl = (...args) => fetch(...args), documentRef = container?.ownerDocument || globalThis.document,
   windowRef = documentRef?.defaultView || globalThis.window, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
   if (!container || !documentRef || typeof createFeed !== 'function') throw new TypeError('Source context needs a container and current-feed delegate');
   const node = (tag, className, value) => { const el = documentRef.createElement(tag); if (className) el.className = className; if (value !== undefined) el.textContent = value; return el; };
@@ -89,9 +91,10 @@ export function createPluginDossierPanel({ container, createFeed, fetchImpl = (.
   const title = node('h3', 'plugin-title'), subtitle = node('p', 'plugin-subtitle'), status = node('p', 'plugin-status'); status.setAttribute('role', 'status');
   const content = node('div', 'plugin-content'), refresh = node('button', 'plugin-refresh', 'Refresh stored context'); refresh.type = 'button';
   dossierHost.append(title, subtitle, status, content, refresh); container.replaceChildren(nav, scope, feedHost, dossierHost);
-  let view = 'feeds', opened = false, destroyed = false, generation = 0, request, pending, timer, feed, feedPending, mode = 'live', rendered = null, checkedTime;
+  let view = 'feeds', opened = false, destroyed = false, generation = 0, request, pending, timer, feed, feedPending, mode = 'live', rendered = null, followupRequested = false;
+  const dirty = new Set(), updates = new Map(); let evidenceBindings = [], scenario;
   const stopTimer = () => { if (timer !== undefined) clearTimeoutImpl(timer); timer = undefined; };
-  const cancel = () => { ++generation; request?.abort(); request = null; pending = null; stopTimer(); dossierHost.setAttribute('aria-busy', 'false'); refresh.disabled = false; };
+  const cancel = () => { ++generation; scenario?.suspend(); request?.abort(); request = null; pending = null; followupRequested = false; stopTimer(); dossierHost.setAttribute('aria-busy', 'false'); refresh.disabled = false; };
   function arm() {
     stopTimer(); if (!opened || destroyed || documentRef.hidden || view === 'feeds') return;
     timer = setTimeoutImpl(() => { timer = undefined; void load(true); }, PLUGIN_DOSSIER_LIMITS.refreshMs);
@@ -100,28 +103,118 @@ export function createPluginDossierPanel({ container, createFeed, fetchImpl = (.
     const details = node('details', 'plugin-evidence'); details.append(node('summary', '', label));
     details.append(link(payload.plugin.name || 'Original source', payload.plugin.sourceUrl));
     const facts = node('dl', 'plugin-facts');
-    for (const [label, value] of [['Source retrieved', displayTime(payload.receipt.capturedAt)], ['Receipt recorded', displayTime(payload.receipt.recordedAt)],
-      ['Source revised', payload.receipt.sourceUpdatedAt ? displayTime(payload.receipt.sourceUpdatedAt) : null],
-      ['Stored source checked', displayTime(payload.check?.checkedAt)], ...extra,
-      ['Raw SHA-256', payload.receipt.rawSha256], ['Facts SHA-256', payload.receipt.factsDigest], ['Artifact SHA-256', payload.receipt.artifactSha256]]) {
-      if (value !== null) { const data = node('dd', '', String(value)); if (label === 'Stored source checked') checkedTime = data; facts.append(node('dt', '', label), data); }
-    }
+    bindFacts(facts, payload, [['Source retrieved', p => displayTime(p.receipt.capturedAt)], ['Receipt recorded', p => displayTime(p.receipt.recordedAt)],
+      ['Source revised', p => p.receipt.sourceUpdatedAt ? displayTime(p.receipt.sourceUpdatedAt) : null],
+      ['Stored source checked', p => displayTime(p.check?.checkedAt)], ...extra,
+      ['Raw SHA-256', p => p.receipt.rawSha256], ['Facts SHA-256', p => p.receipt.factsDigest], ['Artifact SHA-256', p => p.receipt.artifactSha256]]);
     details.append(facts); return details;
   }
+  function bindFacts(host, payload, fields) {
+    for (const [label, value] of fields) {
+      const getter = typeof value === 'function' ? value : () => value, title = node('dt', '', label), data = node('dd');
+      host.append(title, data); evidenceBindings.push({ title, data, getter });
+      const current = getter(payload); title.hidden = data.hidden = current == null; data.textContent = current == null ? '' : String(current);
+    }
+  }
+  function refreshEvidence(payload) {
+    for (const { title, data, getter } of evidenceBindings) {
+      const current = getter(payload); if (title) title.hidden = current == null;
+      data.hidden = current == null; data.textContent = current == null ? '' : String(current);
+    }
+  }
+  function gasScenario() {
+    const details = node('details', 'plugin-evidence plugin-scenario'); details.append(node('summary', '', 'Explore a scenario'));
+    details.append(node('p', 'plugin-note', 'Hypothetical · 2024 reported imports. Other origins stay fixed; replacement is an assumption.'));
+    const controls = node('div', 'intelligence-filters'), origin = node('select'), reduction = node('input'), replacement = node('input');
+    origin.name = 'gas-scenario-origin'; reduction.name = 'gas-scenario-reduction'; replacement.name = 'gas-scenario-replacement';
+    for (const [label, input] of [['Reported origin', origin], ['Reduce this origin’s imports (%)', reduction], ['Replace the lost volume (%)', replacement]]) {
+      const field = node('label', '', label); field.append(input); controls.append(field);
+    }
+    for (const [input, value] of [[reduction, '25'], [replacement, '40']]) { input.type = 'number'; input.min = '0'; input.max = '100'; input.step = '0.1'; input.value = value; input.required = true; }
+    const notice = node('p', 'plugin-note plugin-scenario-status'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
+    const output = node('div', 'plugin-scenario-result'), values = node('dl', 'plugin-facts'), fields = new Map(); output.hidden = true;
+    for (const [key, label] of [['lostOriginVolume', 'Lost origin volume'], ['replacementVolume', 'Assumed replacement'], ['residualGapVolume', 'Remaining gap'], ['residualGapPercentOfReportedTotal', 'Gap as share of 2024 TOTAL']]) {
+      const value = node('dd'); values.append(node('dt', '', label), value); fields.set(key, value);
+    }
+    const proof = node('details', 'plugin-item-evidence'), proofFacts = node('dl', 'plugin-facts');
+    proof.append(node('summary', '', 'Assumptions and evidence'), proofFacts); output.append(values, proof); details.append(controls, notice, output);
+    let baseline, baselineKey, epoch = 0, resultKey, calculatingKey, waiting = false, baselineChanged = false, originChanged = false;
+    const eligible = payload => payload?.available ? (payload.artifact.years.find(year => year.year === '2024')?.shares || []).filter(row =>
+      row.partner.type === 'reported-country-or-territory' && /^[A-Z]{2}$/.test(row.partner.code) && !['EU', 'EA', 'UN', 'ZZ'].includes(row.partner.code) &&
+      row.status === null && finite(row.quantity) && row.quantity > 0 && finite(row.sharePercent)) : [];
+    const clearResult = () => { ++epoch; resultKey = calculatingKey = null; output.hidden = true; };
+    const visible = () => opened && !destroyed && !documentRef.hidden && view === 'gas' && details.open;
+    const percent = input => String(input.value ?? '').trim() === '' ? NaN : Number(input.value);
+    function compute() {
+      if (!visible()) return;
+      if (waiting || dirty.has('gas')) { notice.textContent = 'Stored evidence changed. Waiting for the updated 2024 baseline…'; return; }
+      if (!origin.value) { notice.textContent = 'A qualifying 2024 reported origin is unavailable for this scenario.'; return; }
+      const assumptions = { year: '2024', originCode: origin.value, reductionPercent: percent(reduction), replacementPercent: percent(replacement) };
+      const key = JSON.stringify([baselineKey, assumptions.originCode, reduction.value, replacement.value]);
+      if (resultKey === key || calculatingKey === key) return;
+      clearResult(); const owner = epoch; calculatingKey = key; notice.textContent = 'Calculating from the retained 2024 evidence…';
+      void createGasExposureScenario(baseline, assumptions).then(value => {
+        if (owner !== epoch || !visible() || waiting || dirty.has('gas')) return;
+        resultKey = key; calculatingKey = null;
+        for (const [field, el] of fields) el.textContent = `${number.format(value.result[field])}${field === 'residualGapPercentOfReportedTotal' ? '%' : ' TJ'}`;
+        proofFacts.replaceChildren();
+        for (const [label, fact] of [['Origin', value.baseline.origin.label], ['Reference year', value.baseline.referenceYear],
+          ['Origin reduction', `${value.assumptions.originReductionPercent}%`], ['Lost volume replaced', `${value.assumptions.replacementPercentOfLostVolume}%`],
+          ['Assumptions', value.assumptions.meaning], ['Reported origin volume', `${number.format(value.baseline.originVolume)} TJ`],
+          ['Reported TOTAL', `${number.format(value.baseline.reportedTotal)} TJ`], ['Source unit', value.baseline.unit.code],
+          ['Source receipt', value.provenance.receiptId], ['Receipt recorded', displayTime(value.provenance.recordedAt)], ['Input revision', value.provenance.inputRevision],
+          ['Input SHA-256', value.provenance.inputDigest], ['Raw SHA-256', value.provenance.rawSha256], ['Artifact SHA-256', value.provenance.artifactSha256],
+          ['Origin cell', value.provenance.locators.originValue], ['TOTAL cell', value.provenance.locators.reportedTotal],
+          ['Method', value.methodId], ['Scenario ID', value.id], ['Method limits', value.limitations]]) proofFacts.append(node('dt', '', label), node('dd', '', fact));
+        output.hidden = false;
+        notice.textContent = `${baselineChanged ? 'Stored evidence updated; scenario recalculated. ' : ''}${originChanged ? 'The previous origin is unavailable; the selected origin changed. ' : ''}Hypothetical result against 2024 reported imports.`;
+      }).catch(error => {
+        if (owner !== epoch || !visible()) return;
+        calculatingKey = null; notice.textContent = `Scenario unavailable: ${error.message || 'The retained evidence cannot support this calculation.'}`;
+      });
+    }
+    const change = () => { baselineChanged = originChanged = false; clearResult(); compute(); };
+    const toggle = () => { if (details.open) compute(); else { ++epoch; calculatingKey = null; } };
+    origin.addEventListener('change', change); reduction.addEventListener('input', change); replacement.addEventListener('input', change); details.addEventListener('toggle', toggle);
+    return { element: details,
+      update(payload) {
+        const key = payload.available ? JSON.stringify([payload.receipt.id, payload.receipt.artifactSha256, payload.artifact.inputRevision]) : 'unavailable';
+        waiting = dirty.has('gas'); baseline = payload;
+        if (key !== baselineKey) {
+          baselineChanged = baselineKey !== undefined; baselineKey = key; clearResult();
+          const rows = eligible(payload), previousOrigin = origin.value;
+          origin.replaceChildren(...rows.map(row => { const option = node('option', '', row.partner.label); option.value = row.partner.code; return option; }));
+          origin.value = rows.some(row => row.partner.code === previousOrigin) ? previousOrigin : rows[0]?.partner.code || '';
+          originChanged = !!previousOrigin && previousOrigin !== origin.value;
+          origin.disabled = reduction.disabled = replacement.disabled = !rows.length;
+          notice.textContent = baselineChanged ? 'Stored evidence updated. The scenario uses the updated 2024 baseline.' : 'Choose assumptions for the retained 2024 baseline.';
+        }
+        compute();
+      },
+      invalidate() { waiting = true; clearResult(); notice.textContent = 'Stored evidence changed. Waiting for the updated 2024 baseline…'; },
+      suspend() { ++epoch; calculatingKey = null; },
+      destroy() { clearResult(); origin.removeEventListener('change', change); reduction.removeEventListener('input', change); replacement.removeEventListener('input', change); details.removeEventListener('toggle', toggle); }
+    };
+  }
   function render(payload) {
-    const signature = JSON.stringify([view, payload.available, payload.receipt, payload.items, payload.explanation]);
-    if (rendered === signature) { if (checkedTime) checkedTime.textContent = displayTime(payload.check?.checkedAt); return; }
-    rendered = signature; checkedTime = null; content.replaceChildren();
-    if (!payload.available) { content.append(node('p', 'plugin-note', text(payload.explanation, 2000) ? payload.explanation : 'No retained source artifact is available yet.')); return; }
+    const signature = JSON.stringify([view, payload.available, payload.explanation, payload.available && (view === 'gas' ?
+      [payload.receipt.factsDigest, payload.artifact.policyId] : payload.items.map(item => [item.itemId, item.revision]))]);
+    if (rendered === signature) { refreshEvidence(payload); if (view === 'gas') scenario?.update(payload); return; }
+    rendered = signature; evidenceBindings = []; content.replaceChildren();
+    if (!payload.available) { if (view === 'gas') scenario?.update(payload); content.append(node('p', 'plugin-note', text(payload.explanation, 2000) ? payload.explanation : 'No retained source artifact is available yet.')); return; }
     const artifact = payload.artifact;
     if (view === 'gas') {
-      title.textContent = 'Belgian natural-gas origins'; subtitle.textContent = `Annual reported imports · ${artifact.referenceYears.join(', ')} · ${artifact.unit.code}`;
+      title.textContent = 'Belgian natural-gas origins'; subtitle.textContent = `Annual reported imports · ${artifact.referenceYears.join(', ')} · TJ`;
+      content.append(node('p', 'plugin-note', 'Annual imports by reported country of origin.'));
+      const methods = evidence(payload, [['Unit', 'terajoules · gross calorific value'], ['Source unit code', artifact.unit.code],
+        ['Source unit label', artifact.unit.label], ['Share formula', artifact.formula]], 'Source and method');
       for (const year of artifact.years) {
         const block = node('section', 'plugin-year'); block.append(node('h4', '', `${year.year} reported imports`));
-        block.append(node('p', 'plugin-total', year.total.value === null ? 'Reported total unavailable' : `${number.format(year.total.value)} ${artifact.unit.code}`));
+        const total = node('p', 'plugin-total', year.total.value === null ? 'Reported total unavailable' : `${number.format(year.total.value)} TJ`);
+        total.title = 'terajoules · gross calorific value'; block.append(total);
         if (year.total.status) block.append(node('p', 'plugin-note', `Reported TOTAL source flag: ${year.total.status}`));
-        const table = node('table', 'plugin-origins'); table.append(node('caption', '', `${year.year} · reported origin quantities and shares of TOTAL`));
-        const head = node('thead'), headings = node('tr'); for (const label of ['Reported origin', artifact.unit.code, 'Share']) { const th = node('th', '', label); th.scope = 'col'; headings.append(th); } head.append(headings);
+        const table = node('table', 'plugin-origins'); table.append(node('caption', '', `${year.year} · ${year.omittedShareRows ? 'largest ' : ''}reported origin quantities and shares of TOTAL`));
+        const head = node('thead'), headings = node('tr'); for (const label of ['Reported origin', 'TJ', 'Share']) { const th = node('th', '', label); th.scope = 'col'; if (label === 'TJ') th.title = 'terajoules · gross calorific value'; headings.append(th); } head.append(headings);
         const body = node('tbody');
         for (const row of year.shares) { const tr = node('tr'), partner = node('th', '', row.partner.label); partner.scope = 'row';
           if (row.status) partner.append(node('span', 'plugin-source-flag', `Source flag: ${row.status}`));
@@ -130,28 +223,28 @@ export function createPluginDossierPanel({ container, createFeed, fetchImpl = (.
           tr.append(partner, node('td', '', number.format(row.quantity)), share); body.append(tr); }
         table.append(head, body); block.append(table);
         if (!year.shares.length) block.append(node('p', 'plugin-note', 'No qualifying origin shares are available for this period.'));
-        const c = year.coverage; block.append(node('p', 'plugin-note', `${c.partnerRows ?? 'Unknown'} partner rows · ${c.missingRows ?? 'Unknown'} missing · ${c.flaggedRows ?? 'Unknown'} source-flagged${year.omittedShareRows ? ` · ${year.omittedShareRows} smaller reported origins not listed` : ''}.`));
-        if (c.reconciled === false) block.append(node('p', 'plugin-caution', 'Reported partner quantities do not reconcile with the source TOTAL. Shares retain the reported denominator.'));
-        if (c.reconciled === null) block.append(node('p', 'plugin-note', 'Reconciliation is unavailable for the retained source breakdown. Missing quantities are not treated as zero.'));
+        const c = year.coverage; methods.append(node('p', 'plugin-note', `${year.year}: ${c.partnerRows ?? 'Unknown'} partner rows · ${c.missingRows ?? 'Unknown'} missing · ${c.flaggedRows ?? 'Unknown'} source-flagged${year.omittedShareRows ? ` · ${year.omittedShareRows} smaller reported origins not listed` : ''}.`));
+        if (c.reconciled === false) { block.append(node('p', 'plugin-caution', 'Reported quantities require review.')); methods.append(node('p', 'plugin-caution', 'Reported partner quantities do not reconcile with the source TOTAL. Shares retain the reported denominator.')); }
+        if (c.reconciled === null) methods.append(node('p', 'plugin-note', 'Reconciliation is unavailable for the retained source breakdown. Missing quantities are not treated as zero.'));
         content.append(block);
       }
-      content.append(node('p', 'plugin-note', artifact.unit.label), node('p', 'plugin-note', artifact.limitations));
-      content.append(evidence(payload, [['Share formula', artifact.formula]]), link('Open Eurostat dataset', artifact.source.datasetUrl));
+      methods.append(node('p', 'plugin-note', artifact.limitations), link('Open Eurostat dataset', artifact.source.datasetUrl)); content.append(methods);
+      scenario ||= gasScenario(); content.append(scenario.element); scenario.update(payload);
     } else {
       title.textContent = 'ECB institutional releases'; subtitle.textContent = 'Original publications · European Central Bank';
       const list = node('div', 'plugin-publications');
       for (const item of payload.items) {
         const article = node('article', 'plugin-publication'), heading = node('h4'); heading.append(link(item.title, item.url)); article.append(heading);
         article.append(node('p', 'plugin-publication-date', `Published ${displayTime(item.publishedAt)}`));
-        const details = node('details', 'plugin-item-evidence'); details.append(node('summary', '', 'Retained publication evidence'),
-          node('p', 'plugin-note', `First retained ${displayTime(item.firstRecordedAt)} · latest retained ${displayTime(item.lastRecordedAt)}`),
+        const knowledge = node('p', 'plugin-note', `First retained ${displayTime(item.firstRecordedAt)} · latest retained ${displayTime(item.lastRecordedAt)}`);
+        const currentItem = p => p.items.find(value => value.itemId === item.itemId);
+        evidenceBindings.push({ data: knowledge, getter: p => `First retained ${displayTime(currentItem(p).firstRecordedAt)} · latest retained ${displayTime(currentItem(p).lastRecordedAt)}` });
+        const details = node('details', 'plugin-item-evidence'); details.append(node('summary', '', 'Retained publication evidence'), knowledge,
           node('p', 'plugin-hash', `Revision ${item.revision}`));
-        const own = item.evidence, facts = node('dl', 'plugin-facts');
-        for (const [label, value] of [['Source receipt', own.id], ['Source retrieved', displayTime(own.capturedAt)], ['Receipt recorded', displayTime(own.recordedAt)],
-          ['Source revised', own.sourceUpdatedAt ? displayTime(own.sourceUpdatedAt) : null], ['Raw SHA-256', own.rawSha256],
-          ['Facts SHA-256', own.factsDigest], ['Artifact SHA-256', own.artifactSha256], ['RSS GUID locator', own.locator.guid]]) {
-          if (value !== null) facts.append(node('dt', '', label), node('dd', '', value));
-        }
+        const facts = node('dl', 'plugin-facts'), own = p => currentItem(p).evidence;
+        bindFacts(facts, payload, [['Source receipt', p => own(p).id], ['Source retrieved', p => displayTime(own(p).capturedAt)], ['Receipt recorded', p => displayTime(own(p).recordedAt)],
+          ['Source revised', p => own(p).sourceUpdatedAt ? displayTime(own(p).sourceUpdatedAt) : null], ['Raw SHA-256', p => own(p).rawSha256],
+          ['Facts SHA-256', p => own(p).factsDigest], ['Artifact SHA-256', p => own(p).artifactSha256], ['RSS GUID locator', p => own(p).locator.guid]]);
         details.append(facts); article.append(details); list.append(article);
       }
       if (!payload.items.length) list.append(node('p', 'plugin-note', 'No institutional releases are retained in this bounded view.'));
@@ -179,20 +272,26 @@ export function createPluginDossierPanel({ container, createFeed, fetchImpl = (.
   function load(force = false) {
     if (!opened || destroyed || documentRef.hidden || view === 'feeds') return Promise.resolve(false);
     if (pending) return pending;
-    const saved = cache.get(view); if (!force && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? 'Retained source context' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
-    const selected = view, owner = ++generation, controller = new AbortController(), signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
+    const saved = cache.get(view); if (!force && !dirty.has(view) && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? 'Retained source context' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
+    const selected = view, owner = ++generation, initialUpdate = updates.get(view), controller = new AbortController(), signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
+    followupRequested = false;
     request = controller; stopTimer(); refresh.disabled = true; dossierHost.setAttribute('aria-busy', 'true'); status.textContent = saved ? 'Checking stored updates · previous context remains available…' : 'Loading stored source context…';
     const work = (async () => {
       try {
         const response = await fetchImpl(VIEWS[selected].url, { signal, cache: 'no-store', headers: { Accept: 'application/json' } });
         const payload = normalizePluginDossier(await readStored(response, signal), selected); signal.throwIfAborted();
         if (destroyed || !opened || documentRef.hidden || selected !== view || owner !== generation) return false;
-        cache.set(selected, { payload, at: now() }); render(payload); status.textContent = payload.available ? 'Retained source context' : 'Source artifact unavailable'; return true;
+        cache.set(selected, { payload, at: now() });
+        if (updates.get(selected) === initialUpdate || updates.get(selected)?.receiptId === payload.receipt?.id) dirty.delete(selected);
+        render(payload); status.textContent = payload.available ? 'Retained source context' : 'Source artifact unavailable'; return true;
       } catch (error) {
         if (controller.signal.aborted || owner !== generation) return false;
         status.textContent = `${error.message || 'Stored context could not load.'}${saved ? ' · Previous retained context keeps its original dates.' : ''}`; return false;
       } finally {
-        if (!destroyed && owner === generation) { pending = null; request = null; refresh.disabled = false; dossierHost.setAttribute('aria-busy', 'false'); arm(); }
+        if (!destroyed && owner === generation) {
+          pending = null; request = null; refresh.disabled = false; dossierHost.setAttribute('aria-busy', 'false');
+          if (followupRequested && dirty.has(selected) && opened && !documentRef.hidden && selected === view) void load(true); else arm();
+        }
       }
     })(); pending = work; return work;
   }
@@ -201,11 +300,22 @@ export function createPluginDossierPanel({ container, createFeed, fetchImpl = (.
   const refreshClick = () => { void load(true); }; refresh.addEventListener('click', refreshClick);
   const visibility = () => { if (documentRef.hidden) { cancel(); feed?.close(); } else if (opened) void (view === 'feeds' ? openFeed() : load()); };
   const reconnect = () => { if (opened && view !== 'feeds') void load(true); };
+  const unsubscribeUpdates = typeof subscribeUpdates === 'function' ? subscribeUpdates(event => {
+    if (destroyed || event?.type !== 'plugin') return;
+    const revision = pluginRevision(event), selected = revision && Object.keys(VIEWS).find(id => VIEWS[id].pluginId === revision.pluginId);
+    if (!revision || !selected || !newerPluginRevision(revision, updates.get(selected))) return;
+    updates.set(selected, revision);
+    if (cache.get(selected)?.payload.receipt?.id === revision.receiptId) return;
+    dirty.add(selected);
+    if (selected === 'gas') scenario?.invalidate();
+    if (!opened || documentRef.hidden || view !== selected) return;
+    if (pending) followupRequested = true; else void load(true);
+  }) : null;
   documentRef.addEventListener?.('visibilitychange', visibility); windowRef?.addEventListener?.('online', reconnect); presentation();
   return { select, getView: () => view, setSceneMode(value) { mode = value === 'history' ? 'history' : 'live'; scope.hidden = mode !== 'history'; feed?.setSceneMode?.(mode); },
     open() { if (destroyed) return Promise.resolve(false); opened = true; return view === 'feeds' ? openFeed() : load(); },
     close() { opened = false; cancel(); feed?.close(); }, refresh: refreshClick,
-    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); feed?.destroy(); cache.clear();
+    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); scenario?.destroy(); feed?.destroy(); unsubscribeUpdates?.(); cache.clear(); dirty.clear(); updates.clear(); evidenceBindings = [];
       for (const [button, fn] of bindings) button.removeEventListener('click', fn); refresh.removeEventListener('click', refreshClick);
       documentRef.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); container.replaceChildren(); } };
 }

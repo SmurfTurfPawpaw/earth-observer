@@ -87,6 +87,8 @@ test('calendar uses origin coverage across years, retains UTC through renewal, a
   slider.value = String(Date.parse('2025-06-04T12:00:00.000Z') / 1000); slider.trigger('input'); f.timing.advance(60000); await settle();
   assert.equal(slider.value, String(Date.parse('2025-06-04T12:00:00.000Z') / 1000)); slider.trigger('change'); await settle(); assert.equal(f.sceneClock.getState().at, '2025-06-04T12:00:00.000Z');
   timeline.live(); assert.equal(f.sceneClock.getState().mode, 'live'); assert.equal(f.entities.size, 0);
+  assert.equal(elements(dock).find(element => element.className === 'timeline-status').textContent,
+    'Current UTC · live layers use their own source update times.', 'returning Live cannot retain a historical missing-scene message');
   timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0); assert.equal(f.frameCallbacks.size, 0);
 });
 
@@ -151,6 +153,25 @@ test('pause during a stored selection load keeps UTC fixed and preserves expande
     if (expanded) assert.equal(timeline.getState().selection.at, start);
     timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0);
   }
+});
+
+test('collapsing the calendar preserves one requested historical seek, then closes background acquisition at completion', async () => {
+  const f = fixture(), at = '2025-06-08T00:00:00.000Z', p = await point('collapsedseek', at), pending = [], requests = [];
+  f.container.open = true;
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url, options) => {
+    requests.push(url); const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) return response();
+    return new Promise(resolve => pending.push({ resolve, signal: options.signal, at: query.get('at') }));
+  } });
+  const seek = timeline.seek(at); await waitFor(() => pending.length === 1, 'the requested historical scene');
+  f.container.open = false; f.container.trigger('toggle');
+  assert.equal(pending[0].signal.aborted, false); assert.equal(f.sceneClock.getState().at, at);
+  pending[0].resolve(response(at, [p])); assert.equal(await seek, true);
+  assert.equal(timeline.getState().opened, false); assert.equal(f.sceneClock.getState().playing, false);
+  assert.equal(timeline.getState().selection.at, at); assert.equal(f.entities.size, 1);
+  const count = requests.length; f.timing.advance(600000); await settle();
+  assert.equal(requests.length, count); assert.equal(f.sceneClock.getState().at, at);
+  timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0);
 });
 
 test('pause cannot repaint a stale capped selection when the frozen UTC has no admissible retained buffer', async () => {

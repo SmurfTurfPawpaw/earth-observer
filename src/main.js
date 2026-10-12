@@ -15,6 +15,7 @@ import { installContextRecovery } from './core/context-recovery.js';
 import { createTimeline } from './core/timeline.js';
 import { createLiveUpdates } from './core/live-updates.js';
 import { installWorldDossierBridge } from './core/world-dossier-bridge.js';
+import { createPlaceNavigation } from './core/workspace-focus.js';
 import { Cartographic, Math as CesiumMath } from 'cesium';
 
 let viewer;
@@ -23,7 +24,7 @@ let shell;
 let destroyed = false;
 let describeBasemap = () => {};
 let contextRecovery;
-let area = null, intelligence, notebook, timeline, updates, worldDossiers, panelLoading = {}, locationRevision = 0, warmTimer;
+let area = null, intelligence, notebook, timeline, updates, worldDossiers, navigatePlace, panelLoading = {}, locationRevision = 0, warmTimer;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -120,13 +121,13 @@ async function handlePanel({ panel, open }) {
       if (destroyed) return;
       document.querySelector('#news-panel .panel-note').textContent = 'Investigate retained sources. Reporting periods, publication dates and globe time stay distinct.';
       document.getElementById('news-status').hidden = true;
-      intelligence = createPluginDossierPanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch,
+      intelligence = createPluginDossierPanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, subscribeUpdates: updates.subscribe,
         createFeed: async (container) => {
           const { createIntelligencePanel } = await import('./core/intelligence.js');
           return createIntelligencePanel({ container, fetchImpl: cachedFetch, store,
             subscribeUpdates: updates.subscribe,
             onStatus: () => {},
-            onNavigate: ({ lat, lon }) => { void activateLocal({ lat, lon, radiusKm: 25 }, { animate: true }); },
+            onNavigate: (place) => navigatePlace(place),
           });
         },
       });
@@ -157,6 +158,7 @@ export async function start() {
     disposers.push(() => contextRecovery.destroy());
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
     shell = createShell(viewer, manager);
+    navigatePlace = createPlaceNavigation({ viewer, cancelLocation() { ++locationRevision; document.getElementById('locate').disabled = false; }, closeSidebar: shell.closeSidebar });
     updates = createLiveUpdates();
     disposers.push(() => updates.destroy());
     worldDossiers = installWorldDossierBridge({ viewer, subscribeUpdates: updates.subscribe,
@@ -197,7 +199,7 @@ export async function start() {
     // Set the requested camera before the first render or imagery request.
     const restoration = restoreView(initial);
     disposers.push(installNavigation(viewer, {
-      onPlace(place) { ++locationRevision; document.getElementById('locate').disabled = false; void activateLocal({ lat: place.lat, lon: place.lon, radiusKm: 10 }, { animate: true }); shell.closeSidebar(); return true; },
+      onPlace: navigatePlace,
       onViewChange(view) {
         if (area && (view.alt > 1500000 || distanceKm(view.lat, view.lon, area) > area.radiusKm * 3)) setArea(null);
         rememberWorkspace();
@@ -226,7 +228,8 @@ export async function start() {
       for (const id of ['flights', 'military']) manager.requestRefresh(id);
     }));
     updates.start();
-    const locateButton = document.getElementById('locate'); locateButton.disabled = false; locateButton.addEventListener('click', locate); disposers.push(() => locateButton.removeEventListener('click', locate));
+    const locateButton = document.getElementById('locate'); locateButton.title = 'Explore local data near your location'; locateButton.setAttribute('aria-label', locateButton.title);
+    locateButton.disabled = false; locateButton.addEventListener('click', locate); disposers.push(() => locateButton.removeEventListener('click', locate));
     const radius = document.getElementById('local-radius');
     const radiusChange = () => { if (area) { setArea({ ...area, radiusKm: Number(radius.value) }); setCameraView(viewer, localCameraView(area), true); rememberWorkspace(); } };
     radius.addEventListener('change', radiusChange); disposers.push(() => radius.removeEventListener('change', radiusChange));

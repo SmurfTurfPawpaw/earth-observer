@@ -1,5 +1,14 @@
+import { pluginRevision, newerPluginRevision, PLUGIN_UPDATE_SCOPES } from '../src/core/live-updates.js';
+
 const SELECT = 'SELECT collected_at, input_digest, record_count, revision FROM earth_collection_revision WHERE id = ?';
-const SELECT_ALL = 'SELECT id, collected_at, input_digest, record_count, revision FROM earth_collection_revision WHERE id IN (1, 2)';
+const SELECT_LEGACY = 'SELECT id,collected_at,input_digest,record_count,revision FROM earth_collection_revision WHERE id IN (1,2)';
+const SELECT_ALL = `SELECT id,collected_at,input_digest,record_count,revision,
+  NULL AS plugin_id,NULL AS scope_id,NULL AS receipt_id,NULL AS fence,NULL AS facts_digest,NULL AS recorded_at
+  FROM earth_collection_revision WHERE id IN (1,2)
+  UNION ALL SELECT 0,NULL,NULL,NULL,NULL,s.plugin_id,s.scope_id,c.receipt_id,c.fence,c.facts_digest,c.recorded_at
+  FROM earth_plugin_state s JOIN earth_plugin_captures c ON c.receipt_id=s.current_receipt
+    AND c.plugin_id=s.plugin_id AND c.scope_id=s.scope_id
+  WHERE s.plugin_id IN ('ecb-press-v1','eurostat-gas-origins-v1')`;
 const UPSERT = `INSERT INTO earth_collection_revision (id, collected_at, input_digest, record_count, revision)
   VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET collected_at = excluded.collected_at,
   input_digest = excluded.input_digest, record_count = excluded.record_count, revision = excluded.revision
@@ -25,6 +34,8 @@ function rowRevision(row, kind = 'collection') {
   return value;
 }
 const primary = (db) => typeof db.withSession === 'function' ? db.withSession('first-primary') : db;
+const missingPluginTable = error => typeof error?.message === 'string' &&
+  /^(?:D1_ERROR:\s*)?no such table: (?:main\.)?earth_plugin_(?:state|captures)(?:: SQLITE_ERROR)?$/.test(error.message);
 
 /** Only plain public data/admission are shared. Streams and timers remain request-owned.
  * Workers forbid reusing request-scoped I/O objects across invocations. Each connected
@@ -37,7 +48,7 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
   const states = new WeakMap();
   function stateFor(db) {
     let state = states.get(db);
-    if (!state) { state = { latest: null, aircraft: null, loaded: false, clients: 0, epoch: 0, readToken: null, nextReadAt: 0, failures: 0, unavailable: false }; states.set(db, state); }
+    if (!state) { state = { latest: null, aircraft: null, plugins: new Map(), loaded: false, clients: 0, epoch: 0, readToken: null, nextReadAt: 0, failures: 0, unavailable: false }; states.set(db, state); }
     return state;
   }
   function remember(state, value, kind = 'collection') {
@@ -60,14 +71,30 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     if (state.readToken || now() < state.nextReadAt) return;
     const token = Symbol(), epoch = state.epoch;
     state.readToken = token; state.nextReadAt = now() + pollMs; countQuery();
+    let acceptsFallback = true; const deadline = now() + readTimeoutMs;
     try {
-      const rows = await bounded(() => primary(db).prepare(SELECT_ALL).bind().all(), signal, () => {
+      const rows = await bounded(async () => {
+        const session = primary(db);
+        try { return await session.prepare(SELECT_ALL).bind().all(); }
+        catch (error) {
+          if (!acceptsFallback || signal.aborted || now() >= deadline || !missingPluginTable(error)) throw error;
+          // Exceptional incomplete-schema compatibility costs two queries in the
+          // shared read slot; normal delivery costs one. Recheck every slot so a
+          // completed migration recovers without restarting an isolate.
+          countQuery(); return session.prepare(SELECT_LEGACY).bind().all();
+        }
+      }, signal, () => {
         if (state.readToken === token) state.readToken = null;
       });
       if (!signal.aborted && state.epoch === epoch && state.clients) {
         for (const row of rows.results || []) {
-          const kind = row.id === 2 ? 'aircraft' : 'collection';
-          remember(state, rowRevision(row, kind), kind);
+          if (row.id === 0) {
+            const revision = pluginRevision({ schemaVersion: 1, pluginId: row.plugin_id, scopeId: row.scope_id,
+              receiptId: row.receipt_id, fence: row.fence, factsDigest: row.facts_digest, recordedAt: row.recorded_at });
+            if (revision && newerPluginRevision(revision, state.plugins.get(revision.pluginId))) state.plugins.set(revision.pluginId, revision);
+          } else if (row.id === 1 || row.id === 2) {
+            const kind = row.id === 2 ? 'aircraft' : 'collection'; remember(state, rowRevision(row, kind), kind);
+          }
         }
         state.loaded = true; state.failures = 0; state.unavailable = false;
       }
@@ -76,7 +103,7 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
         state.failures = Math.min(state.failures + 1, 5); state.unavailable = true;
         state.nextReadAt = now() + Math.min(15000, pollMs * 2 ** (state.failures - 1));
       }
-    }
+    } finally { acceptsFallback = false; }
     // D1 has no query-abort API. A timed-out query keeps its admission slot until it
     // actually settles, preventing overlapping reads; its late result is ignored.
   }
@@ -104,6 +131,7 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     const epoch = state.epoch, internal = new AbortController(), beganAt = now();
     let open = true, controller, waitTimer, releaseWait, lastKeepaliveAt = beganAt, checks = 0, sentReady = false, lastAvailability = null;
     const lastRevisions = { collection: '', aircraft: '' };
+    const lastPluginReceipts = new Map();
     function stop(close = true) {
       if (!open) return; open = false;
       unschedule(waitTimer); releaseWait?.(); internal.abort(); request.signal.removeEventListener('abort', aborted);
@@ -140,7 +168,14 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
               send(`id: ${kind === 'aircraft' ? 'aircraft:' : ''}${latest.revision}\nevent: ${kind}\ndata: ${JSON.stringify(latest)}\n\n`);
             }
           }
-          if (!state.latest && !state.aircraft && !sentReady && (state.loaded || state.unavailable)) {
+          for (const pluginId of Object.keys(PLUGIN_UPDATE_SCOPES)) {
+            const latest = state.plugins.get(pluginId);
+            if (latest && latest.receiptId !== lastPluginReceipts.get(pluginId)) {
+              lastPluginReceipts.set(pluginId, latest.receiptId);
+              send(`id: plugin:${pluginId}:${latest.fence}:${latest.receiptId}\nevent: plugin\ndata: ${JSON.stringify(latest)}\n\n`);
+            }
+          }
+          if (!state.latest && !state.aircraft && !state.plugins.size && !sentReady && (state.loaded || state.unavailable)) {
             sentReady = true;
             send(`event: ready\ndata: ${JSON.stringify({ schemaVersion: 1, available: false })}\n\n`);
           }

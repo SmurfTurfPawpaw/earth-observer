@@ -4,6 +4,7 @@ import { createPluginDossierPanel, normalizePluginDossier, PLUGIN_DOSSIER_LIMITS
 import { readFile } from 'node:fs/promises';
 import { collectEurostatGasOrigins } from '../../server/hosted/eurostat-gas-origins.js';
 import { collectEcbPress } from '../../worker/plugins/ecb-press.js';
+import { pluginFactsDigest } from './plugin-evidence.js';
 
 class Element {
   constructor(tag, ownerDocument) { this.tagName = tag; this.ownerDocument = ownerDocument; this.children = []; this.listeners = new Map(); this.attributes = {}; this._text = ''; }
@@ -17,6 +18,12 @@ class Element {
   trigger(type) { for (const fn of this.listeners.get(type) || []) fn(); }
 }
 const elements = (el) => [el, ...el.children.filter((child) => typeof child === 'object').flatMap(elements)];
+const visibleText = el => el.hidden ? '' : el._text + (el.tagName === 'details' && !el.open ?
+  el.children.filter(child => child.tagName === 'summary') : el.children).map(child => typeof child === 'string' ? child : visibleText(child)).join('');
+const waitFor = async (condition, label) => {
+  const deadline = performance.now() + 2000;
+  while (!condition()) { if (performance.now() >= deadline) assert.fail(`Timed out waiting for ${label}`); await new Promise(resolve => setTimeout(resolve, 1)); }
+};
 const clone = (value) => structuredClone(value);
 const receipt = { id: `receipt:${'e'.repeat(64)}`, capturedAt: '2026-10-12T04:00:00.000Z', recordedAt: '2026-10-12T04:01:00.000Z',
   sourceUpdatedAt: '2026-10-09T21:00:00.000Z', factsDigest: 'a'.repeat(64), rawSha256: 'b'.repeat(64), artifactSha256: 'c'.repeat(64) };
@@ -42,15 +49,25 @@ function publications() {
 }
 function fixture(fetchImpl = async (url) => Response.json(url.startsWith('/api/publications') ? publications() : gas())) {
   const listeners = new Map(), timers = new Map(); let id = 0, now = 0, feedCreates = 0, feedOpens = 0, feedCloses = 0, feedDestroys = 0;
+  const updates = new Set();
   const documentRef = { hidden: false, createElement: (tag) => new Element(tag, documentRef),
     addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); }, removeEventListener(type, fn) { listeners.get(type)?.delete(fn); } };
   const container = documentRef.createElement('div'), requests = [];
   const panel = createPluginDossierPanel({ container, documentRef, windowRef: null, now: () => now,
+    subscribeUpdates(listener) { updates.add(listener); return () => updates.delete(listener); },
     setTimeoutImpl(fn, delay) { timers.set(++id, { fn, at: now + delay }); return id; }, clearTimeoutImpl(id) { timers.delete(id); },
     fetchImpl: (...args) => { requests.push(args); return fetchImpl(...args); },
     createFeed: async () => { feedCreates++; return { open() { feedOpens++; return true; }, close() { feedCloses++; }, setSceneMode() {}, destroy() { feedDestroys++; } }; } });
   return { panel, container, documentRef, timers, requests, stats: () => ({ feedCreates, feedOpens, feedCloses, feedDestroys }),
-    advance(ms) { now += ms; }, visibility(hidden) { documentRef.hidden = hidden; for (const fn of listeners.get('visibilitychange') || []) fn(); } };
+    advance(ms) { now += ms; }, emit(event) { for (const listener of updates) listener(event); }, updateListeners: updates,
+    visibility(hidden) { documentRef.hidden = hidden; for (const fn of listeners.get('visibilitychange') || []) fn(); } };
+}
+const update = (payload, fence) => ({ type: 'plugin', schemaVersion: 1, pluginId: payload.plugin.id, scopeId: payload.plugin.scopeId,
+  receiptId: payload.receipt.id, fence, factsDigest: payload.receipt.factsDigest, recordedAt: payload.receipt.recordedAt });
+function edition(payload, marker, facts = payload.receipt.factsDigest) {
+  const value = clone(payload), at = '2026-10-12T04:02:00.000Z';
+  value.receipt = { ...value.receipt, id: `receipt:${marker.repeat(64)}`, rawSha256: marker.repeat(64), factsDigest: facts, capturedAt: at, recordedAt: at };
+  value.check = { checkedAt: at }; return value;
 }
 
 test('closed construction and selection do not fetch; one context source owns lazy delivery and opening a dossier preserves historical UTC semantics', async () => {
@@ -124,7 +141,7 @@ test('the reviewed Eurostat raw fixture and ECB exact double-slash institutional
   const gasPayload = { ...gas(), artifact: rawGas.artifact };
   normalizePluginDossier(gasPayload, 'gas');
   const f = fixture(async () => Response.json(gasPayload)); await f.panel.select('gas'); await f.panel.open();
-  assert.match(f.container.textContent, /740,439\.9 TJ_GCV/); assert.match(f.container.textContent, /33\.21%/); assert.match(f.container.textContent, /Annual reported imports · 2024/); f.panel.destroy();
+  assert.match(f.container.textContent, /740,439\.9 TJ/); assert.match(f.container.textContent, /33\.21%/); assert.match(f.container.textContent, /Annual reported imports · 2024/); f.panel.destroy();
   const url = 'https://www.ecb.europa.eu//press/pr/date/2026/html/ecb.pr261007~6447350434.en.html';
   const xml = `<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>ECB - European Central Bank</title><link>https://www.ecb.europa.eu/</link><description>Official press feed</description><language>en</language><item><title>TEST ONLY institutional original</title><link>${url}</link><guid>${url}</guid><pubDate>Wed, 07 Oct 2026 10:00:00 +0200</pubDate></item></channel></rss>`;
   const ecb = await collectEcbPress({ now: () => Date.parse(receipt.capturedAt), fetchImpl: async () => new Response(xml, { headers: { 'content-type': 'application/rss+xml' } }) });
@@ -151,4 +168,148 @@ test('a retained publication absent from the latest rolling feed displays its ow
     p => { p.items[0].evidence.recordedAt = p.receipt.recordedAt; }]) {
     const forged = clone(payload); mutate(forged); assert.throws(() => normalizePluginDossier(forged, 'publications'), /source receipt/);
   }
+});
+
+test('the primary gas view uses readable TJ and retains precise units, diagnostics and methodology in one closed disclosure', async () => {
+  const payload = gas(); payload.artifact.years[0].coverage.partnerRows = 167;
+  const f = fixture(async () => Response.json(payload)); await f.panel.select('gas'); await f.panel.open();
+  const source = elements(f.container).find(el => el.className === 'plugin-evidence'); assert.ok(!source.open);
+  assert.match(visibleText(f.container), /2024 reported imports/); assert.match(visibleText(f.container), /100 TJ/);
+  assert.match(visibleText(f.container), /Annual imports by reported country of origin/);
+  assert.doesNotMatch(visibleText(f.container), /TJ_GCV|167 partner rows|consumption dependency|shipment routes/);
+  assert.equal(elements(f.container).find(el => el.className === 'plugin-total').title, 'terajoules · gross calorific value');
+  source.open = true; assert.match(visibleText(f.container), /terajoules · gross calorific value/);
+  assert.match(visibleText(f.container), /TJ_GCV|167 partner rows/); assert.ok(source.textContent.includes(payload.artifact.limitations));
+  assert.ok(source.textContent.includes(payload.artifact.formula)); f.panel.destroy();
+});
+
+test('typed events invalidate only their fixed source and an unchanged-facts receipt preserves table, disclosure and focus while evidence renews', async () => {
+  let current = gas(); const f = fixture(async url => Response.json(url.startsWith('/api/publications') ? publications() : current));
+  await f.panel.select('gas'); await f.panel.open();
+  const evidence = elements(f.container).find(el => el.className === 'plugin-evidence'), table = elements(f.container).find(el => el.tagName === 'table');
+  evidence.open = true; f.documentRef.activeElement = evidence.children[0];
+  f.emit(update(publications(), 1)); f.emit(update(gas(), 1)); f.emit({ type: 'collection' });
+  f.emit({ ...update(gas(), 2), scopeId: 'foreign' }); f.emit({ ...update(gas(), 2), sourceUrl: 'https://unreviewed.example/' });
+  assert.equal(f.requests.length, 1);
+  current = edition(gas(), 'f'); const signal = update(current, 2); f.emit(signal); f.emit(signal); await f.panel.open();
+  assert.equal(f.requests.length, 2); assert.equal(elements(f.container).find(el => el.tagName === 'table'), table);
+  assert.equal(elements(f.container).find(el => el.className === 'plugin-evidence'), evidence); assert.equal(evidence.open, true);
+  assert.equal(f.documentRef.activeElement, evidence.children[0]); assert.ok(evidence.textContent.includes(current.receipt.rawSha256));
+  assert.match(evidence.textContent, /Receipt recorded2026-10-12 04:02:00 UTC/);
+  f.emit(update(gas(), 1)); f.emit({ ...update(current, 3), receiptId: current.receipt.id }); assert.equal(f.requests.length, 2);
+  await f.panel.select('publications'); assert.equal(f.requests.length, 3); f.panel.destroy(); assert.equal(f.updateListeners.size, 0);
+});
+
+test('closed and hidden dossiers remember invalidation without fetching; reopening refreshes stale cache and fallback polling remains bounded', async () => {
+  let current = gas(); const f = fixture(async () => Response.json(current)); await f.panel.select('gas');
+  current = edition(current, 'f'); f.emit(update(current, 1)); assert.equal(f.requests.length, 0);
+  await f.panel.open(); assert.equal(f.requests.length, 1); f.visibility(true);
+  current = edition(current, '1'); f.emit(update(current, 2)); assert.equal(f.requests.length, 1); assert.equal(f.timers.size, 0);
+  f.visibility(false); await f.panel.open(); assert.equal(f.requests.length, 2);
+  f.panel.close(); current = edition(current, '2'); f.emit(update(current, 3)); assert.equal(f.requests.length, 2);
+  await f.panel.open(); assert.equal(f.requests.length, 3); assert.equal(f.timers.size, 1);
+  f.advance(PLUGIN_DOSSIER_LIMITS.refreshMs); const [timerId, timer] = [...f.timers][0]; f.timers.delete(timerId); timer.fn(); await f.panel.open();
+  assert.equal(f.requests.length, 4); assert.equal(f.timers.size, 1);
+  f.panel.destroy(); f.emit(update(edition(current, '3'), 4)); assert.equal(f.requests.length, 4); assert.equal(f.timers.size, 0); assert.equal(f.updateListeners.size, 0);
+});
+
+test('events during an in-flight stored read coalesce to one newest follow-up and avoid it when the first response already includes that receipt', async () => {
+  for (const alreadyLatest of [false, true]) {
+    const initial = gas(), middle = edition(initial, 'f', 'b'.repeat(64)), latest = edition(initial, '1', 'c'.repeat(64));
+    let reads = 0, resolvePending;
+    const f = fixture(async () => { reads++; if (reads === 1) return Response.json(initial);
+      if (reads === 2) return new Promise(resolve => { resolvePending = resolve; }); return Response.json(latest); });
+    await f.panel.select('gas'); await f.panel.open(); f.emit(update(middle, 2));
+    await waitFor(() => typeof resolvePending === 'function', 'the in-flight stored view read');
+    f.emit(update(latest, 3)); f.emit(update(latest, 3)); f.emit(update(publications(), 1));
+    assert.equal(f.requests.length, 2); resolvePending(Response.json(alreadyLatest ? latest : middle));
+    await waitFor(() => f.container.textContent.includes(latest.receipt.rawSha256), 'the newest retained receipt');
+    assert.equal(f.requests.length, alreadyLatest ? 2 : 3); f.emit(update(latest, 3)); assert.equal(f.requests.length, alreadyLatest ? 2 : 3);
+    f.panel.destroy();
+  }
+});
+
+test('unchanged publication facts retain article/disclosure nodes while each item source receipt and retained dates update in place', async () => {
+  let current = publications(); const f = fixture(async () => Response.json(current)); await f.panel.select('publications'); await f.panel.open();
+  const article = elements(f.container).find(el => el.className === 'plugin-publication'), source = elements(f.container).find(el => el.className === 'plugin-item-evidence');
+  source.open = true; f.documentRef.activeElement = source.children[0];
+  current = edition(current, 'f', 'b'.repeat(64)); current.items[0].lastRecordedAt = current.receipt.recordedAt;
+  current.items[0].evidence = { ...clone(current.receipt), locator: { kind: 'rss-guid', guid: current.items[0].sourceRecordId } };
+  f.emit(update(current, 2)); await f.panel.open();
+  assert.equal(elements(f.container).find(el => el.className === 'plugin-publication'), article);
+  assert.equal(elements(f.container).find(el => el.className === 'plugin-item-evidence'), source); assert.equal(source.open, true);
+  assert.equal(f.documentRef.activeElement, source.children[0]); assert.ok(source.textContent.includes(current.receipt.id));
+  assert.match(source.textContent, /latest retained 2026-10-12 04:02:00 UTC/); assert.match(source.textContent, /First retained 2026-10-12 04:01:00 UTC/);
+  f.panel.destroy();
+});
+
+async function scenarioEnvelope(mutate = () => {}, marker = 'a') {
+  const raw = JSON.parse(await readFile(new URL('../../server/hosted/fixtures/eurostat-gas-belgium-2024.json', import.meta.url), 'utf8')); mutate(raw);
+  const capture = await collectEurostatGasOrigins({ now: () => Date.parse(receipt.capturedAt),
+    fetchImpl: async () => new Response(JSON.stringify(raw), { headers: { 'content-type': 'application/json' } }) });
+  return { schemaVersion: 1, available: true, configured: true,
+    plugin: { id: capture.pluginId, scopeId: capture.scopeId, kind: 'dataset', sourceUrl: capture.sourceUrl, name: 'Eurostat' },
+    receipt: { ...clone(receipt), id: `receipt:${marker.repeat(64)}`, sourceVersion: capture.sourceVersion, sourceUpdatedAt: capture.sourceUpdatedAt,
+      factsDigest: capture.factsDigest, rawSha256: capture.raw.sha256, artifactSha256: await pluginFactsDigest(capture.artifact) },
+    check: { checkedAt: receipt.capturedAt }, artifact: capture.artifact };
+}
+const scenarioElements = container => {
+  const details = elements(container).find(el => el.className === 'plugin-evidence plugin-scenario'), all = elements(details);
+  return { details, origin: all.find(el => el.name === 'gas-scenario-origin'), reduction: all.find(el => el.name === 'gas-scenario-reduction'),
+    replacement: all.find(el => el.name === 'gas-scenario-replacement'), output: all.find(el => el.className === 'plugin-scenario-result'),
+    status: all.find(el => el.className === 'plugin-note plugin-scenario-status'), proof: all.find(el => el.className === 'plugin-item-evidence') };
+};
+
+test('the closed scenario opens against actual retained 2024 evidence, binds its source receipt and calculates controls without requests', async () => {
+  const payload = await scenarioEnvelope(), before = JSON.stringify(payload), f = fixture(async () => Response.json(payload));
+  await f.panel.select('gas'); await f.panel.open(); const s = scenarioElements(f.container);
+  assert.ok(!s.details.open); assert.ok(s.output.hidden); assert.match(visibleText(f.container), /Explore a scenario/);
+  assert.doesNotMatch(visibleText(f.container), /Hypothetical result|Remaining gap/);
+  assert.equal(s.origin.value, 'NO'); assert.equal(s.origin.children.length, 10); assert.ok(s.origin.children.every(option => /^[A-Z]{2}$/.test(option.value)));
+  s.details.open = true; s.details.trigger('toggle'); await waitFor(() => !s.output.hidden, 'the local annual scenario');
+  assert.match(visibleText(s.details), /Hypothetical · 2024 reported imports/);
+  assert.match(visibleText(s.details), /Lost origin volume61,473\.3 TJAssumed replacement24,589\.32 TJRemaining gap36,883\.98 TJGap as share of 2024 TOTAL4\.98%/);
+  assert.ok(!s.proof.open); s.proof.open = true;
+  assert.ok(s.proof.textContent.includes(payload.receipt.id)); assert.ok(s.proof.textContent.includes(payload.artifact.inputRevision));
+  assert.match(s.proof.textContent, /Lost volume replaced40%/); assert.match(s.proof.textContent, /Origin cell\/value\/29TOTAL cell\/value\/165/);
+  s.replacement.value = '100'; s.replacement.trigger('input'); assert.ok(s.output.hidden);
+  await waitFor(() => !s.output.hidden, 'the complete-replacement scenario'); assert.match(s.output.textContent, /Remaining gap0 TJGap as share of 2024 TOTAL0%/);
+  s.reduction.value = ''; s.reduction.trigger('input'); await waitFor(() => s.status.textContent.startsWith('Scenario unavailable:'), 'invalid empty assumptions');
+  assert.ok(s.output.hidden); assert.match(s.status.textContent, /finite reduction\/replacement percentages/);
+  s.reduction.value = '101'; s.reduction.trigger('input'); await waitFor(() => s.status.textContent.startsWith('Scenario unavailable:'), 'out-of-range assumptions'); assert.ok(s.output.hidden);
+  s.origin.value = 'RU'; s.reduction.value = '0'; s.reduction.trigger('input'); await waitFor(() => !s.output.hidden, 'the zero-reduction scenario');
+  assert.match(s.output.textContent, /Lost origin volume0 TJ/); assert.match(s.proof.textContent, /OriginRussia/);
+  assert.equal(f.requests.length, 1); assert.equal(JSON.stringify(payload), before, 'Scenario controls do not mutate source evidence'); f.panel.destroy();
+});
+
+test('checking-only refresh preserves a scenario, while newer evidence clears and recomputes its retained baseline with assumptions and focus preserved', async () => {
+  let current = await scenarioEnvelope(), resolveRead, hold = false;
+  const f = fixture(async () => hold ? new Promise(resolve => { resolveRead = resolve; }) : Response.json(current));
+  await f.panel.select('gas'); await f.panel.open(); const s = scenarioElements(f.container);
+  s.details.open = true; s.details.trigger('toggle'); await waitFor(() => !s.output.hidden, 'initial scenario');
+  s.proof.open = true; f.documentRef.activeElement = s.proof.children[0];
+  const prior = s.output.textContent; current = clone(current); current.check.checkedAt = '2026-10-12T04:10:00.000Z';
+  await f.panel.refresh(); await f.panel.open(); assert.equal(s.output.textContent, prior); assert.equal(scenarioElements(f.container).details, s.details);
+  current = await scenarioEnvelope(raw => { raw.value['29'] -= 10000; raw.value['45'] += 10000; }, 'b');
+  hold = true; f.emit(update(current, 2)); assert.ok(s.output.hidden); assert.match(s.status.textContent, /Waiting for the updated 2024 baseline/);
+  await waitFor(() => typeof resolveRead === 'function', 'the new stored baseline read'); hold = false; resolveRead(Response.json(current));
+  await waitFor(() => !s.output.hidden && s.proof.textContent.includes(current.receipt.id), 'the corrected baseline scenario');
+  assert.equal(scenarioElements(f.container).details, s.details); assert.equal(s.details.open, true); assert.equal(s.proof.open, true);
+  assert.equal(f.documentRef.activeElement, s.proof.children[0]); assert.equal(s.origin.value, 'NO'); assert.equal(s.reduction.value, '25'); assert.equal(s.replacement.value, '40');
+  assert.match(s.status.textContent, /Stored evidence updated; scenario recalculated/);
+  assert.match(s.output.textContent, /Lost origin volume58,973\.3 TJAssumed replacement23,589\.32 TJRemaining gap35,383\.98 TJ/);
+  assert.equal(f.requests.length, 3); f.panel.destroy();
+});
+
+test('scenario gaps fail closed and asynchronous local calculations cannot overwrite newer assumptions or a destroyed panel', async () => {
+  const payload = await scenarioEnvelope(raw => { raw.status = { '29': 'e' }; });
+  const f = fixture(async () => Response.json(payload)); await f.panel.select('gas'); await f.panel.open(); let s = scenarioElements(f.container);
+  assert.ok(!s.origin.children.some(option => option.value === 'NO'), 'Flagged source rows are not offered as selectable origins');
+  s.details.open = true; s.details.trigger('toggle'); await waitFor(() => s.status.textContent.startsWith('Scenario unavailable:'), 'a flagged-breakdown rejection');
+  assert.ok(s.output.hidden); assert.match(s.status.textContent, /completed, unflagged and reconciled/); f.panel.destroy();
+  const valid = await scenarioEnvelope(), g = fixture(async () => Response.json(valid)); await g.panel.select('gas'); await g.panel.open(); s = scenarioElements(g.container);
+  s.details.open = true; s.details.trigger('toggle'); s.reduction.value = '0'; s.reduction.trigger('input');
+  await waitFor(() => !s.output.hidden, 'the newest local assumptions'); assert.match(s.output.textContent, /Lost origin volume0 TJ/);
+  s.reduction.value = '25'; s.reduction.trigger('input'); assert.ok(s.output.hidden); g.panel.destroy();
+  await new Promise(resolve => setImmediate(resolve)); assert.ok(s.output.hidden); assert.equal(g.container.textContent, ''); assert.equal(g.requests.length, 1);
 });

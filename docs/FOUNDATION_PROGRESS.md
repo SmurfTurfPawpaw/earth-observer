@@ -354,3 +354,72 @@ Prioritize a coherent typed-evidence package and its actual acceptance before mo
 providers, AI notes or hypothetical forecasts. Future understanding requires cited
 mechanisms and saved scenario assumptions/cutoffs, not source extrapolation passed
 as observation. The original personal portfolio and all paused WIP remain preserved.
+
+## Typed evidence published and next re-examination — 2026-10-12 00:20 UTC
+
+Site version 29 succeeded at 00:02:31Z on app
+afbbbedae87c126545be44a0af9be53e61d15c21 and combined source
+fcaaf03ae9a2b7ed3627356d7ded1db49749d18b, environment revision 5. Ordinary
+browser reload adopted index-CLv4k-G9/main--mQ-ynZq with no cache purge or QA
+query. The unchanged portfolio and mounted worker passed the exact package check.
+
+Actual collection admitted the Eurostat dossier at 00:03:02.219Z, receipt
+dec2050679ffbfd3ecc5d46328a0558db197866e755c8b00e09deb2a9aed6ecd, and the
+ECB feed at 00:03:01.918Z, receipt
+5f78b26fef1eff841f390f8f3444cc20cdea36a7fb190940f19c618a46c1b54e.
+The gas source reports 2024 imports; its source revision is 9 October, not a
+current supply observation. Two admitted institutional ECB publications retain
+their own GUID, source dates and evidence. A later ECB check at 00:09:00.959Z
+retained the same factual receipt. This proves unchanged factual deduplication;
+the stored status does not establish that upstream returned HTTP 304.
+
+Desktop and 390×844 browser journeys opened both dossiers, original links and
+evidence, sought October 2025, played at one day/second, paused with matching
+selected time and returned Live. The expanded calendar obscured the dossier;
+the compact time dock did not. The next package coordinates expanded workspaces
+without discarding drafts or paused time, uses plain gas units with progressive
+method disclosure, and extends the existing SSE connection to changed plugin
+receipts. Ordinary search and report navigation must preserve selected layers.
+
+An independent historical researcher used at most 15 public platform reads,
+with no provider acquisition, write, analytics or real-user demand record.
+Dates in 2024, 2025 and 2026 returned distinct complete scoped event sets;
+an exact detail revision matched and a changed revision returned HTTP 409.
+Known-then 2025 correctly returned no hosted knowledge. Its observed archive
+coverage ends at 11 October midnight: current reconstruction has an explicit
+not-imported tail. This moves safe incremental archive extension ahead of any
+claim that a completed initial backfill is continuously complete history.
+
+Finite cloud collection trial 38187094037 uses app
+010916db77c0e8f3d546af51e7b7d1c33b964351. The laptop bridge stopped after
+33 successful attempts at 00:11Z. The cloud trial started at 00:13:08Z, for a
+finite 20-minute acceptance window; final acknowledgments and stored readback
+remain pending. This is not a permanent runtime or an unattended uptime SLA.
+
+The next investigation path now has verified Commission RSS and an original
+PDF download discovered from the official page's linked download component.
+Initial integration is publication metadata only, with exact identities,
+CC BY attribution and rolling-feed limits. Body extraction and cited claims
+are separate gates. A pure gas origin-reduction calculation is local: explicit
+annual baseline, user assumptions, replacement as a share of lost volume and
+retained input evidence. It supplies conditional arithmetic, not probabilities,
+current consumption, market prices or an inferred energy-to-monetary causal link.
+
+Re-examination: publish and verify the coherent UI/receipt/scenario package;
+then extend reviewed metadata and continuous archive maintenance using the same
+storage/admission contracts. Permanent cloud execution, broad corroborated
+story/entity relations and evaluated future analysis remain required work.
+
+### Hosted admission hypothesis under trial
+
+At 00:20Z, the finite cloud trial advanced overall checks and ECB checks while
+USGS/GDACS retained earlier retrieval dates with a shared-refresh admission
+message; EONET reported backoff. The old storage claim raced a read plus a
+conditional R2 write against one second, then treated a timeout like a verified
+busy lease. A successful late write can consume admission without a provider
+request. The next package gives hosted storage operations a bounded 2.5 seconds
+and distinguishes an unknown claim from a rejected one. Unknown admission still
+performs no provider fetch and preserves evidence dates. A slow successful claim
+and unknown-admission fixture pass. Actual post-release source acquisition is
+required to determine whether this resolves the observed stall; it is not yet
+a proven diagnosis or a permanent execution gate.

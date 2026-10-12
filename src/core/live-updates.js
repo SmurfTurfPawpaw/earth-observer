@@ -1,3 +1,22 @@
+export const PLUGIN_UPDATE_SCOPES = Object.freeze({
+  'ecb-press-v1': 'ecb-institutional-press-en-v1',
+  'eurostat-gas-origins-v1': 'belgium-natural-gas-origins',
+});
+const pluginFields = new Set(['schemaVersion', 'pluginId', 'scopeId', 'receiptId', 'fence', 'factsDigest', 'recordedAt', 'type']);
+
+/** A changed retained receipt, never an operational source check or raw data. */
+export function pluginRevision(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !pluginFields.has(key)) ||
+      value.type !== undefined && value.type !== 'plugin' || value.schemaVersion !== 1 || typeof value.pluginId !== 'string' || !Object.hasOwn(PLUGIN_UPDATE_SCOPES, value.pluginId) ||
+      value.scopeId !== PLUGIN_UPDATE_SCOPES[value.pluginId] || typeof value.receiptId !== 'string' || !/^receipt:[a-f0-9]{64}$/.test(value.receiptId) ||
+      !Number.isSafeInteger(value.fence) || value.fence < 1 || typeof value.factsDigest !== 'string' || !/^[a-f0-9]{64}$/.test(value.factsDigest) ||
+      typeof value.recordedAt !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.recordedAt) ||
+      !Number.isFinite(Date.parse(value.recordedAt)) || new Date(value.recordedAt).toISOString() !== value.recordedAt) return null;
+  return { schemaVersion: 1, pluginId: value.pluginId, scopeId: value.scopeId, receiptId: value.receiptId,
+    fence: value.fence, factsDigest: value.factsDigest, recordedAt: value.recordedAt };
+}
+export const newerPluginRevision = (value, previous) => !previous || value.fence > previous.fence && value.receiptId !== previous.receiptId;
+
 /** A durable collection revision, never a source observation or a visitor identifier. */
 export function collectionRevision(value, kind = 'collection') {
   if (!['collection', 'aircraft'].includes(kind)) return null;
@@ -17,6 +36,7 @@ export function createLiveUpdates({ url = `${import.meta.env?.BASE_URL || '/'}ap
   const listeners = new Set();
   let started = false, destroyed = false, source, retryTimer, retryMs = 1000, status = 'connecting', latest;
   let aircraft;
+  const plugins = new Map();
   const notify = (value) => { for (const listener of listeners) { try { listener(value); } catch {} } };
   const state = () => ({ type: 'status', status, revision: latest?.revision || null });
   const setStatus = (value) => { if (status === value) return; status = value; notify(state()); };
@@ -46,6 +66,12 @@ export function createLiveUpdates({ url = `${import.meta.env?.BASE_URL || '/'}ap
       if (kind === 'aircraft') aircraft = revision; else latest = revision;
       notify({ type: kind, ...revision });
     });
+    current.addEventListener('plugin', (event) => {
+      if (source !== current || destroyed || typeof event.data !== 'string' || event.data.length > 1024) return;
+      let revision; try { revision = pluginRevision(JSON.parse(event.data)); } catch { return; }
+      if (!revision || !newerPluginRevision(revision, plugins.get(revision.pluginId))) return;
+      plugins.set(revision.pluginId, revision); notify({ type: 'plugin', ...revision });
+    });
     current.addEventListener('status', (event) => {
       if (source !== current || destroyed || typeof event.data !== 'string' || event.data.length > 256) return;
       let value; try { value = JSON.parse(event.data); } catch { return; }
@@ -69,12 +95,14 @@ export function createLiveUpdates({ url = `${import.meta.env?.BASE_URL || '/'}ap
   const offline = () => { disconnect(); setStatus('offline'); };
   const reconnect = () => connect();
   return {
-    getState: () => ({ ...state(), latest: latest ? { ...latest } : null, aircraft: aircraft ? { ...aircraft } : null }),
+    getState: () => ({ ...state(), latest: latest ? { ...latest } : null, aircraft: aircraft ? { ...aircraft } : null,
+      plugins: [...plugins.values()].map(value => ({ ...value })) }),
     subscribe(listener) {
       if (destroyed) return () => {};
       listeners.add(listener); listener(state());
       if (latest) listener({ type: 'collection', ...latest });
       if (aircraft) listener({ type: 'aircraft', ...aircraft });
+      for (const revision of plugins.values()) listener({ type: 'plugin', ...revision });
       return () => listeners.delete(listener);
     },
     start() {
@@ -86,7 +114,7 @@ export function createLiveUpdates({ url = `${import.meta.env?.BASE_URL || '/'}ap
     },
     destroy() {
       if (destroyed) return;
-      destroyed = true; disconnect(); listeners.clear();
+      destroyed = true; disconnect(); listeners.clear(); plugins.clear();
       documentRef?.removeEventListener?.('visibilitychange', visibility);
       windowRef?.removeEventListener?.('online', reconnect); windowRef?.removeEventListener?.('offline', offline);
     },

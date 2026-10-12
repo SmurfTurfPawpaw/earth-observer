@@ -23,12 +23,13 @@ export function intelligenceQuery(params) {
 
 /** Fixed reviewed integrations, shared bounded acquisition and provider backoff; no startup polling. */
 export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = globalThis.process?.env || {},
-  snapshotStore, snapshotReader = createGdeltSnapshotReader({ fetchImpl, now, store: snapshotStore }),
-  eonetReader = createEonetSnapshotReader({ fetchImpl, now, store: snapshotStore }),
+  snapshotStore, storageTimeoutMs = 1000, snapshotReader = createGdeltSnapshotReader({ fetchImpl, now, store: snapshotStore, storageTimeoutMs }),
+  eonetReader = createEonetSnapshotReader({ fetchImpl, now, store: snapshotStore, storageTimeoutMs }),
   allowLiveGdeltFallback = env.GDELT_LIVE_FALLBACK === '1' } = {}) {
   const cache = new Map(), pending = new Map(), failures = new Map(), attempts = new Map();
   const index = createDiscoveryIndex({ now, maxRecords: 500 });
   const providerFailures = new Map();
+  const storageDeadlineMs = Number.isFinite(storageTimeoutMs) ? Math.max(1, Math.min(5000, storageTimeoutMs)) : 1000;
   const policies = {
     gdelt: { name: 'The GDELT Project', url: 'https://www.gdeltproject.org/', ttl: 300000, timeout: 15000, cooldown: 300000, minGap: 6000 },
     usgs: { name: 'U.S. Geological Survey', url: 'https://earthquake.usgs.gov/', ttl: 60000, timeout: 10000, cooldown: 60000, minGap: 1000 },
@@ -37,7 +38,7 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
   async function optionalStorage(task) {
     let timer;
     try { return await Promise.race([Promise.resolve().then(task).catch(() => null),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(null), 1000); })]); }
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), storageDeadlineMs); })]); }
     finally { clearTimeout(timer); }
   }
   async function restoreHazard(id, key) {
@@ -84,7 +85,11 @@ export function intelligenceProxy({ fetchImpl = fetch, now = Date.now, env = glo
             }
             if (snapshotStore.claim) {
               const claimed = await optionalStorage(() => snapshotStore.claim(`intelligence:${id}`, now(), policy.ttl));
-              if (claimed !== true) { reason = 'Shared source refresh already in progress; retained metadata stays dated'; await restoreHazard(id, key); return; }
+              if (claimed !== true) {
+                reason = claimed === false ? 'Shared source refresh already in progress; retained metadata stays dated'
+                  : 'Source storage admission could not be verified; retained metadata stays dated';
+                await restoreHazard(id, key); return;
+              }
             }
           }
           attempts.set(id, now());

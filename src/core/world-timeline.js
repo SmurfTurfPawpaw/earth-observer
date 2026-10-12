@@ -208,7 +208,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
       if (!container.open && !playIntent) controller.close(); syncClock(); return accepted;
     } finally { if (owner === seekOwner) { selecting = false; syncClock(); } }
   }
-  const toggle = () => { syncClock(); if (container.open || playIntent) void controller.open(); else controller.close(); };
+  const toggle = () => { syncClock(); if (container.open) void controller.open(); else if (!playIntent && !selecting) controller.close(); };
   const drag = () => { dragging = true; playIntent = false; sceneTime.pause?.(); slider.setAttribute('aria-valuetext', utc(new Date(Number(slider.value) * 1000).toISOString())); };
   const choose = () => { dragging = false; void selectTime(new Date(Number(slider.value) * 1000).toISOString()); };
   const step = (direction) => {
@@ -219,7 +219,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     void selectTime(new Date(Math.max(start, Math.min(end, current + direction * distance))).toISOString());
   };
   const previous = () => step(-1), next = () => step(1);
-  const goLive = (event) => { event?.stopPropagation?.(); ++seekOwner; playIntent = false; selecting = false; dragging = false; controller.live(); clearMarkers(); setTime(null); syncClock(); void onTimeChange({ mode: 'live', at: null }); if (!container.open) controller.close(); };
+  const goLive = (event) => { event?.stopPropagation?.(); ++seekOwner; playIntent = false; selecting = false; dragging = false; setTime(null); controller.live(); clearMarkers(); syncClock(); void onTimeChange({ mode: 'live', at: null }); if (!container.open) controller.close(); };
   const playPause = async (event) => {
     event?.stopPropagation?.();
     if (sceneTime.getState().playing || selecting && playIntent) {

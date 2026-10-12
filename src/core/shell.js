@@ -9,6 +9,7 @@ import { commandCatalog, editableTarget } from './commands.js';
 import { createCommandPalette } from './commands-ui.js';
 import { chatGPTSignInPath } from './community-policy.js';
 import { createWorldDossier } from './world-dossier.js';
+import { createWorkspaceFocus } from './workspace-focus.js';
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -55,7 +56,7 @@ export function createShell(viewer, manager) {
   let storage;
   try { storage = localStorage; } catch { /* Controls remain usable without browser storage. */ }
   const placeStore = createPlaceStore(storage);
-  let commandPalette, savedPlaces, community, communityImport;
+  let commandPalette, savedPlaces, community, communityImport, workspaceFocus;
   const communitySection = document.getElementById('community-section');
   const signIn = document.getElementById('sign-in');
   const signInPath = () => chatGPTSignInPath(`${location.pathname}${location.search}${location.hash}`);
@@ -87,6 +88,7 @@ export function createShell(viewer, manager) {
     cleanup.push(() => node.removeEventListener('click', handler));
   };
   const setSidebar = (open, { focus = false, persist = true } = {}) => {
+    if (open) workspaceFocus?.focusWorkspace();
     if (open && activePanel) openPanel(null);
     document.body.classList.toggle('sidebar-open', open);
     document.getElementById('open-sidebar').setAttribute('aria-expanded', String(open && workspace === 'data'));
@@ -196,6 +198,16 @@ export function createShell(viewer, manager) {
   cleanup.push(() => mobile.removeEventListener('change', onMobileChange));
   setSidebar(mobile.matches ? false : uiState.sidebarOpen, { persist: false });
   setNavbar(uiState.navbarOpen);
+  workspaceFocus = createWorkspaceFocus({ calendar: document.getElementById('earth-timeline'),
+    subscribePanels(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener); },
+    closeExpandedWorkspace() { openPanel(null); setSidebar(false, { persist: false }); },
+  });
+  cleanup.push(() => workspaceFocus.destroy());
+  const placeSearch = document.getElementById('search');
+  placeSearch.placeholder = 'Supported places or coordinates';
+  placeSearch.title = 'Choose a supported place from the suggestions, or enter latitude, longitude.';
+  const placeSearchLabel = document.querySelector('label[for="search"]');
+  if (placeSearchLabel) placeSearchLabel.textContent = 'Find supported places or coordinates';
   document.body.classList.add('ui-ready');
 
   // Credits may wrap as layers are enabled. Panels always leave that legal footer visible.

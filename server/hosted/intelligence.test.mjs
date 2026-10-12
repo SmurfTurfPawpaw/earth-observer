@@ -98,6 +98,24 @@ test('hazard provider Retry-After survives another runtime and cannot renew old 
   assert.equal(source.retryAt, clock + 7200000);
 });
 
+test('hosted storage budget admits a slow successful claim; unknown admission never acquires or pretends another writer exists', async () => {
+  const values = new Map(); let calls = 0;
+  const snapshotStore = { get: async key => values.get(key), put: async (key, value) => values.set(key, value),
+    claim: async () => { await new Promise(resolve => setTimeout(resolve, 1100)); return true; } };
+  const read = endpoint(createIntelligenceProxy({ snapshotReader: null, eonetReader: null, allowLiveGdeltFallback: false,
+    storageTimeoutMs: 2500, snapshotStore, now: () => timestamp, fetchImpl: async url => { calls++; return response(url); } }));
+  const accepted = await read(); assert.equal(calls, 2);
+  assert.ok(accepted.payload.sources.filter(source => ['usgs', 'gdacs'].includes(source.id)).every(source => source.status === 'ready'));
+  const unknown = endpoint(createIntelligenceProxy({ snapshotReader: null, eonetReader: null, allowLiveGdeltFallback: false,
+    storageTimeoutMs: 5, snapshotStore: { ...snapshotStore, claim: async () => new Promise(() => {}) }, now: () => timestamp + 60001,
+    fetchImpl: async () => { throw new Error('Unknown admission must not acquire'); } }));
+  const retained = await unknown();
+  for (const source of retained.payload.sources.filter(source => ['usgs', 'gdacs'].includes(source.id))) {
+    assert.equal(source.status, 'stale'); assert.equal(source.retrievedAt, new Date(timestamp).toISOString());
+    assert.match(source.reason, /storage admission could not be verified/); assert.doesNotMatch(source.reason, /already in progress/);
+  }
+});
+
 test('provider failure serves explicit stale results with backoff shared across new topic keys', async () => {
   let clock = timestamp, fail = false, requests = 0;
   const read = endpoint(intelligenceProxy({ now: () => clock, fetchImpl: async (url) => { requests++; return fail ? new Response('', { status: 429 }) : response(url); } }));

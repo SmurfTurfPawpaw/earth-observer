@@ -36,7 +36,8 @@ function service(env, now, fetchImpl, snapshotReader) {
   const saved = services.get(owner);
   if (saved?.now === now && saved.fetchImpl === fetchImpl && saved.snapshotReader === snapshotReader) return saved.middleware;
   const middleware = createWorkerMiddleware([intelligenceProxy({ fetchImpl: createWorkerFetch(fetchImpl), now,
-    env: { ...env, GDELT_LIVE_FALLBACK: '0' }, snapshotStore: createProviderStore(env), ...(snapshotReader ? { snapshotReader } : {}) })]);
+    env: { ...env, GDELT_LIVE_FALLBACK: '0' }, snapshotStore: createProviderStore(env), storageTimeoutMs: 2500,
+    ...(snapshotReader ? { snapshotReader } : {}) })]);
   saved?.middleware.close(); services.set(owner, { middleware, now, fetchImpl, snapshotReader }); return middleware;
 }
 

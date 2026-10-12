@@ -24,22 +24,32 @@ function scheduler() {
     },
   };
 }
-async function database(t) {
+async function database(t, { pluginsMigrated = true } = {}) {
   const sqlite = new DatabaseSync(':memory:');
-  for (const filename of ['0000_glossy_overlord.sql', '0001_collection_revision.sql']) sqlite.exec(await readFile(new URL(`../drizzle/${filename}`, import.meta.url), 'utf8'));
+  for (const filename of ['0000_glossy_overlord.sql', '0001_collection_revision.sql', ...(pluginsMigrated ? ['0007_source_plugins.sql', '0008_plugin_heads.sql'] : [])]) sqlite.exec(await readFile(new URL(`../drizzle/${filename}`, import.meta.url), 'utf8'));
   t.after(() => sqlite.close());
-  const counters = { reads: 0, writes: 0, primary: 0 };
+  const counters = { reads: 0, writes: 0, primary: 0, queries: [] };
   const binding = { sqlite, counters,
     withSession(value) { assert.equal(value, 'first-primary'); counters.primary++; return this; },
     prepare(sql) { return { bind(...values) {
       return {
         async first() { counters.reads++; if (binding.failReads) throw new Error('private database failure details'); return sqlite.prepare(sql).get(...values) || null; },
-        async all() { counters.reads++; if (binding.failReads) throw new Error('private database failure details'); return { results: sqlite.prepare(sql).all(...values) }; },
+        async all() { counters.reads++; counters.queries.push(sql); if (binding.failReads) throw new Error('private database failure details'); return { results: sqlite.prepare(sql).all(...values) }; },
         async run() { counters.writes++; return sqlite.prepare(sql).run(...values); },
       };
     } }; },
   };
   return binding;
+}
+function retainedPlugin(db, { pluginId = 'ecb-press-v1', scopeId = 'ecb-institutional-press-en-v1', fence = 1, marker = 'a', facts = 'a', offset = 0 } = {}) {
+  const recordedAt = new Date(CLOCK + offset).toISOString(), receiptId = `receipt:${marker.repeat(64)}`;
+  db.sqlite.prepare(`INSERT INTO earth_plugin_captures (receipt_id,plugin_id,scope_id,fence,captured_at,recorded_at,facts_digest,raw_sha256,artifact_sha256,
+    raw_bytes,facts_bytes,artifact_bytes,source_updated_at,source_version,item_count) VALUES (?,?,?,?,?,?,?,?,?,1,1,1,NULL,NULL,1)`)
+    .run(receiptId, pluginId, scopeId, fence, recordedAt, recordedAt, facts.repeat(64), 'd'.repeat(64), 'e'.repeat(64));
+  db.sqlite.prepare(`INSERT INTO earth_plugin_state (plugin_id,scope_id,next_check_at,status,failure_count,fence,current_receipt,facts_digest)
+    VALUES (?,?,'2026-10-11T12:00:00.000Z','ready',0,?,?,?) ON CONFLICT(plugin_id) DO UPDATE SET
+    current_receipt=excluded.current_receipt,facts_digest=excluded.facts_digest,fence=excluded.fence`).run(pluginId, scopeId, fence, receiptId, facts.repeat(64));
+  return { schemaVersion: 1, pluginId, scopeId, receiptId, fence, factsDigest: facts.repeat(64), recordedAt };
 }
 function connect(channel, env, { headers = {}, path = '/api/updates', method = 'GET' } = {}) {
   const abort = new AbortController();
@@ -187,4 +197,67 @@ test('aircraft and intelligence publish independently and reconnect share one du
   assert.equal(reader.status(env).revision, metadata.revision);
   assert.equal(db.counters.reads, 3, 'One writer verification plus one shared read');
   client.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
+});
+
+test('fixed typed receipts join collection delivery in one indexed query shared by all clients without evidence-object reads', async t => {
+  const db = await database(t), clock = scheduler(), channel = createCollectionUpdates(clock);
+  let objects = 0; const env = { EARTH_DB: db, EARTH_STORE: { get() { objects++; throw Error('Forbidden stream evidence read'); }, put() { objects++; throw Error('Forbidden stream write'); } } };
+  await channel.publishCollectionRevision(env, input());
+  const ecb = retainedPlugin(db), gas = retainedPlugin(db, { pluginId: 'eurostat-gas-origins-v1', scopeId: 'belgium-natural-gas-origins', marker: 'b' });
+  db.counters.reads = 0; const writes = db.counters.writes;
+  const clients = Array.from({ length: 8 }, () => connect(channel, env)); t.after(() => clients.forEach(client => client.abort.abort())); await flush();
+  // Followers can enter their wait while the first shared query is in flight;
+  // all observe its retained result by the next one-second presentation tick.
+  await clock.advance(1000);
+  for (const client of clients) {
+    await nextEvent(client.reader); const first = await nextEvent(client.reader, 'plugin'), second = await nextEvent(client.reader, 'plugin');
+    assert.deepEqual(first.value, ecb); assert.deepEqual(second.value, gas); assert.match(first.frame, /^id: plugin:ecb-press-v1:1:receipt:/m);
+    assert.deepEqual(Object.keys(first.value), ['schemaVersion', 'pluginId', 'scopeId', 'receiptId', 'fence', 'factsDigest', 'recordedAt']);
+  }
+  assert.equal(db.counters.reads, 2, 'one grouped query per elapsed read slot, independent of eight connected clients'); assert.equal(db.counters.writes, writes); assert.equal(objects, 0);
+  const plan = db.sqlite.prepare(`EXPLAIN QUERY PLAN ${db.counters.queries.at(-1)}`).all().map(row => row.detail).join('\n');
+  assert.match(plan, /SEARCH s USING INDEX.*plugin_id/); assert.match(plan, /SEARCH c USING INDEX.*receipt_id/);
+  assert.doesNotMatch(plan, /SCAN (?:s|c)\b/);
+  await clock.advance(1000); assert.equal(db.counters.reads, 3); assert.equal(objects, 0);
+  for (const client of clients) client.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
+});
+
+test('operational checks are quiet; A/B/A receipt fences remain distinct and reconnect replays the current receipt', async t => {
+  const db = await database(t), clock = scheduler(), channel = createCollectionUpdates(clock), env = { EARTH_DB: db };
+  const a = retainedPlugin(db), client = connect(channel, env); await flush(); assert.deepEqual((await nextEvent(client.reader, 'plugin')).value, a);
+  db.sqlite.prepare("UPDATE earth_plugin_state SET fence=999,checked_at='2026-10-11T12:00:01.000Z' WHERE plugin_id='ecb-press-v1'").run();
+  await clock.advance(1000);
+  const b = retainedPlugin(db, { fence: 1000, marker: 'b', facts: 'b', offset: 1000 }); await clock.advance(1000);
+  assert.deepEqual((await nextEvent(client.reader, 'plugin')).value, b, 'the prior unchanged check emitted no plugin event');
+  const returnA = retainedPlugin(db, { fence: 1001, marker: 'c', facts: 'a', offset: 2000 }); await clock.advance(1000);
+  assert.deepEqual((await nextEvent(client.reader, 'plugin')).value, returnA); assert.equal(returnA.factsDigest, a.factsDigest);
+  client.abort.abort(); await flush(); const resumed = connect(createCollectionUpdates(clock), env, { headers: { 'last-event-id': `plugin:${a.pluginId}:1:${a.receiptId}` } });
+  await flush(); assert.deepEqual((await nextEvent(resumed.reader, 'plugin')).value, returnA);
+  resumed.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
+});
+
+test('exact missing plugin tables cost one bounded legacy fallback then recover on the next shared tick after migration', async t => {
+  const db = await database(t, { pluginsMigrated: false }), clock = scheduler(), channel = createCollectionUpdates(clock), env = { EARTH_DB: db };
+  const original = await channel.publishCollectionRevision(env, input()); db.counters.reads = 0;
+  const client = connect(channel, env); await flush(); assert.equal((await nextEvent(client.reader)).value.revision, original.revision);
+  assert.equal(db.counters.reads, 2, 'only an exact missing plugin table permits an exceptional second query');
+  for (const filename of ['0007_source_plugins.sql', '0008_plugin_heads.sql']) db.sqlite.exec(await readFile(new URL(`../drizzle/${filename}`, import.meta.url), 'utf8'));
+  const plugin = retainedPlugin(db); await clock.advance(1000); assert.deepEqual((await nextEvent(client.reader, 'plugin')).value, plugin);
+  assert.equal(db.counters.reads, 3, 'the same isolate rechecks and returns to the normal one-query path');
+  db.failReads = true; await clock.advance(1000); assert.equal((await nextEvent(client.reader, 'status')).value.available, false);
+  assert.equal(db.counters.reads, 4, 'unrelated failures never trigger a legacy fallback');
+  client.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
+});
+
+test('foreign or malformed plugin rows cannot poison valid collection delivery and late missing-table errors cannot issue post-deadline fallbacks', async t => {
+  const db = await database(t), clock = scheduler(), channel = createCollectionUpdates(clock), env = { EARTH_DB: db };
+  await channel.publishCollectionRevision(env, input()); retainedPlugin(db, { scopeId: 'unreviewed-scope' });
+  const client = connect(channel, env); await flush(); assert.equal((await nextEvent(client.reader)).value.recordCount, 350);
+  client.abort.abort(); await flush();
+  let rejectRead, calls = 0;
+  const stalled = { prepare() { return { bind() { return { all() { calls++; return new Promise((_, reject) => { rejectRead = reject; }); } }; } }; } };
+  const deadlineChannel = createCollectionUpdates({ ...clock, readTimeoutMs: 1000 }), delayed = connect(deadlineChannel, { EARTH_DB: stalled }); await flush();
+  await clock.advance(1000); assert.equal((await nextEvent(delayed.reader, 'status')).value.available, false);
+  rejectRead(Error('D1_ERROR: no such table: earth_plugin_state: SQLITE_ERROR')); await flush(); assert.equal(calls, 1);
+  delayed.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
 });
