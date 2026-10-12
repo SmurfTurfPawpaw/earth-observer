@@ -52,6 +52,7 @@ h2 { font-size: calc(18px * var(--reading-scale, 1)); line-height: 1.35; font-we
 #app { height: 100dvh; min-height: 300px; position: relative; isolation: isolate; --workspace-bottom: calc(var(--credit-height) + var(--dock-height) + 24px); }
 #globe { position: absolute; inset: 0; }
 #globe .cesium-widget, #globe canvas { touch-action: none; }
+#globe .cesium-selection-wrapper svg { fill: var(--accent); stroke: var(--canvas); stroke-width: 1px; }
 #scene-preview { position: absolute; inset: 0; pointer-events: none; z-index: 1; background: var(--canvas); }
 #scene-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
 #scene-preview span { position: absolute; bottom: var(--workspace-bottom); left: 50%; transform: translateX(-50%); padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--panel); font-size: 12px; white-space: nowrap; }

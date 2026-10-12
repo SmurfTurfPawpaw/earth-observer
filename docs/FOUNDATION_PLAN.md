@@ -303,3 +303,20 @@ Existing Sites documentation provides no verified generic Worker-plus-static
 binding. The long-term asset alternative is reviewed immutable R2 content with
 streamed GET/ranges and a bounded owner publication path, especially narration;
 do not invent an ASSETS binding or remove embedded assets before stored readback.
+
+## 04:09 UTC dependency reassessment
+
+The retained GDACS notice slice is published with actual stored-response, keyboard
+selection and Live/history exclusion evidence. Before adding providers, release a
+small browser ownership package: bound independent Canvas2D backings, allocate
+detection only for actual work, dispose terminal failed scenes, and keep location
+changes from overriding layer intent. The native globe rendering budget is already
+separate; this change addresses auxiliary canvases without claiming crash causation.
+Inspect real viewport legibility and picking before accepting the pixel cap.
+
+Private retention accounting is optional operator visibility and has no authenticated
+hosted acceptance yet. It does not block serving, justify a new credential, establish
+whole-bucket growth or replace retention policy. Re-examine the evidence-to-explanation
+contracts before starting predictions or adding more feeds. Keep the remaining time
+for coherent release proof and the review handoff; all-source history, permanent
+execution and ongoing investigative synthesis remain separate completion gates.

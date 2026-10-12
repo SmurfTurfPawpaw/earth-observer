@@ -16,6 +16,7 @@ import {
   placementVariants,
 } from './worldOverlayDraw.js';
 import { WORLD_OVERLAY_STYLE } from './worldOverlayTokens.js';
+import { worldOverlayCanvasBudget } from './canvas-budget.js';
 
 /**
  * @module worldOverlay
@@ -1281,6 +1282,8 @@ function ensureOverlayDom() {
     _accessibilityStatus.setAttribute('aria-atomic', 'true');
     _accessibilityRoot.appendChild(_accessibilityStatus);
   }
+  releaseCanvasBacking(_canvas);
+  releaseCanvasBacking(_detectionSurface);
   _ctx = _canvas.getContext('2d', { alpha: true, desynchronized: true });
   _detectionCtx = _detectionSurface.getContext('2d', {
     alpha: true,
@@ -1288,13 +1291,22 @@ function ensureOverlayDom() {
   });
 }
 
+function releaseCanvasBacking(canvas) {
+  if (!canvas || (canvas.width === 0 && canvas.height === 0)) return false;
+  canvas.height = 0;
+  canvas.width = 0;
+  return true;
+}
+
 function sizeCanvasSurface(canvas, ctx, width, height, dpr) {
   if (!canvas) return false;
-  const backingWidth = Math.round(width * dpr);
-  const backingHeight = Math.round(height * dpr);
+  const backingWidth = Math.floor(width * dpr);
+  const backingHeight = Math.floor(height * dpr);
   const changed =
     canvas.width !== backingWidth || canvas.height !== backingHeight;
   if (changed) {
+    // Avoid a transient old-height/new-width allocation above the budget.
+    canvas.height = 0;
     canvas.width = backingWidth;
     canvas.height = backingHeight;
   }
@@ -1312,26 +1324,23 @@ function sizeCanvasSurface(canvas, ctx, width, height, dpr) {
  */
 function ensureCanvasSize() {
   if (!_canvas || !_viewer?.canvas) return false;
-  const width = Math.max(
-    0,
-    Math.round(Number(_viewer.canvas.clientWidth) || 0),
+  const { width, height, dpr, backingWidth, backingHeight } = worldOverlayCanvasBudget(
+    _viewer.canvas.clientWidth, _viewer.canvas.clientHeight, globalThis.window?.devicePixelRatio,
   );
-  const height = Math.max(
-    0,
-    Math.round(Number(_viewer.canvas.clientHeight) || 0),
-  );
-  const dpr = Math.max(1, Number(globalThis.window?.devicePixelRatio) || 1);
   const changed =
-    _canvas.width !== Math.round(width * dpr) ||
-    _canvas.height !== Math.round(height * dpr) ||
-    _detectionSurface?.width !== Math.round(width * dpr) ||
-    _detectionSurface?.height !== Math.round(height * dpr) ||
+    _canvas.width !== backingWidth ||
+    _canvas.height !== backingHeight ||
     _canvasWidth !== width ||
     _canvasHeight !== height ||
     _canvasDpr !== dpr;
   _resizeDirty = false;
   if (!changed) return false;
-  sizeCanvasSurface(_detectionSurface, _detectionCtx, width, height, dpr);
+  // Detection is blend-isolated, but ordinary labels do not need its backing.
+  releaseCanvasBacking(_detectionSurface);
+  if (_detectionSurface) {
+    _detectionSurface.style.width = `${width}px`;
+    _detectionSurface.style.height = `${height}px`;
+  }
   sizeCanvasSurface(_canvas, _ctx, width, height, dpr);
   _canvasWidth = width;
   _canvasHeight = height;
@@ -2435,6 +2444,7 @@ function paintCustomLane(lane) {
     if (record.shouldPaint && record.shouldPaint(_customPaintFrame) === false)
       continue;
     if (detectionTarget && !_detectionSurfacePrepared) {
+      sizeCanvasSurface(surface, ctx, _canvasWidth, _canvasHeight, _canvasDpr);
       clearCanvas(false, true);
       _detectionSurfacePrepared = true;
     }
@@ -2524,11 +2534,10 @@ function paintFrame(keyhole) {
   const sonar = null;
   clearCanvas(true, false);
   _detectionSurfacePrepared = false;
-  if (
-    activeCustomPaintLaneCount(PAINT_TARGET_DETECTION) === 0 &&
-    _detectionSurfaceNeedsClear
-  )
-    clearCanvas(false, true);
+  if (activeCustomPaintLaneCount(PAINT_TARGET_DETECTION) === 0) {
+    if (_detectionSurfaceNeedsClear) clearCanvas(false, true);
+    releaseCanvasBacking(_detectionSurface);
+  }
   _paintRectCount = 0;
   _hitRectCount = 0;
   sortPooledRange(_paintQueue, _paintCount, comparePaintItems);
@@ -2601,8 +2610,14 @@ function drawWorldOverlay() {
     resetFrameDiagnostics();
     _solveDirty = false;
     if (_canvasNeedsClear || _detectionSurfaceNeedsClear) clearCanvas();
+    if (releaseCanvasBacking(_canvas)) _resizeDirty = true;
+    releaseCanvasBacking(_detectionSurface);
+    // A cleared backing has no visible targets, including labels without an
+    // accessibility mirror. Keep source/arbiter caches, discard published hits.
+    _hitRectCount = 0;
+    _paintRectCount = 0;
+    if (_paintRectByKey.size > 0) _paintRectByKey.clear();
     if (_accessibilitySignature) {
-      _hitRectCount = 0;
       syncAccessibleActions();
     }
     return;
@@ -2681,7 +2696,8 @@ export function initWorldOverlay(viewer) {
   installUiOccluderObservers();
   // The backing store and the occluder inventory are both deferred to the
   // first frame with real paint work: a dormant host must not hold a
-  // full-viewport canvas (~19 MB at DPR 2) or scan the UI for exclusions.
+  // full-viewport canvas or scan the UI for exclusions. Active backings are
+  // capped at 4 Mi pixels each, and detection allocates only on actual paint.
   _resizeDirty = true;
   _occludersDirty = true;
   _solveDirty = true;
@@ -2717,6 +2733,8 @@ export function destroyWorldOverlay() {
   destroyWorldOverlayDraw();
   if (_occluderRefreshTimer != null) clearTimeout(_occluderRefreshTimer);
   _occluderRefreshTimer = null;
+  releaseCanvasBacking(_canvas);
+  releaseCanvasBacking(_detectionSurface);
   _root?.remove?.();
   _accessibilityRoot?.remove?.();
   // The detection surface is not a child of `_root` (it lives in the Cesium

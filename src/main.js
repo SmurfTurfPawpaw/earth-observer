@@ -6,7 +6,7 @@ import { installNavigation, parseViewHash, setCameraView, cameraView, serializeV
 import { createBrowserStore } from './core/browser-store.js';
 import { createCachedFetch } from './core/cached-fetch.js';
 import { initialWorkspace, loadSession, saveSession, locateVisitor, safeStorage, SESSION_KEY } from './core/session.js';
-import { validateArea, localCameraView, distanceKm, LOCAL_DEFAULT_LAYERS } from './core/local-area.js';
+import { validateArea, localCameraView, distanceKm } from './core/local-area.js';
 import { installScenePreview } from './core/scene-preview.js';
 import { loadBasemapMode, saveBasemapMode } from './core/basemap-state.js';
 import { streetMapCoverageNotice } from './core/basemap-coverage.js';
@@ -43,6 +43,14 @@ function showError(error) {
   console.error('Earth Observer:', error);
 }
 
+function stopFailedScene(error) {
+  if (destroyed) return;
+  showError(error);
+  // These callbacks report a viewer that requires a reload. Native context
+  // restoration and ordinary tab/history suspension remain separate paths.
+  void destroy().catch((failure) => console.error('Earth Observer cleanup:', failure));
+}
+
 function rememberWorkspace() {
   if (destroyed || !viewer || !manager) return;
   const view = cameraView(viewer), state = manager.getState();
@@ -57,11 +65,10 @@ function setArea(value) {
 }
 async function activateLocal(value, { animate = false } = {}) {
   setArea(value); setCameraView(viewer, localCameraView(area), animate);
-  const state = manager.getState();
-  await manager.restore([...new Set([...LOCAL_DEFAULT_LAYERS, ...LAYERS.filter((layer) => state[layer.id]?.enabled).map((layer) => layer.id)])]);
   rememberWorkspace();
 }
 async function locate({ automatic = false } = {}) {
+  if (destroyed) return;
   const revision = ++locationRevision;
   const button = document.getElementById('locate'); button.disabled = true;
   shell.setLocalStatus('Location permission…');
@@ -70,9 +77,11 @@ async function locate({ automatic = false } = {}) {
       const permission = await navigator.permissions.query({ name: 'geolocation' }).catch(() => null);
       if (permission?.state === 'denied') return;
     }
+    if (destroyed || revision !== locationRevision) return;
     const found = await locateVisitor();
     if (destroyed || revision !== locationRevision) return;
     await activateLocal(found);
+    if (destroyed || revision !== locationRevision) return;
     if (!automatic) shell.notify('Local data is loading within the selected radius. Coverage depends on each source.');
   } catch (error) {
     if (destroyed || revision !== locationRevision) return;
@@ -85,6 +94,7 @@ async function locate({ automatic = false } = {}) {
   }
 }
 async function restoreView(state) {
+  if (destroyed) return;
   setArea(state.area);
   const restored = recoverInitialCameraView(viewer, state.view);
   setCameraView(viewer, restored.view);
@@ -113,6 +123,7 @@ function warmTools() {
 }
 
 async function handlePanel({ panel, open }) {
+  if (destroyed) return;
   if (!['news', 'notebook'].includes(panel)) return;
   if (!open) { (panel === 'news' ? intelligence : notebook)?.close(); if (panel === 'news') reportDossiers?.cancel(); return; }
   if (!panelLoading[panel]) panelLoading[panel] = (async () => {
@@ -146,7 +157,7 @@ async function handlePanel({ panel, open }) {
       if (destroyed) return;
       notebook = createEvidenceNotebook({ container: document.getElementById('notebook-content'), store, getLocation: () => cameraView(viewer), notify: shell.notify });
     }
-  })().catch((error) => { delete panelLoading[panel]; shell?.notify(error.message || 'The panel could not load.'); });
+  })().catch((error) => { delete panelLoading[panel]; if (!destroyed) shell?.notify(error.message || 'The panel could not load.'); });
   await panelLoading[panel];
   if (destroyed || document.getElementById(panel === 'news' ? 'news-panel' : 'notebook-panel').hidden) return;
   await (panel === 'news' ? intelligence : notebook)?.open();
@@ -161,8 +172,8 @@ export async function start() {
       onNotice: (message) => { shell?.notify(message); describeBasemap(); },
     });
     contextRecovery = installContextRecovery(viewer, {
-      onLost(error) { clearTimeout(warmTimer); showError(error); },
-      onRestored: showError,
+      onLost: stopFailedScene,
+      onRestored: stopFailedScene,
     });
     disposers.push(() => contextRecovery.destroy());
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
@@ -222,11 +233,12 @@ export async function start() {
     let appliedSceneMode = 'live';
     timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch,
       async onTimeChange(state) {
+        if (destroyed) return;
         const changed = appliedSceneMode !== state.mode;
         appliedSceneMode = state.mode;
         if (changed && state.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
         if (changed) await manager.setTimelineMode(state.mode);
-        if (appliedSceneMode !== state.mode) return;
+        if (destroyed || appliedSceneMode !== state.mode) return;
         if (changed) intelligence?.setSceneMode(state.mode);
         void worldDossiers.refresh();
         window.dispatchEvent(new CustomEvent('earth-observer:timechange', { detail: state }));
@@ -261,13 +273,15 @@ export async function start() {
       ++locationRevision; locateButton.disabled = false;
       const storage = safeStorage(); try { storage?.removeItem(SESSION_KEY); storage?.removeItem(STORAGE_KEY); } catch {}
       area = null; manager.setLocalArea(null); await manager.restore(['earthquakes']);
+      if (destroyed) return;
       setBasemap('map');
       const global = parseViewHash('', LAYERS.map((layer) => layer.id)); setCameraView(viewer, global.view);
       shell.setLocalStatus('Global view'); shell.notify('View and layer preferences reset. Your evidence notebook stays saved.'); rememberWorkspace();
     };
     resetButton.addEventListener('click', reset); disposers.push(() => resetButton.removeEventListener('click', reset));
-    disposers.push(viewer.scene.renderError.addEventListener((_scene, error) => showError(error)));
+    disposers.push(viewer.scene.renderError.addEventListener((_scene, error) => stopFailedScene(error)));
     const visibility = () => {
+      if (destroyed) return;
       viewer.useDefaultRenderLoop = !document.hidden && !contextRecovery.isLost();
       if (viewer.useDefaultRenderLoop) viewer.scene.requestRender();
     };
@@ -278,7 +292,7 @@ export async function start() {
       const params = new URLSearchParams(location.hash.slice(1));
       if (location.hash && !['v', 'lat', 'lon', 'layers'].some((key) => params.has(key))) return;
       ++locationRevision;
-      restoreView(initialWorkspace(location.hash, loadSession(), LAYERS.map((layer) => layer.id))).catch((error) => shell.notify(error.message || 'The shared view could not be restored.'));
+      restoreView(initialWorkspace(location.hash, loadSession(), LAYERS.map((layer) => layer.id))).catch((error) => { if (!destroyed) shell.notify(error.message || 'The shared view could not be restored.'); });
     };
     window.addEventListener('hashchange', hashchange);
     disposers.push(() => window.removeEventListener('hashchange', hashchange));
@@ -303,7 +317,7 @@ export async function start() {
     viewer.scene.requestRender();
     visibility();
   } catch (error) {
-    showError(error);
+    if (!destroyed) showError(error);
     await destroy();
   }
 }
@@ -312,11 +326,25 @@ export async function destroy() {
   if (destroyed) return;
   destroyed = true;
   describeBasemap = () => {};
-  ++locationRevision; clearTimeout(warmTimer); intelligence?.destroy(); notebook?.destroy(); cachedFetch.destroy();
-  disposers.splice(0).reverse().forEach((dispose) => dispose());
-  shell?.destroy();
-  await manager?.destroy();
-  if (viewer && !viewer.isDestroyed()) viewer.destroy();
+  const pending = [];
+  const stop = (work) => {
+    try { const result = work(); if (result?.then) pending.push(Promise.resolve(result)); }
+    catch (error) { console.error('Earth Observer cleanup:', error); }
+  };
+  ++locationRevision; clearTimeout(warmTimer);
+  if (viewer && !viewer.isDestroyed()) {
+    stop(() => { viewer.useDefaultRenderLoop = false; });
+    stop(() => viewer.earthTime?.sceneClock?.destroy());
+    // Stop independent animation before a pending lazy load can delay disposal.
+    // Direct teardown leaves requested intent and saved preferences untouched.
+    for (const { id } of LAYERS) stop(() => manager?.getLayer(id)?.disable?.(viewer));
+  }
+  stop(() => intelligence?.destroy()); stop(() => notebook?.destroy()); stop(() => cachedFetch.destroy());
+  for (const dispose of disposers.splice(0).reverse()) stop(dispose);
+  stop(() => shell?.destroy());
+  stop(() => manager?.destroy());
+  for (const result of await Promise.allSettled(pending)) if (result.status === 'rejected') console.error('Earth Observer cleanup:', result.reason);
+  if (viewer && !viewer.isDestroyed()) stop(() => viewer.destroy());
 }
 
 // bfcache keeps the existing session alive; actual unload disposes owned work.

@@ -1206,3 +1206,55 @@ confirmed incidents, current acquisition proof or assertions that disasters ende
 The exact build, production source/body proof and actual keyboard/selected-notice
 journey remain required. The separate four-file owner retention package remains
 local and is excluded from this release's source commit.
+
+## 04:09 UTC: v41 retained notices published and exercised
+
+App 41a9b63afde1f4ff7b0eb63bd7c1de767a74a717 and combined source
+b1b17c89216c06b56e1607d18f35da0b1df2cbe0 produced the tested archive, SHA256
+9a561b43db5728f0be35869d789a05b737bca0223cff44de183c3afee3f193a6.
+Saved Site version 41 deployed successfully as appgdep_6acc5c81dfa08191a7e9af50c202ec01
+at 04:05:49.076Z, environment revision 7 and public audience unchanged.
+
+The fixed hosted GDACS reader returned 200, 21,100 decoded bytes and ten validated
+indicative locations at 04:06:11Z. Complete retained cohort capture was
+04:00:41.159Z, database publication 04:00:43.965Z; operational source freshness
+remained unknown rather than borrowing a collection heartbeat. The saved actual
+response is .qa/v41-gdacs-hosted-proof.json, including coverage and evidence hashes.
+This is a bounded seven-day source notice sample, not complete world coverage.
+
+Actual in-app browser checks enabled the layer, opened Earthquake in Panama by
+keyboard, followed its exact official event/episode source link, and expanded
+source/capture/revision evidence. Selection remained present through the next
+60-second read; this sample did not include a changed source revision. Stepping
+back one calendar day paused the current-only notice layer and removed its list;
+returning Live restored cached notice choices while the current read completed.
+Screenshot qa-artifacts/published-foundation-v41-disaster-notice.png was displayed
+in commentary. The operator did not navigate the external source page.
+
+Browser re-examination found three code-supported improvements: unbounded overlay
+DPR/backing allocation, scene activity surviving reload-required graphics failure,
+and location changes restoring disabled default layers. These fixes are local for
+the next package, with a small palette correction to the default selection reticle.
+The original browser crash's cause remains unknown. Optional retention accounting
+is still local; no owner credential or positive hosted HEAD proof was invented.
+
+## 04:13 UTC: browser ownership package prepared
+
+Forty-one focused entry/lifecycle, context, manager, workspace, cyclone and canvas
+checks passed together. Main cleanup now immediately stops native rendering,
+scene time, independent module animation, caches, streams and timers after a
+reload-required failure. It preserves saved layer intent and the existing Reload
+error surface, tolerates an individual owner cleanup failure and fences late
+location/timeline/panel continuations. Final viewer disposal still waits for
+pending manager-owned imports/queues; no healthy history or visibility transition
+is treated as failure. Installed Cesium stops rendering on scene.renderError;
+the application now tears down work that had survived that terminal state.
+
+Auxiliary canvases retain CSS projection/picking but cap DPR at two and each
+backing at 4,194,304 pixels. Detection begins at zero size and allocates on actual
+painting; inactive/dormant backings release after effects finish. A focused actual
+host fixture found and fixed invisible retained hit boxes after label fade-out.
+Calculated RGBA pixel storage is at most 16 MiB per backing, not a process/GPU
+memory measurement. At 4K the effective overlay DPR is below one: browser
+legibility remains an acceptance question and should not be described as lossless.
+The Cesium selection SVG now uses the atlas accent instead of default neon green.
