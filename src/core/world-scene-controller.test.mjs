@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { worldHash } from './world-model.js';
-import { createWorldSceneController, normalizeWorldScene, WORLD_SCENE_SCOPE, WORLD_SCENE_REFRESH_MS } from './world-scene-controller.js';
+import { createWorldSceneController, normalizeWorldScene, sceneCoverageAt, WORLD_SCENE_SCOPE, WORLD_SCENE_REFRESH_MS } from './world-scene-controller.js';
 
 const DAY = 86400000, start = '2025-06-01T12:00:00.000Z', today = '2026-10-12T02:00:00.000Z';
 const after = (at, distance) => new Date(Date.parse(at) + distance).toISOString();
 const range = { from: '2024-10-12T00:00:00.000Z', to: today };
-const coverage = { availableRange: range, segments: [range], gaps: [], complete: true, truncated: false, status: 'complete' };
+const coverage = { availableRange: range, requestedRange: range, segments: [range], gaps: [], complete: true, truncated: false, status: 'complete' };
 async function point(name, originAt = start) {
   const key = await worldHash(['usgs', `usgs:${name}`]);
   return { id: `event:usgs:${key}`, itemId: `item:${key}`, sourceId: 'usgs', sourceRecordId: `usgs:${name}`,
@@ -14,10 +14,12 @@ async function point(name, originAt = start) {
     url: `https://earthquake.usgs.gov/earthquakes/eventpage/${name}` };
 }
 function payload(at = null, points = [], extra = {}) {
+  const requestedRange=at?{from:after(at,-7*DAY+1),to:after(at,7*DAY)}:range;
+  const scopedCoverage={...coverage,requestedRange,segments:[requestedRange]};
   return { schemaVersion: 1, configured: true, available: true, mode: 'reconstruction', knownMode: 'none', knownAt: null,
     scope: { id: WORLD_SCENE_SCOPE, sourceId: 'usgs' }, at, window: '7d', version: 'archive:1', currentVersion: 'archive:1', events: [],
     counts: { returned: points.length, eligible: at ? points.length : null, omitted: at ? 0 : null },
-    complete: true, membershipComplete: true, truncated: false, cursor: null, coverage,
+    complete: true, membershipComplete: true, truncated: false, cursor: null, coverage: scopedCoverage,
     validFrom: at, validTo: at ? after(at, 7 * DAY) : null, nextSceneChangeAt: at ? after(at, 7 * DAY) : null,
     ...(at ? { points, bufferFrom: at, bufferTo: after(at, 7 * DAY), bufferWindowFrom: after(at, -7 * DAY) } : {}), ...extra };
 }
@@ -199,4 +201,56 @@ test('a second edition conflict stops after one restart, and arbitrary400/other4
     await controller.open();assert.equal(await controller.select(start),false);assert.equal(pages,status==='conflict'?4:1);assert.equal(controller.getState().selection,null);
     assert.match(controller.getState().error,status==='conflict'?/updating/:new RegExp(`HTTP ${status}`));controller.destroy();
   }
+});
+
+
+test('loaded coverage windows are retained and malformed or uncontained proofs cannot claim unchecked dates',async()=>{
+  const window={from:'2026-10-01T00:00:00.000Z',to:'2026-10-10T00:00:00.000Z'};
+  const result=await normalizeWorldScene(payload(null,[],{coverage:{...coverage,requestedRange:window,segments:[window]}}),{metadata:true});
+  assert.deepEqual(result.coverage.availableRange,range);assert.deepEqual(result.coverage.requestedRange,window);
+  for(const invalid of [
+    {requestedRange:{...window,from:'2026-02-30T00:00:00.000Z'},segments:[]},
+    {requestedRange:window,segments:[range]},
+    {requestedRange:window,segments:[],gaps:[{from:range.from,to:window.to,status:'not-imported'}]},
+    {requestedRange:null,segments:[window]}
+  ]) await assert.rejects(normalizeWorldScene(payload(null,[],{coverage:{...coverage,requestedRange:window,segments:[window],...invalid}}),{metadata:true}),/coverage/);
+});
+
+test('a changed scene edition invalidates calendar shading rather than relabelling its window with scene segments',async()=>{
+  const documentRef=documentFixture(), timing=scheduler(), p=await point('new-edition');let edition=1;
+  const window={from:'2026-10-01T00:00:00.000Z',to:today};
+  const controller=createWorldSceneController({...timing,documentRef,fetchImpl:async(url)=>{
+    const q=new URL(url,'https://example.test').searchParams;
+    if(q.has('metadata'))return Response.json(payload(null,[],{version:`archive:${edition}`,currentVersion:`archive:${edition}`,coverage:{...coverage,requestedRange:window,segments:[window]}}));
+    edition=2;return Response.json(payload(q.get('at'),[p],{version:'archive:2',currentVersion:'archive:2'}));
+  }});
+  try {
+    await controller.open();await controller.select(start);
+    const state=controller.getState();assert.equal(state.selectedAt,start);assert.equal(state.selection.points.length,1);
+    assert.deepEqual(state.metadata.coverage.availableRange,range);assert.equal(state.metadata.coverage.requestedRange,null);
+    assert.deepEqual(state.metadata.coverage.segments,[]);assert.equal(state.metadata.coverage.stale,true);
+    assert.equal(controller.advance(after(start,1)),true,'The bounded accepted scene remains locally usable during calendar invalidation');
+    await controller.refresh();assert.deepEqual(controller.getState().metadata.coverage.requestedRange,window);
+    assert.deepEqual(controller.getState().metadata.coverage.segments,[window]);assert.equal(controller.getState().selectedAt,after(start,1));
+  }finally{controller.destroy();}
+});
+
+
+test('locally advanced knowledge scenes qualify dates outside the loaded proof window as unchecked, not unimported',()=>{
+  const target={from:after(start,-7*DAY+1),to:start};
+  const moved=sceneCoverageAt({...coverage,requestedRange:target,segments:[target]},after(start,1000),'scene');
+  assert.deepEqual(moved.requestedRange,{from:after(start,-7*DAY+1001),to:after(start,1000)});
+  assert.deepEqual(moved.gaps,[{from:after(start,1),to:after(start,1000),status:'not-evaluated'}]);
+  assert.equal(moved.complete,false);assert.equal(moved.status,'partial');
+});
+
+
+test('a wholly loaded unimported period remains unimported while truncated or unchecked windows stay partial',()=>{
+  const target={from:after(start,-7*DAY+1),to:start};
+  const missing={...coverage,requestedRange:target,segments:[],gaps:[{...target,status:'not-imported'}],complete:false,status:'not-imported'};
+  const actual=sceneCoverageAt(missing,start);
+  assert.equal(actual.status,'not-imported');assert.equal(actual.complete,false);assert.deepEqual(actual.gaps,missing.gaps);
+  assert.equal(sceneCoverageAt({...missing,truncated:true},start).status,'partial');
+  const unchecked=sceneCoverageAt(missing,after(start,1000));
+  assert.equal(unchecked.status,'partial');assert.equal(unchecked.gaps.at(-1).status,'not-evaluated');
 });

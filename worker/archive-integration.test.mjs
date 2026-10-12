@@ -181,7 +181,7 @@ test('large existing receipt journal resumes bootstrap and switches only at the 
   assert.equal(historical.currentVersion, 'archive:2100'); assert.equal(historical.version, 'archive:50');
 });
 
-test('a proved calendar beyond 736 days is explicitly unavailable globally but bounded date windows and its recent tail remain usable', async (t) => {
+test('a proved calendar beyond 736 days retains full seek limits while its default and explicit calendar windows stay bounded', async (t) => {
   const f = await archiveMaintenanceFixture(t, { actualMigration: true }), start = Date.parse('2023-10-01T00:00:00.000Z');
   for (let index = 0; index < 24; index++) {
     await publish(f, { from: new Date(start + index * 32 * 86400000).toISOString(), to: new Date(start + (index + 1) * 32 * 86400000).toISOString() }, []); f.advance(1);
@@ -189,9 +189,12 @@ test('a proved calendar beyond 736 days is explicitly unavailable globally but b
   let bootstrap = await bootstrapArchiveDays(f.env); if (!bootstrap.complete) bootstrap = await bootstrapArchiveDays(f.env);
   assert.equal(bootstrap.complete, true); assert.equal(bootstrap.frontier.seeded, true);
   const handle = createWorldSceneHandler({ env: f.env, now: f.now });
-  const global = await handle(new Request('https://owned.example/api/world/scene?metadata=1')), failed = await global.json();
-  assert.equal(global.status, 503); assert.equal(failed.available, false); assert.equal(failed.complete, false); assert.equal(failed.truncated, true);
-  assert.equal(failed.errorCode, 'coverage-day-budget');
+  const global = await handle(new Request('https://owned.example/api/world/scene?metadata=1')), checked = await global.json();
+  assert.equal(global.status, 200); assert.equal(checked.available, true); assert.equal(checked.complete, true); assert.equal(checked.truncated, false);
+  assert.equal(checked.coverage.availableRange.from, '2023-10-01T00:00:00.000Z');
+  assert.equal(checked.coverage.dayRows, 736);
+  assert.ok(checked.coverage.requestedRange.from > checked.coverage.availableRange.from, 'Loaded calendar coverage is bounded without narrowing old-date navigation');
+  assert.deepEqual(checked.coverage.segments, [checked.coverage.requestedRange]);
   const url = new URL('https://owned.example/api/world/scene');
   for (const [name, value] of Object.entries({ metadata: '1', calendarFrom: '2024-01-01T00:00:00.000Z', calendarTo: '2024-02-01T00:00:00.000Z' })) url.searchParams.set(name, value);
   const response = await handle(new Request(url)), body = await response.json(); assert.equal(response.status, 200); assert.equal(body.complete, true);
@@ -210,4 +213,27 @@ test('a bounded wake deadline releases ownership while late publisher settlement
   assert.equal(f.state().verified_through, end); release(); await assert.rejects(late, /ownership|admission/);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_archive_chunks').get().n, 1);
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_archive_heads').get().n, 1); assert.equal(p.calls.length, 2);
+});
+
+
+test('a regressed authoritative publication clock defers a new receipt atomically and keeps its original frozen candidate for retry', async (t) => {
+  const f=await archiveMaintenanceFixture(t,{actualMigration:true}); await publish(f); await bootstrapArchiveDays(f.env); f.advance(120000);
+  const before=f.sqlite.prepare('SELECT * FROM earth_archive_chunks').all(), days=f.sqlite.prepare('SELECT * FROM earth_archive_coverage_days').all();
+  const p=provider(f); let regressed=false;
+  f.env.EARTH_DB.beforeBatch=(statements)=>{ if(!regressed && /UPDATE earth_archive_maintenance SET admitted_chunk_id/.test(statements[0]?.sql)) {
+    regressed=true; f.setClock('2026-10-12T03:59:59.000Z');
+  }};
+  const result=await runArchiveMaintenance(f.env,{now:f.now,fetchImpl:p.fetchImpl,publishPrepared:callback(f)});
+  assert.equal(result.status,'uncertain'); assert.equal(regressed,true); assert.equal(p.calls.length,2);
+  assert.deepEqual(f.sqlite.prepare('SELECT * FROM earth_archive_chunks').all(),before);
+  assert.deepEqual(f.sqlite.prepare('SELECT * FROM earth_archive_coverage_days').all(),days);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_archive_heads').get().n,1);
+  assert.equal(f.state().verified_through,end); assert.equal(f.state().lease_token,null);
+  const frozen=JSON.parse(f.state().candidate_json).tail; assert.ok(frozen);
+  assert.equal(frozen.capturedAt,'2026-10-12T04:02:00.000Z');
+  f.env.EARTH_DB.beforeBatch=null; f.setClock('2026-10-12T04:10:00.000Z');
+  const retried=await runArchiveMaintenance(f.env,{now:f.now,fetchImpl:()=>assert.fail('Clock recovery must reuse the exact retained source body'),publishPrepared:callback(f)});
+  assert.equal(retried.status,'stored'); assert.equal(retried.chunkId,frozen.chunkId); assert.equal(p.calls.length,2);
+  const receipt=f.sqlite.prepare('SELECT captured_at,published_at FROM earth_archive_chunks WHERE chunk_id=?').get(frozen.chunkId);
+  assert.equal(receipt.captured_at,frozen.capturedAt); assert.equal(receipt.published_at,f.stamp());
 });

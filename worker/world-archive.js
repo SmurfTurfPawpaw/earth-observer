@@ -260,11 +260,18 @@ async function publishArchiveAttempt(env, value, { now = Date.now, maintenanceCo
     [archiveJson(part.map(({ itemId, revision }) => ({ itemId, revision }))), ARCHIVE_SCOPE.id, chunkId]);
     if (verified.length !== part.length) throw new Error('Archive references are incomplete or conflicting');
   }
+  // A new receipt's real SQL clock must not precede already retained scope
+  // publication knowledge. Defer on regression rather than resolve $receipt
+  // as an invented earlier/later proof. Exact committed receipt reuse is exempt.
   const receipt = db.prepare(`INSERT INTO earth_archive_chunks
     (scope_id,chunk_id,snapshot_id,raw_sha256,captured_at,published_at,kind,record_count,policy_json)
     SELECT ?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?,?,?
-    WHERE ? <= strftime('%Y-%m-%dT%H:%M:%fZ','now','+305 seconds') ${daily ? `AND ${admissionSql}` : ''}
-    ON CONFLICT(scope_id,chunk_id) DO NOTHING`).bind(ARCHIVE_SCOPE.id,chunkId,snapshotId,input.rawSha256,input.capturedAt,input.kind,items.length,policyJson,input.capturedAt,
+    WHERE ? <= strftime('%Y-%m-%dT%H:%M:%fZ','now','+305 seconds')
+      AND (EXISTS(SELECT 1 FROM earth_archive_chunks WHERE scope_id=? AND chunk_id=?) OR
+        COALESCE((SELECT published_at FROM earth_archive_chunks INDEXED BY earth_archive_chunks_scope_publication
+          WHERE scope_id=? ORDER BY published_at DESC LIMIT 1),strftime('%Y-%m-%dT%H:%M:%fZ','now'))<=strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      ${daily ? `AND ${admissionSql}` : ''}
+    ON CONFLICT(scope_id,chunk_id) DO NOTHING`).bind(ARCHIVE_SCOPE.id,chunkId,snapshotId,input.rawSha256,input.capturedAt,input.kind,items.length,policyJson,input.capturedAt,ARCHIVE_SCOPE.id,chunkId,ARCHIVE_SCOPE.id,
     ...(daily ? admissionValues : []));
   const statements = [...(admission ? [admission.admissionStatement] : []), receipt];
   if (input.range) statements.push(db.prepare(`INSERT INTO earth_archive_coverage(scope_id,chunk_id,range_from,range_to,expected_count)

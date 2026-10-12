@@ -160,7 +160,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
       if (current.mode === 'live' || current.at >= available.from && current.at <= available.to) sceneTime.setCoverage?.({ firstAt: available.from, lastAt: available.to });
     }
     slider.disabled = !available; back.disabled = forward.disabled = !available; reload.disabled = state.loading; lens.value = state.lens;
-    const data = state.selection?.coverage || state.metadata?.coverage, coverageKey = JSON.stringify([available, data?.segments]);
+    const data = state.metadata?.coverage, loadedRange = data?.requestedRange, coverageKey = JSON.stringify([available, loadedRange, data?.segments]);
     if (coverageKey !== coverageSignature) {
       coverageSignature = coverageKey; coverageBand.replaceChildren(); coverageBand.hidden = !available;
       if (available) {
@@ -169,10 +169,10 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
           const mark = node('span', 'timeline-coverage-segment'); const left = Math.max(0, (Date.parse(segment.from) - start) / span * 100), right = Math.min(100, (Date.parse(segment.to) - start) / span * 100);
           mark.setAttribute('style', `left:${left}%;width:${Math.max(.15, right - left)}%`); coverageBand.append(mark);
         }
-        coverageBand.setAttribute('aria-label', `${data?.segments?.length || 0} completed source intervals within ${utc(available.from)} to ${utc(available.to)}. Unfilled intervals have no complete retained coverage.`);
+        coverageBand.setAttribute('aria-label', loadedRange ? `${data?.segments?.length || 0} completed source intervals within the checked calendar window ${utc(loadedRange.from)} to ${utc(loadedRange.to)}. Dates outside this window have not been checked here; select them to load their scene.` : 'Coverage has not been checked for this archive edition. Select any retained date to load its scene.');
       }
     }
-    coverage.textContent = available ? `Retained origin coverage: ${utc(available.from).slice(0, 16)} — ${utc(available.to).slice(0, 16)} UTC.` : state.metadata ? 'No historical catalog interval has been imported yet.' : 'Open the calendar or press Play to check historical coverage.';
+    coverage.textContent = available ? `Retained dates: ${utc(available.from).slice(0, 10)} — ${utc(available.to).slice(0, 10)}. ` + (loadedRange ? `Coverage checked: ${utc(loadedRange.from).slice(0, 10)} — ${utc(loadedRange.to).slice(0, 10)}; other dates load on selection.` : 'Coverage is not yet checked for this archive edition; dates remain selectable.') : state.metadata ? 'No historical catalog interval has been imported yet.' : 'Open the calendar or press Play to check historical coverage.';
     note.textContent = 'History currently covers USGS earthquakes of magnitude 4.5 or greater in the preceding seven days. ' + (state.lens === 'known-then' ?
       'Known then uses only evidence published by this platform by the selected UTC. Sunlight follows that UTC; base map imagery is not historical.' :
       'Reconstruction uses retained source corrections for events in the selected period. Sunlight follows selected UTC; base map imagery is not historical.');
@@ -180,6 +180,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     const hasWindowCoverage = scene?.coverage.segments.some((segment) => segment.from <= scene.at && Date.parse(segment.to) > Date.parse(scene.at) - 7 * 86400000);
     const message = state.loading ? 'Loading stored historical data…' : state.error || (!scene ? sceneTime.getState().mode === 'history' ? 'No stored scene is available at the selected UTC.' : 'Current UTC · live layers use their own source update times.' :
       scene.coverage.status === 'unavailable-at-cutoff' ? 'No complete archive evidence was available at this knowledge cutoff.' :
+      scene.coverage.gaps.some((gap) => gap.status === 'not-evaluated') ? `${n} reported earthquakes · coverage for part of this seven-day period has not been checked.` :
       !hasWindowCoverage ? 'This period has not been imported; no current data substitutes for it.' :
       scene.truncated ? `${n} reported earthquakes shown · bounded result is incomplete.` :
       !scene.coverage.complete ? `${n} reported earthquakes · part of this seven-day period has no complete retained coverage.` :

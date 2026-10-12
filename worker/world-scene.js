@@ -3,7 +3,7 @@ import { ARCHIVE_SCOPE, ARCHIVE_LIMITS, archivePrimary, ensureArchiveSchema, arc
   loadArchiveSnapshot, loadArchiveRaw } from './world-archive.js';
 import { archiveDayReadiness, readArchiveDayCoverage, ensureArchiveDaySchema, ARCHIVE_DAY_LIMITS } from './archive-day-coverage.js';
 
-const WEEK = 7 * 86400000;
+const DAY = 86400000, WEEK = 7 * DAY;
 const json = (value,status=200) => Response.json(value,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
 const iso = (value) => new Date(value).toISOString();
 const unavailable = () => ({schemaVersion:1,configured:false,available:false,events:[],reason:'The scoped archive or its migration is unavailable'});
@@ -88,20 +88,32 @@ function unionSegments(rows) {
   }
   return result;
 }
+function calendarWindow(availableRange, nowMs, days = ARCHIVE_DAY_LIMITS.days) {
+  if (!availableRange) return null;
+  const to = Math.min(Date.parse(availableRange.to), nowMs);
+  const from = Math.min(to, Math.max(Date.parse(availableRange.from), Math.floor(to / DAY) * DAY - (days - 1) * DAY));
+  return { from: iso(from), to: iso(to) };
+}
+function clipSegments(segments, target) {
+  if (!target) return [];
+  return segments.map((piece) => ({ from: piece.from < target.from ? target.from : piece.from,
+    to: piece.to > target.to ? target.to : piece.to })).filter((piece) => piece.from <= piece.to);
+}
 async function legacyCoverage(db, query, state) {
   const bounds=(await archiveRows(db,`SELECT MIN(v.range_from) AS range_from,MAX(v.range_to) AS range_to
     FROM earth_archive_coverage v JOIN earth_archive_chunks c ON c.scope_id=v.scope_id AND c.chunk_id=v.chunk_id WHERE v.scope_id=?`,[ARCHIVE_SCOPE.id]))[0];
-  const rows=await archiveRows(db,`SELECT v.range_from,v.range_to,c.published_at FROM earth_archive_coverage v
-    JOIN earth_archive_chunks c ON c.scope_id=v.scope_id AND c.chunk_id=v.chunk_id
-    WHERE v.scope_id=? ORDER BY v.range_from,v.range_to LIMIT ?`,
-  [ARCHIVE_SCOPE.id,ARCHIVE_LIMITS.coverageSegments+1]);
-  const truncated=rows.length>ARCHIVE_LIMITS.coverageSegments,bounded=rows.slice(0,ARCHIVE_LIMITS.coverageSegments);
-  const allSegments=unionSegments(bounded),segments=unionSegments(bounded.filter((row)=>!query.knownAt||row.published_at<=query.knownAt));
   const availableRange=bounds.range_from===null?null:{from:worldTime(bounds.range_from),to:worldTime(bounds.range_to)};
   const bufferEnd=query.points?Math.min(Date.parse(query.at)+WEEK,query.nowMs,availableRange?Date.parse(availableRange.to):Date.parse(query.at),
     query.requestedBufferTo?Date.parse(query.requestedBufferTo):Infinity):null;
   query.bufferTo=query.points&&bufferEnd>Date.parse(query.at)?iso(bufferEnd):null;
-  const target=query.calendarRange||(query.at?{from:iso(Date.parse(query.at)-WEEK+1),to:query.bufferTo||query.at}:availableRange);
+  const target=query.calendarRange||(query.at?{from:iso(Date.parse(query.at)-WEEK+1),to:query.bufferTo||query.at}:calendarWindow(availableRange,query.nowMs));
+  const rows=await archiveRows(db,`SELECT v.range_from,v.range_to,c.published_at FROM earth_archive_coverage v
+    JOIN earth_archive_chunks c ON c.scope_id=v.scope_id AND c.chunk_id=v.chunk_id
+    WHERE v.scope_id=? AND (? IS NULL OR v.range_to>=?) AND (? IS NULL OR v.range_from<=?)
+    ORDER BY v.range_from,v.range_to LIMIT ?`,
+  [ARCHIVE_SCOPE.id,target?.from??null,target?.from??null,target?.to??null,target?.to??null,ARCHIVE_LIMITS.coverageSegments+1]);
+  const truncated=rows.length>ARCHIVE_LIMITS.coverageSegments,bounded=rows.slice(0,ARCHIVE_LIMITS.coverageSegments);
+  const allSegments=clipSegments(unionSegments(bounded),target),segments=clipSegments(unionSegments(bounded.filter((row)=>!query.knownAt||row.published_at<=query.knownAt)),target);
   const gaps=[];
   const addGap=(from,to)=>{
     if(truncated){gaps.push({from:iso(from),to:iso(to),status:'not-evaluated'});return;}
@@ -139,9 +151,17 @@ async function coverage(db, query, state) {
   const end = query.points ? Math.min(Date.parse(query.at) + WEEK, query.nowMs, availableRange ? Date.parse(availableRange.to) : Date.parse(query.at),
     query.requestedBufferTo ? Date.parse(query.requestedBufferTo) : Infinity) : null;
   query.bufferTo = query.points && end > Date.parse(query.at) ? iso(end) : null;
-  const range = query.calendarRange || (query.at ? { from: iso(Date.parse(query.at) - WEEK + 1), to: query.bufferTo || query.at } : undefined);
-  const result = await readArchiveDayCoverage(env, { range, knownAt: query.knownAt });
-  return { ...result, storageMode: 'day-proof-index', readiness: 'ready', pending: [], failed: [] };
+  const range = query.calendarRange || (query.at ? { from: iso(Date.parse(query.at) - WEEK + 1), to: query.bufferTo || query.at } : calendarWindow(availableRange,query.nowMs));
+  let result = await readArchiveDayCoverage(env, { range: range || undefined, knownAt: query.knownAt });
+  if (query.metadata && result.errorCode === 'coverage-byte-budget' && range) {
+    const smaller = calendarWindow(range,query.nowMs,1);
+    if (smaller.from !== range.from || smaller.to !== range.to) {
+      result = { ...await readArchiveDayCoverage(env, { range: smaller, knownAt: query.knownAt }),
+        calendarFallback: 'coverage-byte-budget', initialRequestedRange: range };
+    }
+  }
+  return { ...result, segments: clipSegments(result.segments,result.requestedRange), truncated: result.truncated === true,
+    storageMode: 'day-proof-index', readiness: 'ready', pending: [], failed: [] };
 }
 
 // Time-indexed candidates come first; provider revision selection happens BEFORE

@@ -23,17 +23,29 @@ const range = (value) => {
 export function sceneCoverageAt(coverage, at, knownMode = 'none') {
   if (!at) return coverage;
   const target = { from: new Date(Date.parse(at) - WEEK + 1).toISOString(), to: at }, gaps = [];
-  let next = Date.parse(target.from), last = Date.parse(target.to);
-  const unavailable = knownMode !== 'none' && coverage.status === 'unavailable-at-cutoff';
-  for (const segment of coverage.segments) {
-    const from = Math.max(next, Date.parse(segment.from)), to = Math.min(last, Date.parse(segment.to));
-    if (to < next || from > last) continue;
-    if (from > next) gaps.push({ from: new Date(next).toISOString(), to: new Date(from - 1).toISOString(), status: unavailable ? 'unavailable-at-cutoff' : 'not-imported' });
-    next = Math.max(next, to + 1);
+  const clip = (piece) => ({ ...piece, from: piece.from < target.from ? target.from : piece.from,
+    to: piece.to > target.to ? target.to : piece.to });
+  const segments = coverage.segments.map(clip).filter((piece) => piece.from <= piece.to);
+  const loaded = coverage.requestedRange;
+  const edges = new Set([Date.parse(target.from), Date.parse(target.to) + 1]);
+  for (const piece of [...segments, ...coverage.gaps, ...(loaded ? [loaded] : [])])
+    for (const point of [Date.parse(piece.from), Date.parse(piece.to) + 1])
+      if (point > Date.parse(target.from) && point <= Date.parse(target.to)) edges.add(point);
+  const sorted = [...edges].sort((a,b) => a-b);
+  for (let index=0; index<sorted.length-1; index++) {
+    const from=sorted[index], to=sorted[index+1]-1;
+    if (segments.some((piece) => Date.parse(piece.from)<=from && Date.parse(piece.to)>=to)) continue;
+    const original=coverage.gaps.find((piece) => Date.parse(piece.from)<=from && Date.parse(piece.to)>=to);
+    const status= !loaded || from<Date.parse(loaded.from) || to>Date.parse(loaded.to) ? 'not-evaluated' :
+      original?.status || (knownMode !== 'none' && coverage.status === 'unavailable-at-cutoff' ? 'unavailable-at-cutoff' : 'not-imported');
+    const last=gaps.at(-1);
+    if(last?.status===status && Date.parse(last.to)+1===from) last.to=new Date(to).toISOString();
+    else gaps.push({from:new Date(from).toISOString(),to:new Date(to).toISOString(),status});
   }
-  if (next <= last) gaps.push({ from: new Date(next).toISOString(), to: target.to, status: unavailable ? 'unavailable-at-cutoff' : 'not-imported' });
   const complete = !gaps.length && !coverage.truncated;
-  return { ...coverage, gaps, complete, status: complete ? 'complete' : unavailable ? 'unavailable-at-cutoff' : coverage.segments.length ? 'partial' : 'not-imported' };
+  return { ...coverage, requestedRange: target, segments, gaps, complete,
+    status: complete ? 'complete' : gaps.length && gaps.every((gap) => gap.status==='unavailable-at-cutoff') ? 'unavailable-at-cutoff' :
+      !segments.length && !coverage.truncated && gaps.length && gaps.every((gap) => gap.status==='not-imported') ? 'not-imported' : 'partial' };
 }
 
 /** Reject an incompatible scope, future observation, or an unbound source projection. */
@@ -48,13 +60,16 @@ export async function normalizeWorldScene(value, { at = null, lens = 'reconstruc
   const raw = value.coverage;
   if (!raw || !Array.isArray(raw.segments) || raw.segments.length > 2048 || !Array.isArray(raw.gaps) || raw.gaps.length > 4096 ||
       !['complete', 'partial', 'unavailable-at-cutoff', 'not-imported'].includes(raw.status) || typeof raw.truncated !== 'boolean') throw new Error('Historical coverage is invalid');
+  const requestedRange = raw.requestedRange === null ? null : range(raw.requestedRange);
   const segments = raw.segments.map(range);
   if (segments.some((item, index) => index && item.from <= segments[index - 1].to)) throw new Error('Historical coverage overlaps or is unordered');
-  const coverage = { availableRange: raw.availableRange === null ? null : range(raw.availableRange), segments,
+  const coverage = { availableRange: raw.availableRange === null ? null : range(raw.availableRange), requestedRange, segments,
     gaps: raw.gaps.map((item) => {
-      if (!['not-imported', 'unavailable-at-cutoff'].includes(item.status)) throw new Error('Historical coverage gap is invalid');
+      if (!['not-imported', 'unavailable-at-cutoff', 'not-evaluated'].includes(item.status) || item.status === 'not-evaluated' && !raw.truncated) throw new Error('Historical coverage gap is invalid');
       return { ...range(item), status: item.status };
     }), complete: raw.complete === true, truncated: raw.truncated, status: raw.status };
+  if ([...coverage.segments,...coverage.gaps].some((piece) => !requestedRange || piece.from < requestedRange.from || piece.to > requestedRange.to))
+    throw new Error('Historical coverage leaves its loaded date window');
   const members = buffered ? value.points : value.events;
   if (!Array.isArray(members) || members.length > 100 || !count(value.counts?.returned) || value.counts.returned !== members.length ||
       (!metadata && (value.counts.eligible !== null && !count(value.counts.eligible) || value.counts.omitted !== null && !count(value.counts.omitted))) ||
@@ -264,9 +279,13 @@ export function createWorldSceneController({ fetchImpl = globalThis.fetch, docum
         const loaded = await load(canonicalAt, selectedLens, signal); signal.throwIfAborted();
         if (destroyed || owner !== generation || !opened || documentRef?.hidden) return false;
         if (metadata && metadata.currentVersion !== loaded.result.currentVersion) {
-          clearCache(); metadata = { ...metadata, currentVersion: loaded.result.currentVersion,
+          clearCache(); checkedAt = null;
+          // A selected seven-day scene cannot relabel the calendar's loaded
+          // coverage. Keep all retained seek limits, invalidate the old band,
+          // and let the existing bounded metadata refresh refill it.
+          metadata = { ...metadata, currentVersion: loaded.result.currentVersion,
             coverage: { ...metadata.coverage, availableRange: loaded.result.coverage.availableRange,
-              ...(selectedLens === 'reconstruction' ? { segments: loaded.result.coverage.segments } : {}) } };
+              requestedRange: null, segments: [], gaps: [], complete: false, status: 'not-evaluated', stale: true } };
         }
         admit(loaded.result, loaded.bytes, selectedLens); selection = materialize(loaded.result, canonicalAt, selectedLens); metadataError = null; return true;
       } catch (failure) {

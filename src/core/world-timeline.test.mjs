@@ -49,11 +49,19 @@ async function point(name, originAt) {
 const baseRange = { from: '2024-10-12T00:00:00.000Z', to: '2026-10-11T00:00:00.000Z' };
 function response(at = null, points = [], range = baseRange, extra = {}) {
   const end = at ? new Date(Date.parse(at) + 7 * 86400000).toISOString() : null;
+  const requestedRange=at?{from:new Date(Date.parse(at)-7*86400000+1).toISOString(),to:end}:range;
+  if(extra.coverage) {
+    const target=extra.coverage.requestedRange || (extra.knownMode==='scene'?{...requestedRange,to:at}:requestedRange);
+    const clip=(piece)=>({...piece,from:piece.from<target.from?target.from:piece.from,to:piece.to>target.to?target.to:piece.to});
+    extra={...extra,coverage:{...extra.coverage,requestedRange:target,
+      segments:extra.coverage.segments.map(clip).filter(piece=>piece.from<=piece.to),
+      gaps:extra.coverage.gaps.map(clip).filter(piece=>piece.from<=piece.to)}};
+  }
   return Response.json({ schemaVersion: 1, configured: true, available: true, mode: 'reconstruction', scope: { id: WORLD_SCENE_SCOPE, sourceId: 'usgs' },
     at, window: '7d', knownAt: null, knownMode: 'none', version: 'archive:1', currentVersion: 'archive:1', events: [], points,
     counts: { returned: points.length, eligible: at ? points.length : null, omitted: at ? 0 : null }, complete: true, membershipComplete: true, truncated: false, cursor: null,
     validFrom: at, validTo: end, nextSceneChangeAt: end, bufferFrom: at, bufferTo: end, bufferWindowFrom: at ? new Date(Date.parse(at) - 7 * 86400000).toISOString() : null,
-    coverage: { availableRange: range, segments: [range], gaps: [], complete: true, truncated: false, status: 'complete' }, ...extra });
+    coverage: { availableRange: range, requestedRange, segments: [requestedRange], gaps: [], complete: true, truncated: false, status: 'complete' }, ...extra });
 }
 
 test('calendar uses origin coverage across years, retains UTC through renewal, and crosses midnight without transferring an unchanged buffer', async () => {
@@ -320,4 +328,25 @@ test('collapsed History identifies the exact supported source window, preserves 
   assert.equal(explanation.open, true, 'Mode explanations update without replacing the disclosure');
   timeline.live(); assert.equal(caption.hidden, true); assert.equal(readout.attributes['aria-label'], 'Scene UTC time');
   assert.equal(f.sceneClock.getState().mode, 'live'); timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0);
+});
+
+
+test('a bounded calendar band keeps all historical dates selectable and never labels unloaded dates as missing source coverage',async()=>{
+  const f=fixture(), old='2025-06-01T12:00:00.000Z', p=await point('old-selectable',old);
+  const checked={from:'2026-10-01T00:00:00.000Z',to:baseRange.to};
+  const timeline=createTimeline({...f.timing,container:f.container,viewer:f.viewer,documentRef:f.documentRef,fetchImpl:async(url)=>{
+    const q=new URL(url,'https://example.test').searchParams;
+    if(q.has('metadata'))return response(null,[],baseRange,{coverage:{availableRange:baseRange,requestedRange:checked,segments:[checked],gaps:[],complete:true,truncated:false,status:'complete'}});
+    return response(q.get('at'),[p]);
+  }});
+  try {
+    f.container.open=true;f.container.trigger('toggle');await settle();
+    const all=elements(f.container.parentElement), slider=all.find(item=>item.type==='range');
+    const band=all.find(item=>item.className==='timeline-coverage-band');
+    assert.equal(slider.min,String(Date.parse(baseRange.from)/1000));assert.equal(slider.max,String(Date.parse(baseRange.to)/1000));
+    assert.ok(band);const before=band.attributes['aria-label'];assert.match(before,/checked calendar window/);assert.match(before,/have not been checked here/);
+    await timeline.seek(old);assert.equal(f.sceneClock.getState().at,old);assert.equal(f.entities.size,1);
+    assert.equal(band.attributes['aria-label'],before,'The old scene does not replace the loaded calendar band');
+    assert.match(all.find(item=>item.className==='timeline-coverage').textContent,/other dates load on selection/);
+  }finally{timeline.destroy();f.sceneClock.destroy();}
 });
