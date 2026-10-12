@@ -65,3 +65,14 @@ latest-PDF History exclusion and Live restoration checks. Source/lens/time switc
 participate in presentation identity even when underlying publication facts match.
 Actual hosted query and browser proof must be recorded separately after deployment;
 local checks alone do not establish a shipped or operating feature.
+
+Version 43 was deployed at 2026-10-12 04:37:54.986Z. Six fixed hosted reads
+confirmed independent reconstruction/publication and known-then receipt cutoffs.
+The browser confirmed dated snapshots during local playback, actual-UTC source
+selection and Refresh, exact pause commit, honest missing knowledge and restored
+Live-only actions. FOUNDATION_PROGRESS.md records the bounded evidence and limits.
+
+The readability follow-up retains UTC and lens in the visible snapshot. Its
+publication cutoff, later-revision meaning and playback/Refresh explanation remain
+in the tooltip and the closed feed receipt disclosure. Removing repeated prose
+does not change query, cutoff or cache behavior.

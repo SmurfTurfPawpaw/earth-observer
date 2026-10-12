@@ -7,7 +7,7 @@ import { institutionalContextTime, institutionalContextKey, institutionalContext
 export const PLUGIN_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, cacheEntries: 6, publications: 40, years: 10, origins: 20, refreshMs: 300000 });
 const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', pluginId: 'eurostat-gas-origins-v1', url: '/api/dossiers/belgium-natural-gas-origins', kind: 'dataset-dossier' },
   publications: { label: 'ECB releases', title: 'ECB institutional releases', subtitle: 'Original publications · European Central Bank', pluginId: 'ecb-press-v1', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' },
-  commission: { label: 'Commission', title: 'European Commission publications', subtitle: 'Original publication metadata · European Commission / European Union', pluginId: 'ec-press-v1', url: '/api/publications?plugin=ec-press-v1&limit=20', kind: 'publication-feed-overview' } });
+  commission: { label: 'Commission', title: 'European Commission publications', subtitle: 'Original metadata · European Commission / EU', pluginId: 'ec-press-v1', url: '/api/publications?plugin=ec-press-v1&limit=20', kind: 'publication-feed-overview' } });
 const EC_DOCUMENT_TYPES = Object.freeze({ ip: 'Press release', statement: 'Statement', read: 'Readout', qanda: 'Questions and answers', fs: 'Factsheet', mex: 'Daily news', speech: 'Speech' });
 const INSPECTABLE_DOCUMENT = 'https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2127';
 const PURPOSES = Object.freeze({ reports: { label: 'Reports', icon: 'news', views: ['feeds'] },
@@ -141,7 +141,9 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     scope.hidden = mode !== 'history';
     scope.textContent = !institutional(view) ? 'Current context · source dates do not follow map time.'
       : !contextTime.available ? contextTime.explanation
-        : `Context snapshot · publications through ${displayTime(contextTime.at)} · ${contextTime.knownAt ? 'platform knew then' : 'retrospective retained revisions'}. Playback does not advance this snapshot; Refresh uses globe time.`;
+        : `Snapshot · ${displayTime(contextTime.at)} · ${contextTime.knownAt ? 'Platform knew then' : 'Reconstruction'}`;
+    scope.title = mode === 'history' && institutional(view) && contextTime.available ?
+      `Publications through this UTC · ${contextTime.knownAt ? 'only evidence retained by this platform by then' : 'using later retained revisions'}. Playback does not advance this snapshot; Refresh uses globe time.` : '';
     refresh.textContent = documentSelection ? 'Refresh stored examination' : institutional(view) && mode === 'history' ? 'Refresh at globe time' : 'Refresh stored context';
   }
   function captureScene(scene, { commit = false } = {}) {
@@ -292,7 +294,6 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
       scenario ||= gasScenario(); content.append(scenario.element); scenario.update(payload);
     } else {
       title.textContent = VIEWS[view].title; subtitle.textContent = VIEWS[view].subtitle;
-      if (view === 'commission') content.append(node('p', 'plugin-note', 'Source: European Commission / European Union. Publication metadata only; document body language is unknown.'));
       const list = node('div', 'plugin-publications');
       for (const item of payload.items) {
         const article = node('article', 'plugin-publication'), heading = node('h4'); heading.append(link(item.title, item.url)); article.append(heading);
@@ -320,8 +321,9 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
       }
       if (!payload.items.length) list.append(node('p', 'plugin-note', 'No institutional releases are retained in this bounded view.'));
       const feedEvidence = evidence(payload, [], contextTime.knownAt ? 'Feed receipt at the knowledge cutoff' : 'Latest feed receipt');
+      if (mode === 'history' && contextTime.available) feedEvidence.append(node('p', 'plugin-note', scope.title));
       if (view === 'commission') {
-        feedEvidence.append(node('p', 'plugin-note', 'Policy tags are publisher metadata, not verified claims or incident locations. The linked publication is an original institutional source, not independent corroboration.'),
+        feedEvidence.append(node('p', 'plugin-note', 'European Commission / European Union · publication metadata only; document body language is unknown. Policy tags are publisher metadata, not verified claims or incident locations. The linked publication is an original institutional source, not independent corroboration.'),
           node('p', 'plugin-note', text(artifact.limitations, 4000) ? artifact.limitations : 'The rolling provider feed is not a complete historical archive.'));
       }
       content.append(list, node('p', 'plugin-note', `${payload.counts.returned} retained original publications${payload.counts.more ? ' · more retained records exist beyond this view' : ''}. The provider feed is rolling; absence is not withdrawal or a complete historical archive.`));

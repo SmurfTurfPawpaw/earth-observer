@@ -80,18 +80,30 @@ test('institutional context captures exact UTC/lens while playback and source up
     await f.panel.commitScene({ ...scene, reason: 'playback' });
   }
   assert.equal(f.requests.length, 1); assert.equal(scene.playing, true);
-  assert.match(visibleText(f.container), /publications through 2026-10-12 04:05:00 UTC/);
+  const scope = f.container.children.find(el => el.className === 'plugin-note');
+  assert.equal(scope.textContent, 'Snapshot · 2026-10-12 04:05:00 UTC · Reconstruction');
+  assert.ok(scope.textContent.length <= 90, 'the visible date and lens stay compact');
+  assert.match(scope.title, /Publications through this UTC.*using later retained revisions/);
+  assert.doesNotMatch(visibleText(f.container), /Playback does not advance/);
+  const timeEvidence = elements(f.container).find(el => el.className === 'plugin-evidence');
+  assert.ok(!timeEvidence.open); timeEvidence.open = true;
+  assert.match(visibleText(timeEvidence), /Playback does not advance this snapshot; Refresh uses globe time/);
+  timeEvidence.open = false;
+  assert.equal(elements(f.container).find(el => el.className === 'plugin-refresh').textContent, 'Refresh at globe time');
   current = edition(current, 'f'); f.emit(update(current, 1)); await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.requests.length, 1); assert.equal(f.timers.size, 0);
   await f.panel.refresh(); assert.equal(query().get('at'), scene.at); assert.equal(f.requests.length, 2); assert.equal(scene.playing, true);
   scene = { ...scene, at: '2026-10-12T04:06:00.000Z', playing: false, lens: 'known-then' };
   await f.panel.commitScene({ ...scene, reason: 'pause' }); assert.equal(query().get('knownAt'), scene.at); assert.equal(f.requests.length, 3);
-  assert.match(visibleText(f.container), /platform knew then/); assert.doesNotMatch(visibleText(f.container), /Stored source checked/);
+  assert.match(scope.textContent, /2026-10-12 04:06:00 UTC · Platform knew then/);
+  assert.match(scope.title, /only evidence retained by this platform by then/);
+  assert.doesNotMatch(visibleText(f.container), /Stored source checked/);
   scene = { ...scene, lens: 'reconstruction' }; await f.panel.commitScene({ ...scene, reason: 'lens' });
   assert.equal(query().get('knownAt'), null); assert.equal(f.requests.length, 4, 'distinct lenses cannot share a latest-evidence cache entry');
   scene = { ...scene, lens: 'known-then' }; await f.panel.commitScene({ ...scene, reason: 'lens' }); assert.equal(f.requests.length, 4, 'the exact knowledge snapshot is reusable');
   scene = { mode: 'live', at: '2026-10-12T04:10:00.000Z', lens: 'known-then', playing: false };
   await f.panel.commitScene({ ...scene, reason: 'live' }); assert.equal(query().get('at'), null); assert.equal(query().get('knownAt'), null); assert.equal(f.timers.size, 1);
+  assert.equal(scope.hidden, true); assert.equal(scope.title, '', 'Live does not retain the historical tooltip');
   f.panel.destroy();
 });
 
@@ -480,7 +492,15 @@ test('Commission publications lazily preserve actual source metadata, visible at
   await f.panel.select('commission'); assert.equal(f.requests.length, 0); await f.panel.open();
   assert.equal(f.requests.length, 1); assert.equal(f.requests[0][0], '/api/publications?plugin=ec-press-v1&limit=20');
   assert.equal(elements(f.container).find(el => el.className === 'context-navigation').children.length, 3);
-  assert.match(visibleText(f.container), /Source: European Commission \/ European Union/); assert.match(visibleText(f.container), /document body language is unknown/);
+  assert.match(visibleText(f.container), /Original metadata · European Commission \/ EU/);
+  assert.doesNotMatch(visibleText(f.container), /document body language is unknown/);
+  const list = elements(f.container).find(el => el.className === 'plugin-publications');
+  const content = elements(f.container).find(el => el.className === 'plugin-content');
+  assert.equal(content.children[0], list, 'original publications precede repeated source explanations');
+  const feedEvidence = elements(f.container).find(el => el.className === 'plugin-evidence');
+  assert.ok(!feedEvidence.open); feedEvidence.open = true;
+  assert.match(visibleText(feedEvidence), /European Commission \/ European Union · publication metadata only; document body language is unknown/);
+  feedEvidence.open = false;
   assert.match(visibleText(f.container), /Published 2026-10-09 12:14:20 UTC/); assert.match(visibleText(f.container), /Statement · statement_26_2127/);
   assert.doesNotMatch(visibleText(f.container), /SHA-256|RSS GUID|POLICY_AREA|Raw publication date|independent corroboration/);
   const article = elements(f.container).find(el => el.className === 'plugin-publication' && el.textContent.includes('statement_26_2127'));
@@ -554,7 +574,7 @@ test('Inspect document is fixed-item-only and lazy; Back preserves the publicati
   await waitFor(() => f.requests.length === 4, 'the invalidated stored publication list'); await f.panel.open();
   assert.equal(documentHost.hidden, true); assert.equal(evidence.open, true); assert.equal(f.documentRef.activeElement, buttons[0]);
   assert.equal(nav.hidden, false); assert.equal(source.hidden, false); assert.equal(title.hidden, false); assert.equal(subtitle.hidden, false);
-  assert.equal(title.textContent, 'European Commission publications'); assert.equal(subtitle.textContent, 'Original publication metadata · European Commission / European Union');
+  assert.equal(title.textContent, 'European Commission publications'); assert.equal(subtitle.textContent, 'Original metadata · European Commission / EU');
   assert.equal(stored.activity.providers.length, 0, 'public UI reads do not acquire');
   buttons[0].trigger('click'); await f.panel.open(); assert.equal(imports, 1); assert.equal(f.requests.length, 4, 'the same document reuses its bounded memory cache');
   f.panel.destroy(); assert.equal(f.timers.size, 0);

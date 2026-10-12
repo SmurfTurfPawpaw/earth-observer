@@ -113,7 +113,7 @@ export function createShell(viewer, manager) {
   // Keep the desktop preference intact when a narrow screen temporarily closes it.
   const uiState = readUiState(storage);
   const ledger = createCreditLedger(viewer.cesiumWidget.creditDisplay, (html, onScreen) => new Cesium.Credit(html, onScreen));
-  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, pendingLayerNames = [];
+  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, pendingLayerNames = [], keyboardNoticeAction;
   const remember = () => writeUiState(storage, uiState);
   const textSizeControl = el('label', 'text-size-control');
   const textSizeMark = el('span', '', 'Aa'); textSizeMark.setAttribute('aria-hidden', 'true');
@@ -344,6 +344,21 @@ export function createShell(viewer, manager) {
     const optionBody = el('div', 'layer-options-body'), detailStatus = el('p', 'layer-detail-status');
     const placeholder = el('div', 'layer-placeholder'); placeholder.hidden = true; placeholder.setAttribute('aria-hidden', 'true'); placeholder.append(el('span'), el('span'));
     const controls = el('div', 'layer-controls');
+    if (layer.id === 'gdacs-notices') {
+      const keyboardAction = (event) => {
+        if (destroyed || document.hidden || event.detail !== 0 || !document.body.classList.contains('sidebar-open')) return;
+        const button = event.target?.closest?.('button[data-control-key]');
+        const itemId = /^record:(item:[a-f0-9]{64})$/.exec(button?.dataset.controlKey || '')?.[1];
+        const state = manager.getState()[layer.id];
+        if (!itemId || !controls.contains(button) || button.disabled || !state?.enabled || state.timelinePaused) return;
+        // The row owns this keyboard activation. Only its synchronous matching
+        // selection may hand off focus; later revisions/picks cannot inherit it.
+        const action = { itemId }; keyboardNoticeAction = action;
+        queueMicrotask(() => { if (keyboardNoticeAction === action) keyboardNoticeAction = undefined; });
+      };
+      controls.addEventListener('click', keyboardAction, true);
+      cleanup.push(() => controls.removeEventListener('click', keyboardAction, true));
+    }
     optionBody.append(detailStatus, placeholder, controls); options.append(optionBody);
     row.append(label, options); groups.get(layer.category).group.append(row);
     const toggle = () => {
@@ -414,6 +429,9 @@ export function createShell(viewer, manager) {
   };
   let stopSelectionDetails = () => {};
   const select = (entity) => {
+    if (destroyed) return;
+    const action = keyboardNoticeAction; keyboardNoticeAction = undefined;
+    const focusNotice = Boolean(action && gdacsNoticeSelection(entity, viewer.clock.currentTime)?.notice.item.itemId === action.itemId);
     stopSelectionDetails();
     if (!entity) { closePanel('selection', { restoreSelection: false }); return; }
     const detailFields = el('div', 'selection-fields');
@@ -475,7 +493,7 @@ export function createShell(viewer, manager) {
       image.addEventListener('error', () => { hasFrame = false; frame.dataset.loading = 'false'; frame.setAttribute('aria-busy', 'false'); refresh.disabled = false; image.hidden = true; caption.textContent = 'This camera image is currently unavailable.'; });
       refresh.addEventListener('click', load); frame.append(image); preview.append(frame, caption, refresh); details.prepend(preview); load();
     }
-    openPanel('selection'); viewer.scene.requestRender();
+    openPanel('selection', { focus: focusNotice }); viewer.scene.requestRender();
   };
   cleanup.push(viewer.selectedEntityChanged.addEventListener(select));
   cleanup.push(() => stopSelectionDetails());
@@ -547,7 +565,7 @@ export function createShell(viewer, manager) {
       if (radiusKm !== undefined && [10, 25, 50, 100, 250].includes(Number(radiusKm))) document.getElementById('local-radius').value = String(radiusKm);
     },
     destroy() {
-      destroyed = true; clearTimeout(noticeTimer);
+      destroyed = true; keyboardNoticeAction = undefined; clearTimeout(noticeTimer);
       cleanup.splice(0).reverse().forEach((dispose) => dispose?.());
       for (const dispose of mounted.values()) dispose();
       ledger.clear(); rows.clear(); mounted.clear(); creditItems.clear(); panelListeners.clear();

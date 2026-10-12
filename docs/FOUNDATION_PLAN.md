@@ -341,3 +341,18 @@ forecast phases need stable entities, dated relationships and analysis revision
 contracts. More providers do not resolve those missing foundations. Reserve time for
 the final coherent release and handoff at 06:39:10 UTC; the temporary collector stops
 then, and no permanent hosting dependency is considered fulfilled by this session.
+
+## 04:52 UTC interaction reassessment
+
+The v43 actual source-time gates passed. Root drove the real browser journeys;
+agents independently reviewed the code and actual screenshots because their own
+browser inventory was unavailable. This is synthetic acceptance work, not real
+audience activity or independent agent clicks. Keep demand telemetry disabled.
+
+Ship the narrow readability and keyboard-focus follow-up before broader UI work.
+Gate it on the actual Enter-to-visible-details-to-source-link sequence and
+publication content at the ordinary viewport. Preserve pointer/background focus,
+explicit layer intent, one workspace and unchanged source-time contracts. Then
+verify newcomer search, zoom and reload/session behavior, and assess the resulting
+friction before proposing more controls. Permanent execution, broader retained
+history and cited analysis remain unfinished dependencies in NEXT_PHASES.md.

@@ -1332,3 +1332,41 @@ The GDACS same-notice presentation fix passed its installed-Cesium ownership fix
 and independent listener/guard review. Exact integrated build and hosted historical
 publication, Live restoration and repeated keyboard notice journeys remain release
 gates. See INSTITUTIONAL_TIME.md for scope, limits and interaction semantics.
+
+## 04:52 UTC: v43 source time released and observed; readability/focus follow-up
+
+App c549cd1bc3ff44012f451043b056ca66f3cd44bd and combined source
+228c880226e271af34129c07ec88ec8e6e91f487 produced archive SHA256
+b6e87e6ec4e9f7610d99e5c269c2dc9a9ac6b5590790da7ebd1ceafb7a65e982.
+Saved Site version 43 deployed as appgdep_6acc640b9db481919e9f562aa65d022f
+at 04:37:54.986Z, environment revision 7 and the public audience unchanged.
+The exact combined build is 56,015,278 bytes, gzip 40,729,993; integrated
+routing, asset ownership and all 3,049 portfolio checks passed.
+
+Six fixed hosted publication reads passed at 04:38:39–04:38:40Z. At the
+2026-10-11 12:00 UTC reconstruction cutoff, Commission returned nine of its
+ten current publications, excluding its later 15:26:32 readout. Both Commission
+and ECB known-then reads were honestly unavailable before their first completed
+platform receipt. ECB returned two original publications in reconstruction.
+Proof: .qa/v43-institutional-hosted-proof.json. These are retained publisher
+statements; count changes do not establish geopolitical effects or corroboration.
+
+Actual browser journeys verified same-notice GDACS reopening, dated Commission
+history with latest-only document examination disabled, controlled playback with
+an explicitly fixed context snapshot, source selection and Refresh capturing the
+advancing globe UTC, pause committing the exact shared UTC, an honest known-then
+gap, and Return Live restoring ten current publications and document inspection.
+The checked pause UTC was 2026-10-11 04:41:44Z. No demand analytics were enabled.
+Screenshots published-foundation-v43-same-notice-reopened.png and
+published-foundation-v43-historical-publications.png were shown in commentary.
+
+The journey exposed two small interaction problems. Keyboard row activation
+opened details but left focus at the page; repeated generic and historical
+explanations pushed publication content below the fold. The next coherent package
+hands focus to visible Close feature details only for the matching explicit
+keyboard notice action, and shortens the visible snapshot to its UTC and lens.
+Full snapshot semantics and Commission attribution remain in closed evidence.
+Pointer picks, background source corrections and failed actions cannot inherit
+keyboard intent. Fifty-seven focused selection, ownership, publication, temporal
+and lifecycle checks passed together. Actual deployed keyboard and visual proof
+remain separate acceptance gates. Optional retention accounting stays excluded.
