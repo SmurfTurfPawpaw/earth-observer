@@ -476,6 +476,7 @@ export function createControls({ state: layerState, services, parts, source }) {
           parts.tracking._applyPendingTrackingRestore();
         }
       }
+      parts.lifecycle?._syncRenderHold();
       return true;
     },
 

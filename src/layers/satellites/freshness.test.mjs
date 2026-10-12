@@ -14,6 +14,7 @@ import { createTracking } from './tracking.js';
 import { createLabels } from './labels.js';
 import { createRecords } from './records.js';
 import { createLifecycle } from './lifecycle.js';
+import * as renderGovernor from '../../renderGovernor.js';
 
 const L1 = '1 25544U 98067A   08264.51782528 -.00002182  00000-0 -11606-4 0  2927';
 const L2 = '2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.72125391563537';
@@ -29,23 +30,28 @@ function response(text, cacheStatus = 'HIT', retrievedAt = RETRIEVED) {
   return new Response(text, { headers: { 'x-tle-cache': cacheStatus,
     ...(retrievedAt === null ? {} : { 'x-feed-retrieved-at': new Date(retrievedAt).toISOString() }) } });
 }
-function harness() {
+function harness({ render = { holdContinuousRender: noop, releaseContinuousRender: noop } } = {}) {
   let clock = CLOCK, fail = false, body = tle(), denseBody = tle(40001);
+  const documentListeners = new Map(), documentRef = { hidden: false,
+    addEventListener(type, listener) { if (!documentListeners.has(type)) documentListeners.set(type, new Set()); documentListeners.get(type).add(listener); },
+    removeEventListener(type, listener) { documentListeners.get(type)?.delete(listener); } };
   const services = {
     now: () => clock,
+    documentRef,
     overlays: { setOverlayEntries: noop, setOverlaySourceVisible: noop, clearOverlaySource: noop },
     focus: { focusNowMs: (at) => at, getFocusTarget: () => null,
       focusPassIsNeeded: () => false, clearFocusTarget: noop, publishFocusTargetFromCachedPosition: noop },
     context: { clearTrackedSubjectContext: noop, getContextStore: () => ({ entities: new Map(), selectedEntityId: null }),
       refreshTrackedSubjectContext: noop, selectTrackedSubjectContext: noop },
-    render: { holdContinuousRender: noop, releaseContinuousRender: noop },
+    render,
     picking: { registerPickOwner: noop, unregisterPickOwner: noop },
     layerState: { isExplicitLayerStateOrigin: () => false },
     readout: { refreshTrackedReadout: noop },
   };
   const state = createState({ services });
   const viewer = { scene: { frameState: { frameNumber: 1 }, primitives: { add: (value) => value, remove: noop },
-    preRender: { addEventListener: () => noop } }, entities: { add: (value) => ({ ...value }), remove: noop }, camera: {} };
+    requestRenderMode: true, requestRender: noop, preRender: new Cesium.Event() },
+    entities: { add: (value) => ({ ...value }), remove: noop }, camera: {} };
   state._viewer = viewer;
   state._enabled = true;
   state._pointCollection = { show: true, removeAll: noop, remove: noop, add: (value) => ({ show: true, ...value }) };
@@ -65,7 +71,8 @@ function harness() {
   parts.lifecycle = createLifecycle(context);
   parts.interaction = { _installClickHandler: noop };
   parts.ingestion = createIngestion(context);
-  return { state, parts, viewer, source, services, get propagations() { return propagations; },
+  return { state, parts, viewer, source, services, documentRef, documentListeners, get propagations() { return propagations; },
+    setHidden(value) { documentRef.hidden = value; for (const listener of [...documentListeners.get('visibilitychange') || []]) listener(); },
     setClock: (value) => { clock = value; }, setFail: (value) => { fail = value; },
     setBody: (value) => { body = value; }, setDenseBody: (value) => { denseBody = value; } };
 }
@@ -240,4 +247,65 @@ test('mission orbit wrappers and pass predictions admit only the supported calcu
   h.setClock(EPOCH + MAX_ELEMENT_AGE_MS);
   assert.equal(h.parts.orbits.getSatelliteOrbitTrack('40000'), null);
   assert.deepEqual(h.parts.orbits.getNextSatellitePass(40000, { latDeg: 30, lonDeg: -97, fromMs: EPOCH + MAX_ELEMENT_AGE_MS }), { status: 'no-tle' });
+});
+
+test('actual lifecycle holds no empty source and failed refresh retains the original supported display and date', async t => {
+  const h = harness({ render: renderGovernor }); renderGovernor._resetRenderGovernorForTest(); renderGovernor.installRenderGovernor(h.viewer);
+  t.after(() => { h.parts.lifecycle.methods.destroy(h.viewer); renderGovernor.uninstallRenderGovernor(h.viewer); });
+  await h.parts.lifecycle.methods.init(h.viewer); h.parts.lifecycle.methods.enable(h.viewer);
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []); assert.equal(h.viewer.scene.requestRenderMode, true);
+  h.setFail(true); assert.equal(await h.parts.ingestion.methods.update(h.viewer), false);
+  assert.equal(h.parts.controls.methods.getStats().lastUpdate, null); assert.equal(h.parts.controls.methods.getStats().status, 'unavailable');
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []);
+  h.setFail(false); assert.equal(await h.parts.ingestion.methods.update(h.viewer), true);
+  const point = h.state._points.get(40000);
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['satellites']); assert.equal(h.viewer.scene.requestRenderMode, false);
+  h.setClock(CLOCK + 3600000); h.setFail(true); assert.equal(await h.parts.ingestion.methods.update(h.viewer), false);
+  assert.equal(h.state._points.get(40000), point); assert.equal(h.parts.controls.methods.getStats().lastUpdate, RETRIEVED);
+  assert.equal(h.parts.controls.methods.getStats().lastCheckedAt, CLOCK + 3600000);
+  assert.equal(h.parts.controls.methods.getStats().status, 'unavailable'); assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['satellites']);
+});
+
+test('actual point/orbit/tracking visibility drives the hold without rescanning points on unchanged frames', async t => {
+  const h = harness({ render: renderGovernor }); renderGovernor._resetRenderGovernorForTest(); renderGovernor.installRenderGovernor(h.viewer);
+  t.after(() => { h.parts.lifecycle.methods.destroy(h.viewer); renderGovernor.uninstallRenderGovernor(h.viewer); });
+  await h.parts.lifecycle.methods.init(h.viewer); h.parts.lifecycle.methods.enable(h.viewer); await h.parts.ingestion.methods.update(h.viewer);
+  let scans = 0; const iterate = h.state._points[Symbol.iterator].bind(h.state._points);
+  h.state._points[Symbol.iterator] = function* () { scans++; yield* iterate(); };
+  for (let i = 0; i < 60; i++) { h.viewer.scene.frameState.frameNumber++; h.viewer.scene.preRender.raiseEvent(); }
+  assert.equal(scans, 0, 'ordinary lifecycle frames reuse one physical supported display candidate');
+  h.parts.controls.methods.setParams({ showPoints: false, showOrbits: false });
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []);
+  h.parts.controls.methods.setParams({ showOrbits: true });
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, [], 'a catalog without a displayed orbit is not animation');
+  h.parts.rendering._showOrbitPath(40000); h.viewer.scene.preRender.raiseEvent();
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['satellites']);
+  h.parts.controls.methods.setParams({ showOrbits: false }); assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []);
+  h.parts.controls.methods.setParams({ selectedSatTrackingId: 40000 });
+  assert.ok(h.state._trackedEntity); assert.equal(h.state._points.get(40000).show, false);
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['satellites'], 'tracked motion owns frames with standalone visuals hidden');
+  h.parts.controls.methods.setParams({ selectedSatTrackingId: null }); assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []);
+  h.parts.controls.methods.setParams({ showPoints: true }); assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['satellites']);
+});
+
+test('visibility, element expiry, History disable and terminal cleanup release only the satellite hold', async t => {
+  const h = harness({ render: renderGovernor }); renderGovernor._resetRenderGovernorForTest(); renderGovernor.installRenderGovernor(h.viewer);
+  t.after(() => { h.parts.lifecycle.methods.destroy(h.viewer); renderGovernor.uninstallRenderGovernor(h.viewer); });
+  await h.parts.lifecycle.methods.init(h.viewer); h.parts.lifecycle.methods.enable(h.viewer); await h.parts.ingestion.methods.update(h.viewer);
+  assert.equal(h.documentListeners.get('visibilitychange').size, 1);
+  renderGovernor.holdContinuousRender('test-other-animation'); h.setHidden(true);
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['test-other-animation']);
+  renderGovernor.releaseContinuousRender('test-other-animation'); assert.equal(h.viewer.scene.requestRenderMode, true);
+  h.setHidden(false); assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['satellites']);
+  h.parts.lifecycle.methods.disable(h.viewer); assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []);
+  assert.equal(h.viewer.scene.preRender.numberOfListeners, 0); h.setHidden(true); h.setHidden(false);
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, [], 'a visibility resume cannot revive a History-disabled layer');
+  h.parts.lifecycle.methods.enable(h.viewer); assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, ['satellites']);
+  h.setClock(EPOCH + MAX_ELEMENT_AGE_MS); const before = h.propagations; h.viewer.scene.preRender.raiseEvent();
+  assert.equal(h.propagations, before); assert.equal(h.state._points.get(40000).show, false);
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []); assert.equal(h.viewer.scene.requestRenderMode, true);
+  h.parts.lifecycle.methods.destroy(h.viewer); h.parts.lifecycle.methods.destroy(h.viewer);
+  assert.equal(h.documentListeners.get('visibilitychange').size, 0); assert.equal(h.viewer.scene.preRender.numberOfListeners, 0);
+  assert.equal(h.parts.lifecycle.methods.enable(h.viewer), false); h.setHidden(true); h.setHidden(false);
+  assert.deepEqual(renderGovernor.getRenderGovernorDiagnostics().holds, []);
 });

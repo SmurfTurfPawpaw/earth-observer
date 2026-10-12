@@ -70,7 +70,7 @@ export function createIngestion({
             '[Data:Satellites] All CelesTrak groups failed — keeping existing catalog, surfacing outage',
           );
           // Re-apply dense mode is skipped (no fresh core catalog); tracking untouched.
-          return;
+          return false;
         }
 
         // At least one group loaded — proceed with a fresh rebuild, but keep the
@@ -194,13 +194,17 @@ export function createIngestion({
         // the rebuild must not block on that.
         void parts.tracking._reconcileTrackedSubjectContext();
         parts.tracking._applyPendingTrackingRestore();
+        return layerState._count > 0;
       } catch (e) {
         if (updateSignal.aborted || e?.name === 'AbortError') {
           throw new DOMException('Satellite update aborted', 'AbortError');
         }
         console.warn('[Data:Satellites] Fetch error:', e);
+        layerState._lastError = 'Satellite catalog refresh unavailable';
+        return false;
       } finally {
         layerState._activeUpdateControllers.delete(resourceController);
+        parts.lifecycle?._syncRenderHold();
       }
     },
   };
