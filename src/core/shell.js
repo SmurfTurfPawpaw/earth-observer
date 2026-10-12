@@ -25,7 +25,7 @@ const onScreenAttribution = (value) => String(value).includes('<a') ? value : St
 
 /** The UI reflects owned requests, never elapsed-time guesses or simulated progress. */
 export function layerActivity(entry = {}) {
-  const pending = Boolean(entry.enabled && (entry.status === 'queued' || entry.status === 'loading' || entry.activating || entry.refreshing));
+  const pending = Boolean(entry.enabled && !entry.timelinePaused && (entry.status === 'queued' || entry.status === 'loading' || entry.activating || entry.refreshing || entry.sourceStatus === 'preparing'));
   const firstLoad = pending && !entry.lastUpdate && !entry.refreshedAt && !(Number(entry.count) > 0);
   return { pending, firstLoad };
 }

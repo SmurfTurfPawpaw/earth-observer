@@ -96,6 +96,24 @@ test('empty signed body is accepted; same-isolate replay and minute admission pr
   assert.equal(calls, 1);
 });
 
+test('authenticated independent coverage advances even when provider admission is busy; invalid signatures and replays do not wake it', async () => {
+  let collections = 0, coverage = 0;
+  const configured = env(), ctx = { waitUntil() {} };
+  const handle = createCollectorTriggerHandler({ now: () => NOW,
+    coverageWake(settings, context, options) { assert.equal(settings, configured); assert.equal(context, ctx); assert.equal(options.now(), NOW); coverage++; },
+    collectionHandler: async () => { collections++; return stored(); } });
+  assert.equal((await handle(request({ key: 'wrong_fixture_'.padEnd(64, 'x') }), configured, ctx)).status, 401);
+  assert.equal(coverage, 0);
+  assert.equal((await handle(request(), configured, ctx)).status, 200);
+  assert.equal(coverage, 1);
+  assert.equal((await handle(request(), configured, ctx)).status, 409);
+  assert.equal(coverage, 1);
+  assert.equal((await handle(request({ nonce: 'b'.repeat(32) }), configured, ctx)).status, 429);
+  assert.equal(coverage, 2); assert.equal(collections, 1);
+  assert.equal((await handle(request({ nonce: 'b'.repeat(32) }), configured, ctx)).status, 409);
+  assert.equal(coverage, 2); assert.equal(collections, 1);
+});
+
 test('deadline aborts provider work, retains pending admission, and reports uncertain storage without blind retries', async () => {
   let clock = NOW, calls = 0, entered, release, providerSignal;
   const arrived = new Promise(resolve => { entered = resolve; }), held = new Promise(resolve => { release = resolve; });

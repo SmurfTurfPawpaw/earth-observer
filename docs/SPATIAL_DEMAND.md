@@ -1,0 +1,15 @@
+# Spatial display demand
+
+`selectSpatialDemand({bounds,center,width,height})` is a pure delivery/display policy. Coordinates are degrees; width/height are CSS pixels. Bounds may cross the dateline. Its immutable output provides `tier`, `level`, row-major `cells`, `mode`, stable `key`, exact copied bounds/center, focus cell, footprint and display-budget explanations.
+
+This is not the collector's 120-sector scheduling grid and does not establish source completeness or event importance. Unattended acquisition remains global. Selected-cell counts describe the complete angular cells, which can extend outside the exact visible rectangle; they must not be labelled an exact count of events inside the camera footprint.
+
+The three display grids match the prepared-scene protocol: 8×4, 32×16 and 128×64. They are unequal-area angular cells. Boundary points and ±180° follow the same point indexing as the stored USGS builder. A footprint reaching a pole includes its entire angular row because all longitudes meet there; this conservative expansion is explicit. Whole-world views request all 32 coarse cells. A cell-budget or screen-capacity overflow coarsens the entire selection; it never truncates the visible selection. At the minimum grid, a very small screen can exceed the soft pixel target: this is explicitly reported, rather than hiding cells or implying a partial count is complete.
+
+`world`, `continent`, `country`, `region` and `local` are heuristic display scales, not geopolitical borders. Longitude span, latitude span, spherical area fraction and a center-latitude width approximation determine scale. A 72×72 CSS-pixel target per cell guides detail, with a hard maximum of 128 cells. The key changes when tier/grid/mode/cell selection changes; a resize or small camera change with the same demand does not create a new delivery key. The key is not a source receipt or server factual/view version.
+
+Detailed `features` are requested only for a local footprint no wider/taller than 3°, at level2, with at most four cells and at least240×240 CSS pixels. Other demands request derived cell summaries. No source-independent severity/relevance scoring is implied. A domain importance policy needs its own evidence, definitions and explanation before changing which facts are visible.
+
+`extractCameraDemand(viewer,Cesium)` reads `computeViewRectangle`, a center `pickEllipsoid` and cartographic conversion through public camera APIs. It neither moves the camera nor requests a render/network operation. Unsupported/invalid geometry or a center ray missing the globe uses a bounded conservative whole-world demand and exposes the reason. Original source positions and clocks remain unchanged. A separate owner must debounce movement, cancel stale deliveries, apply complete editions and preserve source/History contracts.
+
+Focused tests cover world completeness, exact dateline/pole boundary reports, local detail, whole-selection coarsening, screen resize/key stability, native API-shaped geometry extraction, conservative horizon fallback and compatibility with the actual prepared USGS builder/selection.

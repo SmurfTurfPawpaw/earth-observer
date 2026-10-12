@@ -1,4 +1,5 @@
 /** Counts requested work; network byte totals and completion times are unknown. */
+export const hasPreparedData = entry => Boolean(entry?.receipt || entry?.lastUpdate != null || Number(entry?.count) > 0);
 export function preparationState(state = {}) {
   const counts = { selected: 0, ready: 0, loading: 0, queued: 0, unavailable: 0, paused: 0, refreshing: 0, degraded: 0 };
   for (const entry of Object.values(state)) {
@@ -6,11 +7,12 @@ export function preparationState(state = {}) {
     counts.selected++;
     if (entry.timelinePaused || entry.status === 'paused') counts.paused++;
     else if (entry.queued || entry.status === 'queued') counts.queued++;
-    else if (entry.activating || entry.status === 'loading') counts.loading++;
+    else if (entry.activating || entry.status === 'loading' || entry.sourceStatus === 'preparing' && !hasPreparedData(entry)) counts.loading++;
+    else if (entry.sourceStatus === 'unavailable' && !hasPreparedData(entry)) counts.unavailable++;
     else if (entry.status === 'error' || entry.error && entry.settledEnabled === false) counts.unavailable++;
     else if (entry.status === 'ready') {
       counts.ready++;
-      if (entry.refreshing) counts.refreshing++;
+      if (entry.refreshing || entry.sourceStatus === 'preparing') counts.refreshing++;
       if (entry.error || entry.degraded || entry.stale) counts.degraded++;
     } else counts.queued++;
   }
@@ -34,7 +36,7 @@ export function layerWorkLabel(entry = {}) {
     prepared: 'Data prepared · applying update', committing: 'Applying update…',
   };
   const label = labels[entry.workPhase];
-  if (!label) return '';
+  if (!label) return entry.sourceStatus === 'preparing' ? 'Preparing source data…' : '';
   const done = entry.preparedCount, total = entry.preparationTotal;
   if (entry.workPhase === 'preparing' && Number.isSafeInteger(done) && Number.isSafeInteger(total) &&
       total > 0 && done >= 0 && done <= total)

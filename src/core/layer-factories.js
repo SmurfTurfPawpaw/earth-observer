@@ -4,7 +4,7 @@ const CODE_LOADERS = {
   weather: () => Promise.all([import('../layers/weather/index.js'), import('../layers/weather/source.js')]),
   wind: () => Promise.all([import('../layers/wind/index.js'), import('../layers/wind/source.js')]),
   cyclones: () => Promise.all([import('../layers/cyclones/index.js'), import('../layers/cyclones/source.js')]),
-  earthquakes: () => Promise.all([import('../layers/earthquakes/index.js'), import('../layers/earthquakes/source.js')]),
+  earthquakes: () => Promise.all([import('../layers/earthquakes/prepared-layer.js'), import('./regional-scene-client.js')]),
   gdacs: () => Promise.all([import('../layers/gdacs/index.js'), import('../layers/gdacs/source.js')]),
   perimeters: () => Promise.all([import('../app/layers/perimeters.js'), import('../layers/perimeters/source.js')]),
   imagery: () => Promise.all([import('../app/layers/recentImagery.js'), import('../layers/recentImagery/source.js')]),
@@ -28,7 +28,7 @@ const GROUPS = {
   'local-datacenters': 'infrastructure', 'local-dams': 'infrastructure',
 };
 const SERVICE_REQUIREMENTS = {
-  aircraft: ['render'], weather: ['weatherClock'], wind: ['weatherClock'], cyclones: ['overlayHost'], earthquakes: ['overlayHost'],
+  aircraft: ['render'], weather: ['weatherClock'], wind: ['weatherClock'], cyclones: ['overlayHost'], earthquakes: [],
   perimeters: ['overlayHost'], imagery: ['render'], satellites: ['overlayHost', 'render'],
   bikeshare: ['overlayHost', 'render'], installations: ['surface', 'overlayHost', 'render'],
   alpr: ['surface', 'overlayHost', 'render'],
@@ -171,7 +171,7 @@ export async function createLayer(id, { services = {}, fetchImpl, getLocalArea, 
   }
   if (id === 'earthquakes') {
     const [engine, source] = modules;
-    return engine.createEarthquakesLayer({ overlayHost, source: source.createUsgsEarthquakeSource({ fetchImpl }) });
+    return engine.createPreparedEarthquakesLayer({ client: source.createRegionalSceneClient({ fetchImpl }) });
   }
   if (id === 'gdacs-notices') {
     const [engine, source] = modules;

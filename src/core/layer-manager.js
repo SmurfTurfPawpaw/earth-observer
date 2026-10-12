@@ -255,6 +255,9 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       });
       module.setParams?.(entry.params, { origin: 'user' });
       module.setRowControlsListener?.(publish);
+      // Spatial adapters report demand through the same admission/lifetime
+      // owner as source revisions, visibility and timeline changes.
+      module.setDemandRefreshListener?.(() => manager.requestRefresh(id));
       return module;
     })().finally(() => { entry.loading = null; });
     return entry.loading;

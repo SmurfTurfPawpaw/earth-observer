@@ -28,3 +28,17 @@ test('the actual hosted router owns bounded prepared queries before providers an
     assert.equal(sourceCalls, 0); assert.equal(edgeCalls, 0);
   } finally { runtime.close(); }
 });
+
+test('hosted coverage status is stored-only, rejects public mutations and never enters providers or edge acquisition cache', async () => {
+  let reads = 0;
+  const runtime = createEarthRuntime({ fetchImpl: async () => { reads++; throw Error('No provider'); },
+    cache: { async match() { reads++; }, async put() { reads++; } } });
+  try {
+    const request = (query = '', method = 'GET') => new Request(`https://example.com/earth/api/coverage/status${query}`, { method });
+    assert.equal((await runtime.fetch(request('', 'POST'))).status, 405);
+    assert.equal((await runtime.fetch(request('?url=https://elsewhere.example'))).status, 400);
+    const response = await runtime.fetch(request()); assert.equal(response.status, 503);
+    const body = await response.json(); assert.equal(body.configured, false); assert.equal(body.available, false);
+    assert.equal(response.headers.get('cache-control'), 'no-store'); assert.equal(reads, 0);
+  } finally { runtime.close(); }
+});

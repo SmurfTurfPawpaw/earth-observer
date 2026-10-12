@@ -22,6 +22,16 @@ test('unknown requested state stays waiting; empty completed sources are ready w
   assert.equal(preparationState({ old: { enabled: true, status: 'ready', stale: true }, degraded: { enabled: true, status: 'ready', degraded: true } }).degraded, 2);
 });
 
+test('source preparation and unavailable first reads do not claim a usable edition; a retained complete empty view remains dated', () => {
+  const counts = preparationState({
+    unavailable: { enabled: true, settledEnabled: true, status: 'ready', sourceStatus: 'unavailable', degraded: true },
+    preparing: { enabled: true, settledEnabled: true, status: 'ready', sourceStatus: 'preparing' },
+    retained: { enabled: true, settledEnabled: true, status: 'ready', sourceStatus: 'preparing', count: 0, lastUpdate: 1234 },
+  });
+  assert.deepEqual(counts, { selected: 3, ready: 1, loading: 1, queued: 0, unavailable: 1, paused: 0, refreshing: 1, degraded: 0 });
+  assert.equal(layerWorkLabel({ enabled: true, sourceStatus: 'preparing', workPhase: 'complete' }), 'Preparing source data…');
+});
+
 test('preparation progress retains displayed readiness and admits only exact bounded pass counts', () => {
   const active = { enabled: true, status: 'ready', settledEnabled: true, refreshing: true,
     count: 41, lastUpdate: 1234, workPhase: 'preparing', preparedCount: 250, preparationTotal: 1000 };

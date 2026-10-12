@@ -22,6 +22,7 @@ import { createPluginApiHandler } from './plugins/api.js';
 import { createDocumentInvestigationApiHandler } from './document-investigation-api.js';
 import { createObservationApiHandler } from './observation-api.js';
 import { createPreparedUsgsApiHandler } from './prepared-usgs-api.js';
+import { startCoverageWake, createCoverageStatusHandler } from './coverage-runtime.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -41,13 +42,14 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
   cache = globalThis.caches?.default, now = Date.now } = {}) {
   if (!/^\/[a-z0-9/_-]*\/$/i.test(prefix)) throw new TypeError('A directory prefix is required');
   const providerFetch = createWorkerFetch(fetchImpl);
-  const handleTrigger = createCollectorTriggerHandler({ now, fetchImpl: providerFetch });
+  const handleTrigger = createCollectorTriggerHandler({ now, fetchImpl: providerFetch, coverageWake: startCoverageWake });
   const handleArchive = createArchiveApiHandler({ now });
   const handleInvestigations = createInvestigationApiHandler({ now });
   const handlePluginApi = createPluginApiHandler({ now });
   const handleDocumentApi = createDocumentInvestigationApiHandler({ now });
   const handleObservationApi = createObservationApiHandler({ now });
   const handlePreparedScene = createPreparedUsgsApiHandler({ now });
+  const handleCoverageStatus = createCoverageStatusHandler({ now });
   let state;
   const admit = makeRateLimiter({ windowMs: 60000, max: 240, globalMax: 4000 });
   const services = (env) => state ||= {
@@ -79,6 +81,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (updates) return secured(updates);
         const triggered = await handleTrigger(internal, env, ctx);
         if (triggered) return secured(triggered);
+        const coverage = await handleCoverageStatus(internal, env);
+        if (coverage) return secured(coverage);
         const collection = await handleCollection(internal, env, ctx, { now, fetchImpl: providerFetch });
         if (collection) return secured(collection);
         const aircraft = await handleAircraftObservations(internal, env, { now });

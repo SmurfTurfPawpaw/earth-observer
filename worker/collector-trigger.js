@@ -65,7 +65,7 @@ function safeSummary(payload, ok) {
  * Admission/replay state is isolate-local. It does not promise cross-isolate serialization.
  */
 export function createCollectorTriggerHandler({ now = Date.now, fetchImpl = fetch,
-  collectionHandler = handleCollection, deadlineMs = COLLECTOR_TRIGGER_LIMITS.deadlineMs } = {}) {
+  collectionHandler = handleCollection, coverageWake, deadlineMs = COLLECTOR_TRIGGER_LIMITS.deadlineMs } = {}) {
   if (!Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > COLLECTOR_TRIGGER_LIMITS.deadlineMs)
     throw new TypeError('Use a bounded collector trigger deadline');
   const states = new WeakMap();
@@ -121,9 +121,19 @@ export function createCollectorTriggerHandler({ now = Date.now, fetchImpl = fetc
       if (!state) { state = { pending: false, nextAllowedAt: 0, nonces: new Map() }; states.set(owner, state); }
       for (const [value, expiresAt] of state.nonces) if (admittedAt > expiresAt) state.nonces.delete(value);
       if (state.nonces.has(nonce)) return json({ status: 'replayed', stored: false }, 409);
-      if (state.pending || admittedAt < state.nextAllowedAt || state.nonces.size >= COLLECTOR_TRIGGER_LIMITS.nonceEntries)
+      if (state.nonces.size >= COLLECTOR_TRIGGER_LIMITS.nonceEntries)
         return json({ status: 'busy', stored: false }, 429, { 'retry-after': '60' });
+      // Consume the authenticated action before either independent owner runs,
+      // including a wake that finds provider admission busy.
       state.nonces.set(nonce, Number(timestamp) * 1000 + COLLECTOR_TRIGGER_LIMITS.clockSkewMs);
+      // Regional processing has its own durable lease/due clock. A legitimate
+      // minute wake still advances coverage when provider collection is busy.
+      // No visitor, invalid signature or replay can enter this owner path.
+      if (typeof coverageWake === 'function') {
+        try { coverageWake(env, ctx, { now }); } catch { /* Separate coverage failure cannot relabel factual collection. */ }
+      }
+      if (state.pending || admittedAt < state.nextAllowedAt)
+        return json({ status: 'busy', stored: false }, 429, { 'retry-after': '60' });
       state.nextAllowedAt = admittedAt + COLLECTOR_TRIGGER_LIMITS.collectionWindowMs;
       state.pending = true;
       const internal = new Request('https://earth-observer.internal/api/collector', { method: 'POST',
