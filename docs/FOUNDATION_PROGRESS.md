@@ -834,3 +834,136 @@ unverified. Legacy GKG scheduledIntervalMinutes metadata migration is deferred b
 it provides no current refresh-speed benefit; provider cadence and checks are already
 represented separately. Compact historical point paging is being evaluated as a
 bounded delivery improvement, independent of collection and historical source scope.
+
+## 02:38 UTC gate: compact live markers deployed; selection continuity fails
+
+Version 37 succeeded at 2026-10-12T02:25:03.082708Z with environment revision 6.
+Application source is 5d8b4c2faaf49ad320b7e0b154db4e075841ac9d; combined source is
+47423414687f7092e9cf9181c266c6a940691478. Saved version is
+appgprj_6ac8f0348bd88191af3151d9d31fb388~appgver_f3e7f4a111988191a7158183f2bd3df0;
+deployment is appgdep_6acc44e7b1248191bf848e07c94cead8. Local archive SHA-256 is
+abcc029b6037c36f73cd4860f6422f74feebb560d9583007e5aed0b8f3a158c7.
+The exact combined gate passed 3,049 assertions. Combined source is 55,943,313 bytes,
+40,701,008 gzip; these packaging sizes are not first-page transfer measurements.
+
+Actual published UI uses World / Layers / Evidence, Datasets and Platform knew then.
+The global view displays compact depth-colored epicenter points. Root clicked the
+M4.2 Jurm point and verified the correct USGS ID us6000u1iz and reported facts.
+The live browser cache held 46 records and explicitly described its browser retrieval;
+the new central lane has not yet replaced that client acquisition. No epicenter icon
+claims a sourced geographic impact area. Screenshots are retained in qa-artifacts.
+
+This journey failed a continuity gate: the selected detail panel disappeared between
+02:29:16 and 02:33:33 without user interaction. Source inspection confirms refresh
+removes and recreates all live entities. Root announced reconciliation by stable ID:
+keep unchanged selected objects, update corrected facts in place, and remove only
+records absent from the accepted feed. A retained dossier fetched before an in-place
+correction must not attach to different current facts. This repair precedes the live
+stored-feed client switch. Readable live titles, explicit occurrence UTC and a fixed,
+identity-validated USGS report link are separately local and have focused checks.
+
+Actual historical UI accepts selection through the timeline slider. The earliest
+retained date correctly shows incomplete preceding-week coverage rather than current
+events. Platform knew then correctly reports the unavailable historical knowledge
+state. Reopening Evidence shows the current-context notice beside that historical
+scene; context metadata does not silently adopt the globe's UTC. Browser automation's
+datetime fill set the DOM value but did not dispatch its commit; that attempt does
+not establish a product input defect. Native timeline keyboard selection did commit.
+
+At 02:38 root opened the retained Commission statement on the actual public desktop
+page. The short source-statements note, first statement and retained PDF citation were
+visible without scrolling. Evidence and the expanded calendar yield to one another,
+preserving a single reading surface. Screenshot:
+qa-artifacts/published-foundation-v37-source-reader-desktop.png, viewed and embedded
+in the user progress update. The live displayed UTC continues ticking in that view.
+
+The compact historical delivery slice is local and frozen. Metadata advertises an
+optional 250-point Reconstruction page capacity; legacy/default/full-event and
+Platform knew then remain at 100. Exact UTF-8 budgeting includes the last delivered
+cursor, counts and flags. The 1,000-point fixture needs four requests rather than ten
+with identical scene membership. Thirty-seven focused checks and the unchanged legacy
+client compatibility gate pass. Request-count improvement is not a GPU or latency
+measurement. Existing total bytes, points, deadline, cache and prefetch bounds remain.
+
+Backend implementation is underway for the distinct usgs-live-day-m2.5-v1 observation
+plugin. A single bounded planning acquisition at 02:23:59 returned 140,979 bytes,
+197 total source features and 46 qualifying records; source generation was 02:23:18.
+This was an ignored planning fixture, not a retained/public historical receipt.
+The proposed production lane retains exact bytes and qualifying scientific facts,
+preserves source event types and correction clocks, and serves stored-only complete
+receipts. Generated-only changes must not create new factual editions. Public serving
+must not scrape, and reader cancellation or failed acquisition must preserve the prior
+complete edition. Root will prove a complete receipt plus two unattended due checks
+before moving the browser to this lane. A permanent independent minute trigger remains
+unverified; the existing supervised bridge still ends at 06:39:10Z.
+
+## 02:42 UTC reassessment: an actual scheduled cloud wake is verified
+
+The current Sites hosting declaration provisions D1, R2 and MCP only; its combined
+entry point handles HTTP. No cron, queue or durable alarm is declared or verified.
+An unprovisioned scheduled function, HTTP waitUntil or recursive request cannot prove
+a permanent wake. The small signed Cloudflare minute timer still requires a connected
+account/deployment and secret. Sites task scheduling has no verified minute cadence or
+authenticated owner-MCP collection path. Those dependencies remain unresolved.
+
+The existing GitHub fallback is enabled on the public, unarchived fork. Its schedule
+requests a wake at minutes 4, 9, 14 and so on; concurrency is serialized and its job
+timeout is two minutes. Root inspected actual scheduled run 38196522712, created at
+02:37:39Z against application 5d8b4c2faaf49ad320b7e0b154db4e075841ac9d. Job
+114640296228 executed the signed trigger and completed successfully at 02:37:51Z.
+Its acknowledgment was stored / HTTP 200, checkedAt 02:37:47.741Z, zero failures,
+four main sources and 372 records. Factual collectedAt remained 02:34:17.007Z:
+this was a real cloud wake and persisted heartbeat, not a new observed event batch.
+The laptop bridge was also running; this run does not isolate provider acquisition
+or establish five-minute punctuality. The earlier finite cloud-only trial remains
+the independent acquisition proof. GitHub can delay/drop schedules and disable public
+schedules after 60 days without repository activity. Public standard runner billing
+is separate from Site storage/source costs. Keep this as best-effort unattended
+collection and do not label it a dependable minute service.
+
+Actual place-search UI navigated Brussels to 50.850 N / 4.352 E at 90 km, and Zoom in
+changed altitude to 58.5 km. No precise visitor location or demand telemetry was used.
+This confirms the current public search/zoom journey without claiming a frame-rate
+or acquisition-latency benchmark. The central live observation plugin's final ID is
+usgs-live-day-m2-5-v1, preserving the existing narrow identifier grammar rather than
+widening it for a decimal dot. Its scientific minimum magnitude remains 2.5.
+
+## Next package frozen: stored live observations and scene continuity
+
+The backend scientific feed, stable selected entities, exact-fact dossier fence,
+readable live selections and compact historical delivery are frozen for one named
+release. Root's combined focused invocation passed 98 checks across these interacting
+paths. The backend includes 52 focused checks, 26 of them using migration-backed native
+SQLite; no new migration is needed. The existing legacy client also admitted the
+optional compact-page capability. Local source is not yet the production gate.
+
+The source codec rejects malformed qualifying observations and source/scope/cap
+violations, retains actual event types and checks raw-to-facts-to-overview consistency.
+All three immutable objects require retained byte/SHA readback before complete fenced
+database admission. Generated-only checks publish no factual receipt or R2 object;
+retained factual clocks and the latest successfully checked generation remain separate.
+Current and knowledge-cutoff reads are stored-only and retry one whole edition at most.
+Read corruption is unavailable, rather than an empty valid feed or a provider fallback.
+
+The renderer preserves unchanged Entity/property identity. Changed facts invalidate
+the prior retained proof before publication; absent records are removed normally.
+The bridge re-reads current source/scene facts before accepting a late response, and
+its short cache binds the same facts. Optional source revision time, review status
+and event type bind proof when available. Live clock ticks and proof changes do not
+create acquisition feedback or per-frame panel work.
+
+Root will build and check the exact committed combined artifact, save it, add only
+the non-secret EARTH_USGS_LIVE_DAY_ENABLED=1 runtime key and publish. Then verify a
+complete public scientific receipt and at least two unattended due checks before
+changing the client adapter. Its present direct source remains in this backend-first
+package. A separate bounded post-release probe will verify actual 250-point delivery;
+buffer membership and instant seven-day membership are different counts. The archive's
+earliest midnight correctly excludes not-yet-occurred buffered origins and cannot
+promise a populated preceding week outside the retained boundary.
+
+At the measured 140,979-byte source size, hypothetical changed receipts every minute
+would retain about 203 MB/day of raw originals alone. This is an illustration, not
+an observed change rate or a low-cost long-term retention guarantee. Measure actual
+changed-receipt frequency and storage growth before expanding this pattern widely.
+The existing two-source queue and 27-second shared wake budget remain; slow due
+institutional sources can be deferred, so no fairness or hosted CPU guarantee is made.

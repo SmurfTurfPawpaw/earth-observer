@@ -11,8 +11,27 @@ import { createHash, createHmac } from 'node:crypto';
 import { documentFixture, syntheticPdf, syntheticAnalysis } from './document-investigation-fixture.mjs';
 import { documentProducerMessage } from './document-investigation-api.js';
 import { retainDocumentRaw, completeDocumentInvestigation } from './document-investigations.js';
+import { runSourcePlugin } from './plugins/store.js';
+import { USGS_LIVE_DAY_PLUGIN,collectUsgsLiveDay,usgsLiveDayItems } from './plugins/usgs-live-day.js';
 
 const request = (path, options) => new Request(`https://example.com${path}`, options);
+test('mounted scientific observation route serves only retained source data before generic cache/providers without advancing other history',async t=>{
+  const f=await documentFixture(t),plugin={...USGS_LIVE_DAY_PLUGIN,collect:collectUsgsLiveDay,items:usgsLiveDayItems};
+  const result=await runSourcePlugin(f.env,plugin,{now:f.now,fetchImpl:async()=>Response.json({type:'FeatureCollection',metadata:{generated:f.now(),count:1,status:200,url:plugin.sourceUrl},
+    features:[{type:'Feature',id:'testruntime',geometry:{type:'Point',coordinates:[4,50,12]},properties:{mag:3,time:f.now()-1000,updated:f.now(),type:'earthquake',
+      status:'reviewed',url:'https://earthquake.usgs.gov/earthquakes/eventpage/testruntime'}}]})});assert.equal(result.status,'stored');
+  let upstream=0,cached=0;const runtime=createEarthRuntime({now:f.now,providers:[],fetchImpl:async()=>{upstream++;throw Error('No visitor acquisition');},
+    cache:{match:async()=>{cached++;throw Error('No generic observation cache');},put:async()=>{cached++;}}});
+  f.reset();const response=await runtime.fetch(request('/earth/api/layers/earthquakes'),f.env,{}),data=await response.json();
+  assert.equal(response.status,200);assert.equal(data.records[0].mag,3);assert.equal(data.scope.id,plugin.scopeId);
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff');assert.equal(upstream,0);assert.equal(cached,0);
+  assert.equal(f.activity.sql.filter(row=>row.write).length,0);assert.equal(f.activity.objects.filter(row=>row.operation==='put').length,0);
+  assert.equal((await runtime.fetch(request('/earth/api/layers/earthquakes?url=https://evil.test'),f.env,{})).status,400);
+  assert.equal((await runtime.fetch(request('/earth/api/layers/earthquakes',{method:'POST'}),f.env,{})).status,405);
+  assert.equal((await runtime.fetch(request('/earth/api/layers/earthquakes'),{},{})).status,503);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_plugin_captures').get().n,1);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_plugin_state').get().n,1,'no existing four-source or archive publication was created');
+});
 function bucket() {
   const records = new Map(); let serial = 0;
   return {

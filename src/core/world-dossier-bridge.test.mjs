@@ -13,7 +13,7 @@ const event = { schemaVersion: 1, id, kind: 'earthquake', source: { id: 'usgs' }
   knowledge: { firstRecordedAt: at }, capture: { publishedAt: at } };
 function fixture() {
   const values = new Map();
-  const entity = { selection, properties: { hasProperty: (key) => values.has(key),
+  const entity = { selection: { ...selection }, properties: { hasProperty: (key) => values.has(key),
     addProperty: (key, value) => values.set(key, value), removeProperty: (key) => values.delete(key) } };
   const viewer = { selectedEntity: entity, earthTime: { getState: () => ({ mode: 'history', at }) },
     selectedEntityChanged: { addEventListener: () => () => {} } };
@@ -26,6 +26,16 @@ test('the same source identity cannot substitute revised facts or evidence publi
   assert.equal(matchingWorldEvent(event, { ...selection, mag: 5.2 }, { id, knownAt: at }), null);
   assert.equal(matchingWorldEvent({ ...event, place: { lat: 11, lon: 20 } }, selection, { id, knownAt: at }), null);
   assert.equal(matchingWorldEvent({ ...event, capture: { publishedAt: '2026-10-11T10:00:00.001Z' } }, selection, { id, knownAt: at }), null);
+});
+test('provided scientific update, review and event type bind retained proof while legacy missing fields remain admissible', () => {
+  const current = { ...selection, updatedAt: Date.parse(at) - 1000, reviewStatus: 'reviewed', eventType: 'earthquake' };
+  const scientific = { ...event, sourceTimes: { updatedAt: new Date(current.updatedAt).toISOString() }, reportedFacts: { ...event.reportedFacts, reviewStatus: 'reviewed' } };
+  assert.equal(matchingWorldEvent(scientific, current, { id, knownAt: at }), scientific);
+  assert.equal(matchingWorldEvent(scientific, { ...current, updatedAt: current.updatedAt + 1 }, { id, knownAt: at }), null);
+  assert.equal(matchingWorldEvent(scientific, { ...current, updatedAt: NaN }, { id, knownAt: at }), null);
+  assert.equal(matchingWorldEvent(scientific, { ...current, reviewStatus: 'automatic' }, { id, knownAt: at }), null);
+  assert.equal(matchingWorldEvent(scientific, { ...current, eventType: 'quarry blast' }, { id, knownAt: at }), null);
+  assert.equal(matchingWorldEvent(event, selection, { id, knownAt: at }), event, 'legacy and archive projections do not invent unavailable metadata requirements');
 });
 
 test('idle construction is request free and repeated exact historical selections reuse bounded evidence', async () => {
@@ -46,6 +56,44 @@ test('a late response cannot attach evidence to a replaced selection', async () 
   const pending = bridge.refresh(); await begun;
   viewer.selectedEntity = undefined; await bridge.refresh(); release(response());
   assert.equal(await pending, false); assert.equal(values.size, 0); bridge.destroy();
+});
+
+test('same-entity corrections fence both late transport and body completion, then admit only the new current facts', async () => {
+  for (const phase of ['transport', 'body']) {
+    const f = fixture(); let release, started, count = 0;
+    const begun = new Promise(resolve => { started = resolve; });
+    const corrected = { ...selection, mag: 5.2, lat: 11 }, correctedEvent = { ...event, reportedFacts: { magnitude: 5.2 }, place: { lat: 11, lon: 20 },
+      evidence: { ...event.evidence, revision: 'c'.repeat(64) } };
+    const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: entity => entity?.selection, fetchImpl: async () => {
+      if (++count > 1) return Response.json({ schemaVersion: 1, configured: true, available: true, knownAt: at, event: correctedEvent });
+      if (phase === 'transport') { started(); return new Promise(resolve => { release = () => resolve(response()); }); }
+      const text = JSON.stringify({ schemaVersion: 1, configured: true, available: true, knownAt: at, event });
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(new TextEncoder().encode(text.slice(0, 40)));
+        release = () => { controller.enqueue(new TextEncoder().encode(text.slice(40))); controller.close(); }; started();
+      } }), { headers: { 'content-type': 'application/json' } });
+    } });
+    const pending = bridge.refresh(); await begun;
+    // Mutate the captured object itself, just as a property bag can change while
+    // the picked Cesium entity survives. A reference equality guard is insufficient.
+    Object.assign(f.entity.selection, corrected); release();
+    assert.equal(await pending, false); assert.equal(f.values.has('_worldEvent'), false);
+    assert.equal(await bridge.refresh(), true); assert.equal(f.values.get('_worldEvent').reportedFacts.magnitude, 5.2);
+    assert.equal(count, 2); bridge.destroy();
+  }
+});
+
+test('a corrected same-identity selection bypasses old cached proof; proof changes and live clock ticks create no feedback acquisition', async () => {
+  const f = fixture(); let count = 0;
+  f.viewer.earthTime.getState = () => ({ mode: 'live', at: new Date(Date.parse(at) + count * 1000).toISOString() });
+  const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: entity => entity?.selection, fetchImpl: async () => {
+    count++; const facts = count === 1 ? event : { ...event, reportedFacts: { magnitude: 5.2 } };
+    return Response.json({ schemaVersion: 1, configured: true, available: true, event: facts });
+  } });
+  assert.equal(await bridge.refresh(), true); f.entity.selection._worldEvent = f.values.get('_worldEvent');
+  assert.equal(await bridge.refresh(), true); assert.equal(count, 1, 'proof itself and ticking current UTC do not invalidate unchanged source facts');
+  f.entity.selection.mag = 5.2;
+  assert.equal(await bridge.refresh(), true); assert.equal(count, 2); assert.equal(f.values.get('_worldEvent').reportedFacts.magnitude, 5.2); bridge.destroy();
 });
 
 test('a retained source-context report stays fixed across globe history and live collection updates without a scene pin', async () => {

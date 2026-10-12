@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { worldHash } from './world-model.js';
-import { createWorldSceneController, normalizeWorldScene, sceneCoverageAt, WORLD_SCENE_SCOPE, WORLD_SCENE_REFRESH_MS } from './world-scene-controller.js';
+import { createWorldSceneController, normalizeWorldScene, sceneCoverageAt, WORLD_SCENE_SCOPE, WORLD_SCENE_REFRESH_MS, WORLD_SCENE_LIMITS } from './world-scene-controller.js';
 
 const DAY = 86400000, start = '2025-06-01T12:00:00.000Z', today = '2026-10-12T02:00:00.000Z';
 const after = (at, distance) => new Date(Date.parse(at) + distance).toISOString();
@@ -131,23 +131,27 @@ test('an invalid date, another scope, or a forged point identity never becomes h
   await controller.open(); assert.equal(await controller.select('2025-02-30T12:00:00.000Z'), false); controller.destroy();
 });
 
-test('one thousand retained points support accelerated frame-local scenes through one bounded transfer sequence', async (t) => {
-  const points = await Promise.all(Array.from({ length: 1000 }, (_, index) => point(`stress${index}`, after(start, -7 * DAY + (index + 1) * 14 * DAY / 1000)))); let requests = 0;
-  const controller = createWorldSceneController({ documentRef: documentFixture(), fetchImpl: async (url) => {
-    requests++; const query = new URL(url, 'https://example.test').searchParams;
-    if (query.has('metadata')) return Response.json(payload());
-    const page = query.has('cursor') ? Number(atob(query.get('cursor'))) : 0, slice = points.slice(page * 100, (page + 1) * 100);
-    return Response.json(payload(start, slice, { counts: { returned: slice.length, eligible: points.length, omitted: points.length - slice.length },
-      complete: false, truncated: true, cursor: page === 9 ? null : btoa(String(page + 1)).replace(/=+$/, '') }));
-  } });
-  await controller.open(); await controller.select(start); assert.equal(controller.getState().selection.truncated, false); assert.equal(requests, 11);
-  const began = performance.now();
-  for (let frame = 0; frame < 600; frame++) {
-    const at = after(start, frame / 600 * 6 * DAY), scene = controller.frame(at);
-    assert.ok(scene); assert.ok(scene.points.every((item) => item.originAt <= at && Date.parse(item.originAt) > Date.parse(at) - 7 * DAY));
+test('one thousand retained points use four capable pages or ten legacy pages with the same frame-local membership', async (t) => {
+  const points = await Promise.all(Array.from({ length: 1000 }, (_, index) => point(`stress${index}`, after(start, -7 * DAY + (index + 1) * 14 * DAY / 1000))));
+  for(const capacity of [100,250]) {
+    let requests=0;
+    const controller=createWorldSceneController({documentRef:documentFixture(),fetchImpl:async(url)=>{
+      requests++;const query=new URL(url,'https://example.test').searchParams;
+      if(query.has('metadata'))return Response.json(payload(null,[],capacity===250?{delivery:{pointsPageLimit:250}}:{}));
+      const limit=Number(query.get('limit'));assert.equal(limit,capacity);
+      const offset=query.has('cursor')?Number(atob(query.get('cursor'))):0,slice=points.slice(offset,offset+limit),next=offset+slice.length;
+      return Response.json(payload(start,slice,{counts:{returned:slice.length,eligible:points.length,omitted:points.length-slice.length},
+        complete:false,truncated:true,cursor:next===points.length?null:btoa(String(next)).replace(/=+$/,'')}));
+    }});
+    await controller.open();await controller.select(start);assert.equal(controller.getState().selection.truncated,false);assert.equal(requests,capacity===250?5:11);
+    const began=performance.now();
+    for(let frame=0;frame<600;frame++) {
+      const at=after(start,frame/600*6*DAY),scene=controller.frame(at);
+      assert.ok(scene);assert.ok(scene.points.every(item=>item.originAt<=at&&Date.parse(item.originAt)>Date.parse(at)-7*DAY));
+    }
+    t.diagnostic(`600 local membership frames including assertions, page capacity ${capacity}: ${(performance.now()-began).toFixed(1)} ms; not browser/GPU timing.`);
+    assert.equal(requests,capacity===250?5:11);controller.destroy();
   }
-  t.diagnostic(`600 accelerated local membership frames including assertions: ${(performance.now() - began).toFixed(1)} ms; browser/GPU timing is separate.`);
-  assert.equal(requests, 11); controller.destroy();
 });
 
 const conflictResponse = (requestedVersion = 'archive:1', currentVersion = 'archive:2') => Response.json({ schemaVersion: 1, configured: true, available: false,
@@ -253,4 +257,60 @@ test('a wholly loaded unimported period remains unimported while truncated or un
   assert.equal(sceneCoverageAt({...missing,truncated:true},start).status,'partial');
   const unchecked=sceneCoverageAt(missing,after(start,1000));
   assert.equal(unchecked.status,'partial');assert.equal(unchecked.gaps.at(-1).status,'not-evaluated');
+});
+
+test('optional delivery capability is admitted strictly and never expands full-event pages or unadvertised requests',async()=>{
+  assert.equal((await normalizeWorldScene(payload(null,[],{delivery:{pointsPageLimit:250}}),{metadata:true})).delivery.pointsPageLimit,250);
+  assert.equal((await normalizeWorldScene(payload(),{metadata:true})).delivery,null);
+  for(const value of [0,1,101,249,251,'250',null])
+    await assert.rejects(normalizeWorldScene(payload(null,[],{delivery:{pointsPageLimit:value}}),{metadata:true}),/delivery capability/);
+  const points=await Promise.all(Array.from({length:101},(_,index)=>point(`cap${index}`)));
+  await assert.rejects(normalizeWorldScene(payload(start,points),{at:start,buffered:true}),/membership/);
+  assert.equal((await normalizeWorldScene(payload(start,points),{at:start,buffered:true,pageLimit:250})).points.length,101);
+  await assert.rejects(normalizeWorldScene(payload(start,[]),{at:start,pageLimit:250}),/page limit/);
+  let calls=0;const controller=createWorldSceneController({documentRef:documentFixture(),fetchImpl:async(url)=>{
+    const query=new URL(url,'https://example.test').searchParams;calls++;
+    if(query.has('metadata'))return Response.json(payload(null,[],{delivery:{pointsPageLimit:250}}));
+    assert.equal(query.get('limit'),'100');assert.equal(query.get('knownMode'),'scene');
+    return Response.json(payload(start,[],{points:undefined,mode:'as-known',knownMode:'scene',knownAt:start}));
+  }});
+  try{await controller.open();assert.equal(await controller.select(start,'known-then'),true);assert.equal(calls,2);}finally{controller.destroy();}
+});
+
+test('capable delivery still stops at1000 records and does not cache incomplete membership',async()=>{
+  const points=await Promise.all(Array.from({length:1250},(_,index)=>point(`bounded${index}`)));let calls=0;
+  const controller=createWorldSceneController({documentRef:documentFixture(),fetchImpl:async(url)=>{
+    const q=new URL(url,'https://example.test').searchParams;if(q.has('metadata'))return Response.json(payload(null,[],{delivery:{pointsPageLimit:250}}));
+    calls++;const offset=q.has('cursor')?Number(atob(q.get('cursor'))):0,limit=Number(q.get('limit'));assert.equal(limit,250);
+    const slice=points.slice(offset,offset+limit);
+    return Response.json(payload(start,slice,{counts:{returned:slice.length,eligible:1250,omitted:1250-slice.length},truncated:true,complete:false,cursor:btoa(String(offset+slice.length)).replace(/=+$/,'')}));
+  }});
+  try{await controller.open();assert.equal(await controller.select(start),true);assert.equal(calls,4);assert.equal(controller.getState().selection.points.length,1000);
+    assert.equal(controller.getState().selection.truncated,true);assert.equal(controller.peek(after(start,1)),null);
+  }finally{controller.destroy();}
+});
+
+test('large compact pages and an edition restart share one byte budget rather than resetting it',async()=>{
+  const p=await point('byte-budget');let pages=0;
+  const body=payload(start,[p],{counts:{returned:1,eligible:2,omitted:1},cursor:'YQ',extensionPadding:'x'.repeat(600000)});
+  assert.ok(new TextEncoder().encode(JSON.stringify(body)).length<WORLD_SCENE_LIMITS.bytes);
+  const controller=createWorldSceneController({documentRef:documentFixture(),fetchImpl:async(url)=>{
+    const q=new URL(url,'https://example.test').searchParams;if(q.has('metadata'))return Response.json(payload(null,[],{delivery:{pointsPageLimit:250}}));
+    pages++;assert.equal(q.get('limit'),'250');return pages===2?conflictResponse():Response.json(body);
+  }});
+  try{await controller.open();assert.equal(await controller.select(start),false);assert.equal(pages,3);assert.match(controller.getState().error,/browser budget/);
+    assert.equal(controller.getState().selection,null);assert.equal(controller.peek(start),null);
+  }finally{controller.destroy();}
+});
+
+test('byte-shortened capable pages cannot bypass the shared ten-request cap',async()=>{
+  const points=await Promise.all(Array.from({length:20},(_,index)=>point(`tiny${index}`)));let pages=0;
+  const controller=createWorldSceneController({documentRef:documentFixture(),fetchImpl:async(url)=>{
+    const q=new URL(url,'https://example.test').searchParams;if(q.has('metadata'))return Response.json(payload(null,[],{delivery:{pointsPageLimit:250}}));
+    const offset=q.has('cursor')?Number(atob(q.get('cursor'))):0;pages++;
+    return Response.json(payload(start,[points[offset]],{counts:{returned:1,eligible:20,omitted:19},truncated:true,complete:false,cursor:btoa(String(offset+1)).replace(/=+$/,'')}));
+  }});
+  try{await controller.open();assert.equal(await controller.select(start),true);assert.equal(pages,10);
+    assert.equal(controller.getState().selection.truncated,true);assert.equal(controller.getState().selection.points.length,10);assert.equal(controller.peek(after(start,1)),null);
+  }finally{controller.destroy();}
 });

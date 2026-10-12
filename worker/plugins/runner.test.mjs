@@ -44,7 +44,7 @@ async function fixture(t, { failure = null, held = false } = {}) {
       catch (error) { sqlite.exec('ROLLBACK'); throw error; }
     }); sequence = operation.catch(() => {}); return operation; },
   };
-  const env = { EARTH_DB: db, EARTH_STORE: {
+  const env = { EARTH_DB: db, EARTH_USGS_LIVE_DAY_ENABLED:'1', EARTH_STORE: {
     async get(key) { activity.gets++; const bytes = objects.get(key); return bytes ? { size: bytes.byteLength, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) } : null; },
     async put(key, value, options) { activity.puts++; if (options.onlyIf.get('if-none-match') === '*' && objects.has(key)) return null;
       const bytes = typeof value === 'string' ? UTF8.encode(value) : new Uint8Array(value); objects.set(key, bytes); return { etag: '"TEST ONLY"' }; },
@@ -58,6 +58,9 @@ async function fixture(t, { failure = null, held = false } = {}) {
       if (held) await finish.promise;
       options.signal.throwIfAborted();
       if (plugin.pluginId === failure) return new Response('TEST ONLY provider failure', { status: 503 });
+      if(plugin.kind==='observation-feed')return Response.json({type:'FeatureCollection',metadata:{generated:CLOCK,count:1,status:200,url:plugin.sourceUrl},
+        features:[{type:'Feature',id:'testrunner',geometry:{type:'Point',coordinates:[4,50,12]},properties:{mag:3,time:CLOCK-1000,updated:CLOCK,type:'earthquake',
+          status:'reviewed',url:'https://earthquake.usgs.gov/earthquakes/eventpage/testrunner'}}]});
       return plugin.kind === 'dataset' ? new Response(gas, { headers: { 'content-type': 'application/json' } }) :
         new Response(plugin.pluginId === 'ec-press-v1' ? ec : ecb, { headers: { 'content-type': 'application/rss+xml' } });
     } finally { activity.active--; }
@@ -140,4 +143,13 @@ test('not-due source wakes make one bounded state read per source with no provid
   assert.ok(checked.results.every(item => item.status === 'not-due' && !item.acquired));
   assert.equal(f.activity.reads, SOURCE_PLUGINS.length); assert.deepEqual(f.activity.fetches, []);
   assert.equal(f.activity.writes, 0); assert.equal(f.activity.puts, 0); assert.equal(f.activity.gets, 0);
+});
+
+test('the default-disabled scientific source performs no provider or state work until explicit owner enablement',async t=>{
+  const f=await fixture(t);delete f.env.EARTH_USGS_LIVE_DAY_ENABLED;
+  const result=await advanceSourcePlugins(f.env,f.options),id='usgs-live-day-m2-5-v1';
+  assert.equal(result.results.find(value=>value.pluginId===id).status,'disabled');assert.ok(!f.activity.fetches.includes(id));
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_plugin_state WHERE plugin_id=?').get(id).n,0);
+  f.env.EARTH_USGS_LIVE_DAY_ENABLED='1';const enabled=await advanceSourcePlugins(f.env,f.options);
+  assert.equal(enabled.results.find(value=>value.pluginId===id).status,'stored');assert.equal(f.activity.fetches.at(-1),id);
 });

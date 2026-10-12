@@ -14,6 +14,7 @@ export async function advanceSourcePlugins(env, options = {}) {
     while (next < SOURCE_PLUGINS.length) {
       const index = next++, plugin = SOURCE_PLUGINS[index];
       if (signal.aborted) { results[index] = { pluginId: plugin.pluginId, status: 'deferred', acquired: false, changed: false }; continue; }
+      if (plugin.enabledEnv && env?.[plugin.enabledEnv] !== '1') { results[index] = { pluginId: plugin.pluginId, status: 'disabled', acquired: false, changed: false }; continue; }
       results[index] = await runSourcePlugin(env, plugin, { ...sourceOptions, signal });
     }
   }

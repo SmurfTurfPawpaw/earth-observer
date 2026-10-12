@@ -6,7 +6,7 @@
  * separate reviewed plugin registry. This ledger activates neither.
  */
 export const SOURCE_CAPABILITY_SCHEMA_VERSION = 1;
-export const SOURCE_CAPABILITY_REVISION = 5;
+export const SOURCE_CAPABILITY_REVISION = 6;
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const WEATHER_BASE = 'https://nowcoast.noaa.gov/geoserver/observations/';
@@ -173,6 +173,26 @@ const sources = [
     documentation: ['https://gdeltproject.org/data.html', 'https://blog.gdeltproject.org/gdelt-2-0-our-global-world-in-realtime/'],
     paths: ['server/hosted/gdelt-snapshot.js', 'server/hosted/gdelt-gkg.js', 'scripts/gdelt-snapshot.mjs'],
     gaps: ['Hosted Worker does not decode bulk GKG ZIP files.', 'No full article text or source-truth verification.', 'Repeated reports may be syndicated copies.', 'Two-year discovery backfill is not implemented. Optional missed-batch recovery requires a verified producer run and completed batch receipts; its mere presence in code does not fill gaps.'],
+  }),
+  typedPlugin({
+    id:'usgs-live-day-m2-5-v1',pluginId:'usgs-live-day-m2-5-v1',scopeId:'usgs-live-day-m2-5-v1',sourceId:'usgs',
+    name:'USGS M2.5+ day seismic reports',kind:'observation-feed',
+    access:{type:'fixed-https-json',endpoint:'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson',credentials:[],publicRead:'/api/layers/earthquakes'},
+    geography:{type:'source-points',completeness:'bounded-source-response',resolution:'Source-reported coordinates; no inferred geography or reclassification of seismic types.'},
+    temporal:{validTime:'Original source event time',revisionTime:'Source properties.updated when present',publicationTime:'unknown',
+      captureTime:'Actual original feed acquisition',knowledgeTime:'Complete database receipt publication; no per-event first-known claim.',
+      generationTime:'metadata.generated is feed generation, not event occurrence or publication.'},
+    cadence:{providerIntervalMs:null,providerMeaning:'Generation and event revisions are source-owned; no update guarantee.',checkIntervalMs:MINUTE,sourceLatencyMs:null,guaranteed:false},
+    bounds:{maxRecords:1,maxObservationRecords:500,maxSourceFeatures:2000,maxResponseBytes:512*1024,maxFactsBytes:128*1024,maxArtifactBytes:8*1024,deadlineMs:15000,
+      minimumMagnitude:2.5,windowHours:24},
+    rights:{status:'reviewed-public-display',policyProvider:'usgs',scope:'USGS-produced scientific metadata; marked third-party content is separate.',
+      attribution:'U.S. Geological Survey',evidence:['https://www.usgs.gov/faqs/are-usgs-reportspublications-copyrighted']},
+    documentation:['https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php'],
+    paths:['worker/plugins/usgs-live-day.js','worker/observation-api.js','src/core/usgs-live-day.js','worker/plugins/runner.js'],
+    upstreamArchive:'Changed rolling source cohorts only after actual activation; no day-feed backfill or substitution into the M4.5 catalog archive.',
+    gaps:['Disabled by default until owner activation and complete receipt proof.','Current browser still uses its direct source until a separately verified client cutover.',
+      'Raw feeds or qualifying cohorts above bounds preserve the prior complete edition rather than truncate.','Absent later membership is not withdrawal.',
+      'A timed trigger must remain available; code alone is not a permanent unattended runtime.'],
   }),
   typedPlugin({
     id: 'ecb-press-v1', pluginId: 'ecb-press-v1', scopeId: 'ecb-institutional-press-en-v1', sourceId: 'ecb', name: 'ECB institutional press releases', kind: 'publication-feed',

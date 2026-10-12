@@ -7,6 +7,8 @@ import { EC_PRESS_PLUGIN, collectEcPress, ecPressItems } from './ec-press.js';
 import { pluginBytesDigest, pluginFactsDigest } from '../../src/core/plugin-evidence.js';
 import { runSourcePlugin, readPluginEnvelope, readPluginPublications, PLUGIN_STORE_LIMITS } from './store.js';
 import { normalizePluginDossier } from '../../src/core/plugin-dossier.js';
+import { USGS_LIVE_DAY_PLUGIN,collectUsgsLiveDay,usgsLiveDayItems } from './usgs-live-day.js';
+import { readPluginObservations } from './store.js';
 
 const CLOCK = Date.parse('2026-10-12T02:00:00.000Z'), stamp = offset => new Date(CLOCK + offset).toISOString();
 const STEP = ECB_PRESS_PLUGIN.cadenceMs + 1, UTF8 = new TextEncoder();
@@ -88,7 +90,7 @@ async function fixture(t, { migrated = true, descriptor = null, sourceFeedImpl =
     const currentLabel = label, currentAbsent = absent; const result = await fetchHook?.({ url, options, label: currentLabel, absent: currentAbsent });
     if (result) return result;
     if (responseMode === '304') return new Response(null, { status: 304, headers: { etag: `"fixture-${currentLabel}"` } });
-    return new Response(sourceFeedImpl(currentLabel, currentAbsent), { headers: { 'content-type': 'application/rss+xml', etag: `"fixture-${currentLabel}"` } });
+    return new Response(sourceFeedImpl(currentLabel, currentAbsent), { headers: { 'content-type': plugin.kind==='observation-feed'?'application/json':'application/rss+xml', etag: `"fixture-${currentLabel}"` } });
   };
   const plugin = descriptor ?? { ...ECB_PRESS_PLUGIN, collect: collectEcbPress, items: ecbPressItems }, env = { EARTH_DB: db, EARTH_STORE: bucket };
   return { env, plugin, now: () => clock, sqlite, records, activity, fetchImpl,
@@ -113,6 +115,69 @@ function ecFeed(label, absent) {
     label === 'B' ? originalEc.replace('POLICY_AREA=GROWTH,JFRC', 'POLICY_AREA=GENINFO') : originalEc);
 }
 const ecDescriptor = { ...EC_PRESS_PLUGIN, collect: collectEcPress, items: ecPressItems };
+const observationDescriptor={...USGS_LIVE_DAY_PLUGIN,collect:collectUsgsLiveDay,items:usgsLiveDayItems};
+function observationFeed(label='A',generated=CLOCK) {
+  return UTF8.encode(JSON.stringify({type:'FeatureCollection',metadata:{generated,count:1,status:200,url:USGS_LIVE_DAY_PLUGIN.sourceUrl},
+    features:[{type:'Feature',id:'teststored',geometry:{type:'Point',coordinates:[4,50,12]},properties:{mag:label==='A'?3:4,
+      time:CLOCK-1000,updated:CLOCK,type:'quarry blast',status:'reviewed',url:'https://earthquake.usgs.gov/earthquakes/eventpage/teststored'}}]}));
+}
+
+test('scientific feed generated-only checks preserve the original edition while latest checked generation proves freshness and A/B/A remains historical',async t=>{
+  let generated=CLOCK;const f=await fixture(t,{descriptor:observationDescriptor,sourceFeedImpl:label=>observationFeed(label,generated)});
+  const a=await run(f);assert.equal(a.status,'stored');const original=f.receipts()[0];
+  f.advance(180001);generated=CLOCK+180000;f.reset();const same=await run(f);
+  assert.equal(same.status,'checked');assert.equal(same.receiptId,a.receiptId);assert.equal(f.count('earth_plugin_captures'),1);
+  assert.equal(f.activity.objects.filter(value=>value.operation==='put').length,0,'generated-only source bytes are not falsely published as changed facts');
+  const current=await readPluginObservations(f.env,{now:f.now});assert.equal(current.available,true);assert.equal(current.stale,false);
+  assert.equal(current.receipt.sourceUpdatedAt,stamp(0));assert.equal(current.receipt.capturedAt,original.captured_at);
+  assert.equal(current.check.sourceGeneratedAt,stamp(180000));assert.ok(current.factualEditionAgeMs>=180000);assert.equal(current.sourceGenerationAgeMs,1);
+  f.advance(60001);f.source('B');generated=CLOCK+180000;const b=await run(f);assert.equal(b.status,'stored','same source-generation date can retain different reported facts');
+  const rb=f.receipts().at(-1);assert.equal(rb.source_updated_at,stamp(180000));
+  const historical=await readPluginObservations(f.env,{knownAt:rb.recorded_at,now:f.now});assert.equal(historical.records[0].mag,4);assert.equal(historical.records[0].eventType,'quarry blast');assert.equal(historical.check,null);
+  f.advance(60001);f.source('A');const reverted=await run(f);assert.equal(reverted.status,'stored');assert.equal(f.count('earth_plugin_captures'),3);assert.equal(f.count('earth_plugin_revisions'),2);
+  assert.equal((await readPluginObservations(f.env,{now:f.now})).records[0].mag,3);
+  assert.equal((await readPluginObservations(f.env,{knownAt:rb.recorded_at,now:f.now})).records[0].mag,4);
+  f.advance(60001);f.source('B');generated=CLOCK;assert.equal((await run(f)).status,'retry','generation regression cannot replace retained facts');
+  assert.equal(f.count('earth_plugin_captures'),3);assert.equal((await readPluginObservations(f.env,{now:f.now})).records[0].mag,3);
+  assert.equal(f.count('earth_world_captures'),0);assert.equal(f.count('earth_observations'),0,'four-source and archive journals remain separate');
+});
+
+test('scientific raw/facts readback failure cannot admit a complete receipt and public reads never acquire or mutate',async t=>{
+  for(const kind of ['raw','facts']){
+    const f=await fixture(t,{descriptor:observationDescriptor,sourceFeedImpl:label=>observationFeed(label)});
+    f.objectHook(({operation,key,body})=>{if(operation==='put'&&key.includes(`/${kind}/`))body[10]^=1;});
+    const rejected=await run(f);assert.equal(rejected.status,'retry');assert.equal(rejected.errorCode,'evidence_digest_mismatch');
+    assert.ok(f.activity.objects.some(value=>value.operation==='put'&&value.key.includes(`/${kind}/`)),'fault injection reached retained object write/readback');
+    assert.equal(f.count('earth_plugin_captures'),0);assert.equal(f.count('earth_plugin_heads'),0);
+    f.reset();const missing=await readPluginObservations(f.env,{now:f.now});assert.equal(missing.available,false);
+    assert.equal(f.activity.provider.length,0);assert.equal(f.activity.sql.filter(value=>value.write).length,0);assert.equal(f.activity.objects.length,0);
+  }
+  const f=await fixture(t,{descriptor:observationDescriptor,sourceFeedImpl:label=>observationFeed(label)});assert.equal((await run(f)).status,'stored');
+  f.reset();const data=await readPluginObservations(f.env,{now:f.now});assert.equal(data.available,true);assert.equal(data.records.length,1);
+  assert.equal(f.activity.provider.length,0);assert.equal(f.activity.sql.filter(value=>value.write).length,0);
+  const row=f.receipts()[0],key=`plugins/${f.plugin.pluginId}/facts/${row.facts_digest}`;f.records.get(key).bytes[10]^=1;
+  assert.equal((await readPluginObservations(f.env,{now:f.now})).available,false);
+  const plans=f.activity.sql.filter(value=>value.sql.startsWith('SELECT * FROM earth_plugin_captures')).flatMap(value=>f.sqlite.prepare('EXPLAIN QUERY PLAN '+value.sql).all(...value.values));
+  assert.ok(plans.some(value=>value.detail.includes('earth_plugin_captures_known')));assert.equal(plans.some(value=>/SCAN earth_plugin_captures/.test(value.detail)),false);
+  // Corrupt retained metadata is a storage failure, never an invalid visitor query.
+  f.sqlite.prepare('UPDATE earth_plugin_revisions SET projection_json=? WHERE plugin_id=?').run('null',f.plugin.pluginId);
+  const corrupt=await readPluginObservations(f.env,{now:f.now});assert.equal(corrupt.configured,false);
+  assert.equal(corrupt.errorCode,'stored-observation-unavailable');assert.deepEqual(corrupt.records,[]);
+});
+
+test('an expired scientific writer cannot overwrite a newer completed edition during object readback; stored delivery retries only one edition',async t=>{
+  const f=await fixture(t,{descriptor:observationDescriptor,sourceFeedImpl:label=>observationFeed(label)});let replaced=false,newer;
+  f.objectHook(async({operation,key})=>{if(!replaced&&operation==='get'&&key.includes('/raw/')){
+    replaced=true;f.objectHook(null);f.advance(60001);f.source('B');newer=await run(f);
+  }});
+  const old=await run(f);assert.equal(old.status,'superseded');assert.equal(newer.status,'stored');assert.equal(f.count('earth_plugin_captures'),1);
+  assert.equal((await readPluginObservations(f.env,{now:f.now})).records[0].mag,4);
+  f.advance(60001);f.source('A');let intervened=false;
+  f.objectHook(async({operation,key})=>{if(!intervened&&operation==='get'&&key.includes('/facts/')){
+    intervened=true;f.objectHook(null);assert.equal((await run(f)).status,'stored');
+  }});
+  const coherent=await readPluginObservations(f.env,{now:f.now});assert.equal(coherent.records[0].mag,3);assert.equal(coherent.receipt.id,f.receipts().at(-1).receipt_id);
+});
 
 test('EC current and historical delivery retain reviewed document fields and each item own receipt after feed disappearance', async t => {
   const f = await fixture(t, { descriptor: ecDescriptor, sourceFeedImpl: ecFeed });

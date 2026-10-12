@@ -25,6 +25,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
   let _lastError = null;
   let _enabled = false;
   let localArea;
+  let publishedRows = new Map();
 
   const layer = {
     id: 'earthquakes',
@@ -74,7 +75,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
         if (request.signal.aborted || _request !== request || !_enabled)
           return false;
 
-        const nextEntities = [];
+        const wanted = new Map();
         let count = 0;
         const overlayEntries = [];
 
@@ -93,9 +94,12 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
           const color = depthColor(depthKm || 0);
 
           const position = Cesium.Cartesian3.fromDegrees(lon, lat);
-          nextEntities.push(
+          const id = `earthquake:${stableId}`, facts = { usgsId, mag, place, time, depth: depthKm };
+          const record = { lon, lat, ...facts }, previous = publishedRows.get(id), existing = _dataSource.entities.getById(id);
+          const changed = !previous || Object.keys(record).some(key => previous[key] !== record[key]);
+          wanted.set(id, { record, facts, position, color, existing, changed, added: existing ? null :
             new Cesium.Entity({
-              id: `earthquake:${stableId}`,
+              id,
               position,
               point: {
                 pixelSize: 11,
@@ -104,16 +108,8 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
                 outlineWidth: 2,
                 heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
               },
-              properties: {
-                // Analyst seam (additive): the USGS event id (e.g. "us7000abcd").
-                usgsId,
-                mag,
-                place,
-                time,
-                depth: depthKm,
-              },
-            }),
-          );
+              properties: facts,
+            }) });
           overlayEntries.push(
             createEarthquakeOverlayEntry({
               id: String(stableId),
@@ -124,8 +120,24 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
           );
         }
 
-        _dataSource.entities.removeAll();
-        for (const entity of nextEntities) _dataSource.entities.add(entity);
+        // Keep unchanged object/property identity: Cesium clears its selection
+        // when that object is removed, even if another entity uses the same ID.
+        const entities = _dataSource.entities; entities.suspendEvents();
+        try {
+          for (const entity of entities.values.slice()) if (!wanted.has(entity.id)) entities.remove(entity);
+          for (const [id, next] of wanted) {
+            if (!next.existing) { entities.add(next.added); continue; }
+            if (!next.changed) continue;
+            const entity = next.existing, previous = publishedRows.get(id);
+            // Retained proof belongs to its old exact facts; remove it before
+            // any corrected position or property can become visible.
+            if (entity.properties.hasProperty('_worldEvent')) entity.properties.removeProperty('_worldEvent');
+            if (!previous || previous.lon !== next.record.lon || previous.lat !== next.record.lat) entity.position = next.position;
+            for (const [key, value] of Object.entries(next.facts)) if (!previous || previous[key] !== value) entity.properties[key] = value;
+            if (!previous || previous.depth !== next.record.depth) entity.point.color = next.color;
+          }
+          publishedRows = new Map([...wanted].map(([id, next]) => [id, next.record]));
+        } finally { entities.resumeEvents(); }
         if (_enabled) {
           overlayHost.setEntries(
             EARTHQUAKE_OVERLAY_SOURCE_ID,
@@ -165,6 +177,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
         viewer.dataSources.remove(_dataSource, true);
         _dataSource = null;
       }
+      publishedRows.clear();
       _count = 0;
       _lastUpdate = null;
       _lastError = null;

@@ -47,6 +47,41 @@ export function selectionFields(entity, time) {
   return result.slice(0, 30);
 }
 
+/** Read the existing live USGS display without inventing a retained receipt or
+ * borrowing the archive's narrower evidence scope. Unknown IDs never become URLs. */
+export function liveEarthquakeSelection(entity, time) {
+  if (typeof entity?.id !== 'string' || !entity.id.startsWith('earthquake:')) return null;
+  const values = entity.properties?.getValue?.(time);
+  if (!values || values._worldScene || values._worldReport) return null;
+  const mag = Number.isFinite(values.mag) ? values.mag : null;
+  const place = typeof values.place === 'string' && values.place.trim() ? values.place.trim().slice(0, 1000) : null;
+  const usgsId = typeof values.usgsId === 'string' && /^[a-z0-9]{4,32}$/.test(values.usgsId) && entity.id === `earthquake:${values.usgsId}` ? values.usgsId : null;
+  const fields = [['Magnitude', mag === null ? 'Not reported' : String(mag)]];
+  if (place) fields.push(['Reported place', place]);
+  const at = Number.isFinite(values.time) ? new Date(values.time) : null;
+  fields.push(['Occurred UTC', at && Number.isFinite(at.getTime()) ? at.toISOString().replace('T', ' ').replace(/\.000Z$/, ' UTC').replace(/Z$/, ' UTC') : 'Not reported']);
+  if (Number.isFinite(values.depth)) fields.push(['Reported depth (km)', String(values.depth)]);
+  const position = entity.position?.getValue?.(time);
+  if (position) {
+    const point = Cesium.Cartographic.fromCartesian(position), lat = Cesium.Math.toDegrees(point.latitude), lon = Cesium.Math.toDegrees(point.longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) fields.push(['Reported epicenter', `${lat.toFixed(5)}°, ${lon.toFixed(5)}°`]);
+  }
+  if (usgsId) fields.push(['USGS event', usgsId]);
+  return { title: `${mag === null ? 'Earthquake' : `Magnitude ${mag.toFixed(1)}`}${place ? ` · ${place}` : ''}`,
+    sourceUrl: usgsId ? `https://earthquake.usgs.gov/earthquakes/eventpage/${usgsId}` : null, fields };
+}
+
+export function createLiveEarthquakeDossier(selection, { documentRef = globalThis.document } = {}) {
+  if (!selection) return null;
+  const node = (tag, className, text) => { const item = documentRef.createElement(tag); if (className) item.className = className; if (text !== undefined) item.textContent = text; return item; };
+  const report = node('article', 'world-dossier'); report.append(node('p', 'world-kicker', 'Source: U.S. Geological Survey (USGS)'));
+  if (/^https:\/\/earthquake\.usgs\.gov\/earthquakes\/eventpage\/[a-z0-9]{4,32}$/.test(selection.sourceUrl || '')) {
+    const source = node('a', 'world-source', 'Read the USGS report'); source.href = selection.sourceUrl; source.target = '_blank'; source.rel = 'noopener noreferrer'; report.append(source);
+  }
+  const facts = node('dl', 'world-facts'); for (const [label, value] of selection.fields) facts.append(node('dt', '', label), node('dd', '', value));
+  report.append(facts); return report;
+}
+
 export function createShell(viewer, manager) {
   const cleanup = [];
   const rows = new Map(), mounted = new Map(), creditItems = new Map(), groups = new Map();
@@ -373,9 +408,12 @@ export function createShell(viewer, manager) {
     const detailFields = el('div', 'selection-fields');
     const details = document.getElementById('selection-details'); details.replaceChildren(detailFields);
     const repaint = () => {
-      document.getElementById('selection-title').textContent = entity.name || String(entity.id || 'Selected feature');
+      const live = liveEarthquakeSelection(entity, viewer.clock.currentTime);
+      document.getElementById('selection-title').textContent = live?.title || entity.name || String(entity.id || 'Selected feature');
+      const eyebrow = document.querySelector('#selection .panel-eyebrow'); if (eyebrow) eyebrow.textContent = live ? 'Earthquake' : 'Feature';
       const dossier = createWorldDossier(entity, viewer.clock.currentTime);
       if (dossier) { detailFields.replaceChildren(dossier); return; }
+      if (live) { detailFields.replaceChildren(createLiveEarthquakeDossier(live)); return; }
       const fields = selectionFields(entity, viewer.clock.currentTime), list = el('dl');
       for (const [label, value] of fields) list.append(el('dt', '', label), el('dd', '', value));
       detailFields.replaceChildren(fields.length ? list : el('p', '', 'No additional details are available for this feature.'));

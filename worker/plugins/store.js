@@ -1,6 +1,7 @@
 import { pluginBytesDigest, pluginFactsDigest, pluginJson } from '../../src/core/plugin-evidence.js';
 import { sourcePlugin, publicPlugin } from './registry.js';
 import { rssPublicationTime } from './bounded-rss.js';
+import { USGS_LIVE_DAY,validateUsgsLiveDayFacts,decodeUsgsLiveDay,usgsLiveDayOverview } from '../../src/core/usgs-live-day.js';
 
 export const PLUGIN_STORE_LIMITS = Object.freeze({ deadlineMs: 27000, storageMs: 2000,
   leaseMs: 60000, factsBytes: 768 * 1024, artifactBytes: 65536, projectionBytes: 65536,
@@ -51,22 +52,25 @@ async function objectBytes(object, max, signal) {
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; } return bytes;
   } catch (error) { void reader.cancel().catch(() => {}); throw error; } finally { reader.releaseLock(); }
 }
-async function immutable(env, key, bytes, hash, mediaType, signal) {
+async function immutable(env, key, bytes, hash, mediaType, signal, verify = false) {
   if (await pluginBytesDigest(bytes) !== hash) throw fail('evidence_digest_mismatch');
   const saved = await io(() => env.EARTH_STORE.put(key, bytes, { onlyIf: new Headers({ 'if-none-match': '*' }),
     httpMetadata: { contentType: mediaType } }), signal);
-  if (saved === null) {
+  if (saved === null || verify) {
     const retained = await objectBytes(await io(() => env.EARTH_STORE.get(key), signal), bytes.byteLength, signal);
-    if (await pluginBytesDigest(retained) !== hash) throw fail('evidence_digest_mismatch');
+    if (retained.byteLength !== bytes.byteLength || await pluginBytesDigest(retained) !== hash) throw fail('evidence_digest_mismatch');
   }
 }
 function descriptor(plugin) {
   if (!plugin || !/^[a-z][a-z0-9-]{1,79}$/.test(plugin.pluginId || '') || !/^[a-z][a-z0-9-]{1,79}$/.test(plugin.scopeId || '') ||
-    !['dataset', 'publication-feed'].includes(plugin.kind) || typeof plugin.collect !== 'function' || typeof plugin.items !== 'function' ||
+    !['dataset', 'publication-feed','observation-feed'].includes(plugin.kind) || typeof plugin.collect !== 'function' || typeof plugin.items !== 'function' ||
     !Number.isSafeInteger(plugin.cadenceMs) || plugin.cadenceMs < 60000 || plugin.cadenceMs > 86400000 ||
     !Number.isSafeInteger(plugin.maxItems) || plugin.maxItems < 1 || plugin.maxItems > PLUGIN_STORE_LIMITS.maximumItems ||
     !Number.isSafeInteger(plugin.maxResponseBytes) || plugin.maxResponseBytes < 1 || plugin.maxResponseBytes > 524288)
     throw new TypeError('Use a reviewed fixed source plugin with bounded admission');
+  if (plugin.kind === 'observation-feed' && (plugin.pluginId !== USGS_LIVE_DAY.pluginId || plugin.scopeId !== USGS_LIVE_DAY.scopeId ||
+    plugin.sourceUrl !== USGS_LIVE_DAY.sourceUrl || plugin.maxItems !== 1 || plugin.maxResponseBytes !== USGS_LIVE_DAY.rawBytes || plugin.cadenceMs !== 60000))
+    throw new TypeError('Use the fixed reviewed USGS observation feed');
   return plugin;
 }
 function projection(item, plugin) {
@@ -75,7 +79,10 @@ function projection(item, plugin) {
     typeof item.title !== 'string' || item.title.length > 1000 || typeof item.url !== 'string' || item.url.length > 2048 ||
     new URL(item.url).protocol !== 'https:' || item.publishedAt !== null && !utc(item.publishedAt) ||
     !['unknown', 'second', 'day', 'year'].includes(item.publishedPrecision) ||
-    item.kind !== (plugin.kind === 'dataset' ? 'statistical-dataset' : 'original-publication')) throw fail('invalid_plugin_evidence');
+    item.kind !== (plugin.kind === 'dataset' ? 'statistical-dataset' : plugin.kind === 'observation-feed' ? USGS_LIVE_DAY.itemKind : 'original-publication')) throw fail('invalid_plugin_evidence');
+  if(plugin.kind==='observation-feed' && (Object.keys(item).some(key=>!['itemId','sourceRevision','kind','title','url','sourceRecordId','publishedAt','publishedPrecision'].includes(key)) ||
+    item.itemId!==USGS_LIVE_DAY.itemId || item.sourceRecordId!==USGS_LIVE_DAY.sourceUrl || item.url!==USGS_LIVE_DAY.sourceUrl || item.publishedAt!==null || item.publishedPrecision!=='unknown'))
+    throw fail('invalid_plugin_evidence');
   let document = {};
   if (plugin.pluginId === 'ec-press-v1') {
     const match = /^https:\/\/ec\.europa\.eu\/commission\/presscorner\/detail\/en\/(ip|statement|read|qanda|fs|mex|speech)_([0-9]{2})_([0-9]{1,7})$/.exec(item.url);
@@ -139,7 +146,8 @@ export async function runSourcePlugin(env, input, { now = Date.now, fetchImpl = 
     lease = claim[1]?.results?.[0];
     if (!lease) return { configured: true, pluginId: plugin.pluginId, status: 'busy', acquired: false };
     const priorValidators = lease.validators_json ? validators(JSON.parse(lease.validators_json)) : { etag: null, lastModified: null };
-    const result = await plugin.collect({ now, signal, fetchImpl, previous: { validators: priorValidators, factsDigest: lease.facts_digest } });
+    const result = await plugin.collect({ now, signal, fetchImpl, previous: { validators: priorValidators, factsDigest: lease.facts_digest,
+      sourceUpdatedAt: lease.source_updated_at } });
     signal.throwIfAborted();
     if (result?.schemaVersion !== 1 || result.pluginId !== plugin.pluginId || result.scopeId !== plugin.scopeId ||
       result.kind !== plugin.kind || result.sourceUrl !== plugin.sourceUrl || !['validated', 'not-modified'].includes(result.outcome) ||
@@ -156,6 +164,12 @@ export async function runSourcePlugin(env, input, { now = Date.now, fetchImpl = 
         !digest(result.raw.sha256) || typeof result.raw.mediaType !== 'string' || result.raw.mediaType.length > 100 ||
         await pluginBytesDigest(result.raw.bytes) !== result.raw.sha256 || await pluginFactsDigest(result.canonicalFacts) !== result.factsDigest)
         throw fail('evidence_digest_mismatch');
+      if(plugin.kind==='observation-feed') {
+        validateUsgsLiveDayFacts(result.canonicalFacts);
+        const decoded=decodeUsgsLiveDay(result.raw.bytes,{now,guard:()=>signal.throwIfAborted()});
+        if(await pluginFactsDigest(decoded.canonicalFacts)!==result.factsDigest || decoded.sourceGeneratedAt!==result.sourceUpdatedAt ||
+          pluginJson(usgsLiveDayOverview(decoded))!==pluginJson(result.artifact)) throw fail('invalid_plugin_evidence');
+      }
     }
     const fields = [result.checkedAt, `+${Math.ceil(plugin.cadenceMs / 1000)} seconds`, pluginJson(currentValidators)];
     if (same) {
@@ -169,16 +183,17 @@ export async function runSourcePlugin(env, input, { now = Date.now, fetchImpl = 
     const facts = UTF8.encode(pluginJson(result.canonicalFacts)), artifact = UTF8.encode(pluginJson(result.artifact));
     if (facts.byteLength > PLUGIN_STORE_LIMITS.factsBytes || artifact.byteLength > Math.min(PLUGIN_STORE_LIMITS.artifactBytes, plugin.maxArtifactBytes || PLUGIN_STORE_LIMITS.artifactBytes))
       throw fail('evidence_response_limit');
-    const items = plugin.items(result.canonicalFacts);
+    const items = await plugin.items(result.canonicalFacts);
     if (!Array.isArray(items) || items.length > plugin.maxItems || new Set(items.map(item => item.itemId)).size !== items.length) throw fail('invalid_plugin_evidence');
+    if(plugin.kind==='observation-feed' && (items.length!==1||items[0].sourceRevision!==result.factsDigest))throw fail('invalid_plugin_evidence');
     const projections = items.map(item => projection(item, plugin)), projected = pluginJson(projections);
     if (UTF8.encode(projected).byteLength > PLUGIN_STORE_LIMITS.projectionBytes) throw fail('evidence_response_limit');
     const artifactHash = await pluginBytesDigest(artifact);
     const receiptId = `receipt:${await pluginFactsDigest([plugin.pluginId, plugin.scopeId, lease.fence, result.checkedAt, result.factsDigest, result.raw.sha256])}`;
     await Promise.all([
-      immutable(env, path(plugin, 'raw', result.raw.sha256), result.raw.bytes, result.raw.sha256, result.raw.mediaType, signal),
-      immutable(env, path(plugin, 'facts', result.factsDigest), facts, result.factsDigest, 'application/json', signal),
-      immutable(env, path(plugin, 'artifacts', artifactHash), artifact, artifactHash, 'application/json', signal),
+      immutable(env, path(plugin, 'raw', result.raw.sha256), result.raw.bytes, result.raw.sha256, result.raw.mediaType, signal, plugin.kind==='observation-feed'),
+      immutable(env, path(plugin, 'facts', result.factsDigest), facts, result.factsDigest, 'application/json', signal, plugin.kind==='observation-feed'),
+      immutable(env, path(plugin, 'artifacts', artifactHash), artifact, artifactHash, 'application/json', signal, plugin.kind==='observation-feed'),
     ]);
     signal.throwIfAborted();
     const args = fenceValues(plugin, lease);
@@ -243,6 +258,61 @@ export async function readPluginEnvelope(env, pluginId, { knownAt = null, now = 
     const artifact = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     return { ...base, available: true, receipt: receipt(capture), artifact };
   } catch { return { ...base, configured: false, explanation: 'Retained source evidence is temporarily unavailable; no provider request was made.' }; }
+}
+
+/** One fixed rolling scientific feed. The journal retains whole changed cohorts,
+ * not per-event first-known dates or event-time archive reconstruction. */
+export async function readPluginObservations(env,{knownAt=null,now=Date.now,signal}={}) {
+  if(knownAt!==null&&(!utc(knownAt)||Date.parse(knownAt)>now()+300000))throw new TypeError('Use canonical bounded knowledge time');
+  const plugin=sourcePlugin(USGS_LIVE_DAY.pluginId),base={schemaVersion:1,configured:configured(env),available:false,knownAt,
+    plugin:publicPlugin(plugin),scope:{id:USGS_LIVE_DAY.scopeId,sourceId:'usgs',minimumMagnitude:2.5,windowHours:24,
+      meaning:'Source-reported seismic observations from a rolling day summary; source event types are not reclassified.'},
+    receipt:null,check:null,records:[]};
+  if(!base.configured)return {...base,explanation:'Stored observation storage is unavailable.'};
+  const db=primary(env),select=`SELECT * FROM earth_plugin_captures WHERE plugin_id=? AND scope_id=?${knownAt?' AND recorded_at<=?':''}
+    ORDER BY recorded_at DESC,fence DESC LIMIT 1`,values=[plugin.pluginId,plugin.scopeId,...(knownAt?[knownAt]:[])];
+  try{
+    for(let attempt=0;attempt<2;attempt++){
+      signal?.throwIfAborted();const capture=(await rows(db,select,values,signal))[0];
+      if(!capture)return {...base,explanation:knownAt?'This platform had no completed observation snapshot at the selected cutoff.':'This source has not completed its first retained acquisition.'};
+      if(![capture.facts_digest,capture.raw_sha256,capture.artifact_sha256].every(digest)||capture.item_count!==1||
+        !utc(capture.captured_at)||!utc(capture.recorded_at)||!utc(capture.source_updated_at)||
+        !Number.isSafeInteger(capture.facts_bytes)||capture.facts_bytes<1||capture.facts_bytes>USGS_LIVE_DAY.factsBytes||
+        !Number.isSafeInteger(capture.raw_bytes)||capture.raw_bytes<1||capture.raw_bytes>USGS_LIVE_DAY.rawBytes||
+        !Number.isSafeInteger(capture.artifact_bytes)||capture.artifact_bytes<1||capture.artifact_bytes>USGS_LIVE_DAY.artifactBytes)throw fail('evidence_digest_mismatch');
+      const member=(await rows(db,`SELECT r.revision,r.projection_json FROM earth_plugin_membership m JOIN earth_plugin_revisions r
+        ON r.plugin_id=? AND r.item_id=m.item_id AND r.revision=m.revision WHERE m.receipt_id=? AND m.item_id=?`,
+        [plugin.pluginId,capture.receipt_id,USGS_LIVE_DAY.itemId],signal))[0];
+      if(!member||member.revision!==capture.facts_digest)throw fail('evidence_digest_mismatch');
+      const projection=JSON.parse(member.projection_json);
+      if(projection.itemId!==USGS_LIVE_DAY.itemId||projection.kind!==USGS_LIVE_DAY.itemKind||projection.sourceRecordId!==USGS_LIVE_DAY.sourceUrl||
+        projection.url!==USGS_LIVE_DAY.sourceUrl||projection.publishedAt!==null||projection.publishedPrecision!=='unknown')throw fail('evidence_digest_mismatch');
+      const [factsBytes,artifactBytes]=await Promise.all([
+        io(()=>env.EARTH_STORE.get(path(plugin,'facts',capture.facts_digest)),signal).then(object=>objectBytes(object,USGS_LIVE_DAY.factsBytes,signal)),
+        io(()=>env.EARTH_STORE.get(path(plugin,'artifacts',capture.artifact_sha256)),signal).then(object=>objectBytes(object,USGS_LIVE_DAY.artifactBytes,signal)),
+      ]);
+      if(factsBytes.byteLength!==capture.facts_bytes||artifactBytes.byteLength!==capture.artifact_bytes||
+        await pluginBytesDigest(factsBytes)!==capture.facts_digest||await pluginBytesDigest(artifactBytes)!==capture.artifact_sha256)throw fail('evidence_digest_mismatch');
+      const facts=validateUsgsLiveDayFacts(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(factsBytes))),
+        overview=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(artifactBytes));
+      const byType=new Map();for(const record of facts.records)byType.set(record.eventType,(byType.get(record.eventType)||0)+1);
+      const expected=usgsLiveDayOverview({canonicalFacts:facts,sourceGeneratedAt:capture.source_updated_at,sourceFeatureCount:overview.sourceFeatureCount,
+        countsBySourceType:[...byType].map(([type,count])=>({type,count})).sort((a,b)=>String(a.type).localeCompare(String(b.type)))});
+      if(!Number.isSafeInteger(overview.sourceFeatureCount)||overview.sourceFeatureCount<facts.records.length||overview.sourceFeatureCount>USGS_LIVE_DAY.features||
+        pluginJson(overview)!==pluginJson(expected))throw fail('evidence_digest_mismatch');
+      const current=knownAt?null:(await rows(db,'SELECT * FROM earth_plugin_state WHERE plugin_id=? AND scope_id=?',[plugin.pluginId,plugin.scopeId],signal))[0];
+      if((await rows(db,select,values,signal))[0]?.receipt_id!==capture.receipt_id)continue;
+      const checkedGeneration=current?.source_updated_at??capture.source_updated_at;
+      return {...base,available:true,version:capture.receipt_id,receipt:receipt(capture),check:knownAt?null:{...check(current),sourceGeneratedAt:current?.source_updated_at??null},
+        factualEditionAgeMs:knownAt?null:Math.max(0,now()-Date.parse(capture.captured_at)),
+        retainedSourceGenerationAgeMs:knownAt?null:Math.max(0,now()-Date.parse(capture.source_updated_at)),
+        sourceGenerationAgeMs:knownAt?null:Math.max(0,now()-Date.parse(checkedGeneration)),
+        stale:knownAt?null:current?.status!=='ready'||now()-Date.parse(checkedGeneration)>120000,
+        overview,records:facts.records,coverage:{complete:true,recordCount:facts.records.length,
+          meaning:'Complete qualifying membership of this retained bounded source response, not an archive of every physical seismic event.'}};
+    }
+    return {...base,errorCode:'observation-edition-changed',explanation:'Stored observation edition changed during delivery; retry the stored read.'};
+  }catch{return {...base,configured:false,errorCode:'stored-observation-unavailable',explanation:'Stored observation evidence is unavailable; no provider was requested.'};}
 }
 
 export async function readPluginPublications(env, pluginId, { at = null, knownAt = null, limit = 20, now = Date.now } = {}) {

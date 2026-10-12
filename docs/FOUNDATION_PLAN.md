@@ -224,3 +224,15 @@ speed or user experience. The agent browser surfaces were unavailable; use their
 actual stored API evidence and root-driven UI captures, and keep synthetic observations
 out of real demand. These findings re-examine later phases rather than shrinking the
 intended platform into a news list or declaring the complete goal achieved.
+
+## 02:38 UTC dependency reassessment
+
+The published live marker journey fails selection continuity: refresh destroys the
+selected entity and its panel. Reconcile by stable source ID and fence asynchronous
+retained evidence against corrected current facts before central-feed client cutover.
+Keep the readable picked-event UI and compact historical page delivery as independent,
+reviewable slices. Release the backend observation lane first, prove immutable complete
+receipt admission and two unattended checks, then release the stored-only client path.
+Re-examine permanent trigger support against actual declared host capabilities; a
+temporary supervised producer does not satisfy browser/laptop-independent collection.
+These gates take priority over adding unrelated providers, predictions or UI motion.

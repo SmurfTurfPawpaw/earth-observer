@@ -3,7 +3,8 @@ import { ARCHIVE_SCOPE, ARCHIVE_LIMITS, archivePrimary, ensureArchiveSchema, arc
   loadArchiveSnapshot, loadArchiveRaw } from './world-archive.js';
 import { archiveDayReadiness, readArchiveDayCoverage, ensureArchiveDaySchema, ARCHIVE_DAY_LIMITS } from './archive-day-coverage.js';
 
-const DAY = 86400000, WEEK = 7 * DAY;
+const DAY = 86400000, WEEK = 7 * DAY, pointEncoder = new TextEncoder();
+const POINT_PAGE_LIMIT = 250, POINT_PAGE_BYTES = 1024 * 1024;
 const json = (value,status=200) => Response.json(value,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
 const iso = (value) => new Date(value).toISOString();
 const unavailable = () => ({schemaVersion:1,configured:false,available:false,events:[],reason:'The scoped archive or its migration is unavailable'});
@@ -38,7 +39,7 @@ function options(value, now) {
       points&&(metadata||mode!=='none'||value.span!=='7d'||value.id!==undefined||Date.parse(at)>now())||!points&&value.span!==undefined||
       value.revision!==undefined&&(!value.id||!isWorldDigest(value.revision)))throw new TypeError('Invalid buffered reconstruction or detail revision');
   const limit = value.limit ?? 100;
-  if (!Number.isInteger(limit) || limit<1 || limit>100 || value.id !== undefined && !/^event:usgs:[a-f0-9]{64}$/.test(value.id)) throw new TypeError('Invalid bounded scene selection');
+  if (!Number.isInteger(limit) || limit<1 || limit>(points?POINT_PAGE_LIMIT:100) || value.id !== undefined && !/^event:usgs:[a-f0-9]{64}$/.test(value.id)) throw new TypeError('Invalid bounded scene selection');
   let bbox = null;
   if (value.bbox !== undefined) {
     if (typeof value.bbox !== 'string' || value.bbox.length>100) throw new TypeError('Invalid scene bounds');
@@ -280,8 +281,38 @@ async function scenePoints(env,rows) {
   });
 }
 
-export async function readWorldScene(env,value={}, {now=Date.now}={}) {
+class SceneDeliveryBudgetError extends Error {
+  constructor() { super('Stored historical point metadata and one record cannot fit the bounded delivery page'); }
+}
+
+/** Fit one ordered prefix; dynamic counts and the last-delivered cursor are part of the exact byte budget. */
+function fitPointPage(points, render, maximum) {
+  // Only the points, returned/omitted counts, two flags, and cursor vary with prefix size.
+  const zero=render(0), baseline={...zero,complete:false,truncated:true};
+  const shellBytes=pointEncoder.encode(JSON.stringify(baseline)).length;
+  if(!points.length) {
+    if(pointEncoder.encode(JSON.stringify(zero)).length>maximum)throw new SceneDeliveryBudgetError();
+    return zero;
+  }
+  let pointBytes=0,accepted;
+  for(let index=0;index<points.length;index++) {
+    pointBytes+=pointEncoder.encode(JSON.stringify(points[index])).length+(index?1:0);
+    const next=render(index+1);
+    const changedBytes=String(next.counts.returned).length-String(zero.counts.returned).length+
+      JSON.stringify(next.counts.omitted).length-JSON.stringify(zero.counts.omitted).length+
+      JSON.stringify(next.complete).length-5+JSON.stringify(next.truncated).length-4+
+      JSON.stringify(next.cursor).length-JSON.stringify(zero.cursor).length;
+    // The last page loses its cursor; it can fit even if the preceding prefix did not.
+    if(shellBytes+pointBytes+changedBytes>maximum)continue;
+    accepted=next;
+  }
+  if(!accepted)throw new SceneDeliveryBudgetError();
+  return accepted;
+}
+
+export async function readWorldScene(env,value={}, {now=Date.now,pointsByteLimit=POINT_PAGE_BYTES}={}) {
   const query=options(value,now); env=archivePrimary(env);
+  if(!Number.isInteger(pointsByteLimit)||pointsByteLimit<1||pointsByteLimit>POINT_PAGE_BYTES)throw new TypeError('Invalid internal point delivery budget');
   const after=query.cursor===undefined?null:cursorDecode(query.cursor);
   if(after) {
     if(![1,2].includes(after.v)||!isWorldDigest(after.query)||!/^item:[a-f0-9]{64}$/.test(after.itemId||'')||worldTime(after.eventAt)!==after.eventAt||
@@ -309,7 +340,7 @@ export async function readWorldScene(env,value={}, {now=Date.now}={}) {
     const final = await scopeState(env.EARTH_DB, query);
     if (final.current_version !== state.current_version || final.selected_version !== state.selected_version)
       throw new WorldSceneVersionConflict(`archive:${state.current_version || 0}`, `archive:${final.current_version || 0}`);
-    return {...base,events:[],counts:{returned:0,eligible:null,omitted:null},complete:availableCoverage.complete,truncated:availableCoverage.truncated,cursor:null,
+    return {...base,delivery:{pointsPageLimit:POINT_PAGE_LIMIT},events:[],counts:{returned:0,eligible:null,omitted:null},complete:availableCoverage.complete,truncated:availableCoverage.truncated,cursor:null,
       validFrom:null,validTo:null,nextSceneChangeAt:null};
   }
   const identity={scope:query.scope,at:query.at,window:query.window,knownAt:query.knownAt,knownMode:query.knownMode,bbox:query.bbox,
@@ -330,7 +361,7 @@ export async function readWorldScene(env,value={}, {now=Date.now}={}) {
   const selected=bounded.filter((row)=>row.event_at>iso(at-WEEK)&&row.event_at<=selectedTo&&row.magnitude>=ARCHIVE_SCOPE.minimumMagnitude&&inBounds(row,query.bbox))
     .sort((a,b)=>a.event_at.localeCompare(b.event_at)||a.item_id.localeCompare(b.item_id));
   const remaining=after?selected.filter((row)=>row.event_at>after.eventAt||row.event_at===after.eventAt&&row.item_id>after.itemId):selected;
-  const page=remaining.slice(0,query.id?1:query.limit),last=page.at(-1);
+  const page=remaining.slice(0,query.id?1:query.limit);
   const events=query.points?[]:await projectionEvents(env,page,query,Boolean(query.id)),points=query.points?await scenePoints(env,page):null;
   // Separate indexed reads must not label a correction published during this
   // request with the earlier edition, even on its first page.
@@ -338,22 +369,25 @@ export async function readWorldScene(env,value={}, {now=Date.now}={}) {
   if(finalVersion!==version)throw new WorldSceneVersionConflict(version,finalVersion);
   if(query.id&&query.revision&&events[0]&&events[0].evidence.revision!==query.revision)
     return {...base,events:[],event:null,errorCode:'revision-changed',selectedRevision:events[0].evidence.revision};
-  const returned=query.points?points.length:events.length;
-  return {...base,events,...(query.points?{points,span:'7d',bufferFrom:query.at,bufferTo:query.bufferTo,bufferWindowFrom:iso(at-WEEK),
-      pointMeaning:'Current retained source revisions of reported earthquake epicenters; use (utc-7d,utc] locally. Buffer is not a forecast.'}:{}),
-    counts:{returned,eligible:truncated?null:selected.length,omitted:truncated?null:Math.max(0,selected.length-returned),
-      candidateLimit:ARCHIVE_LIMITS.sceneCandidates,candidates:bounded.length},
-    complete:!truncated&&availableCoverage.complete&&selected.length===returned,
-    membershipComplete:!truncated,truncated:truncated||availableCoverage.truncated||selected.length>returned,
-    cursor:!query.id&&remaining.length>page.length&&last?cursorEncode({v:2,query:queryId,version,eventAt:last.event_at,itemId:last.item_id,
-      ...(query.points?{bufferTo:query.bufferTo}:{})}):null,
-    ...(query.points?{validFrom:!truncated&&query.bufferTo?query.at:null,validTo:!truncated?query.bufferTo:null,
-      nextSceneChangeAt:null,intervalProof:'All selected current source heads in the requested buffered origin interval; local time filtering reconstructs each instant.'}:
-      interval(bounded,query,finalState,truncated)),...(query.id?{event:events[0]||null}:{} )};
+  const renderPage=(size)=>{
+    const returned=query.points?size:events.length,last=page[size-1];
+    return {...base,events,...(query.points?{points:points.slice(0,size),span:'7d',bufferFrom:query.at,bufferTo:query.bufferTo,bufferWindowFrom:iso(at-WEEK),
+        pointMeaning:'Current retained source revisions of reported earthquake epicenters; use (utc-7d,utc] locally. Buffer is not a forecast.'}:{}),
+      counts:{returned,eligible:truncated?null:selected.length,omitted:truncated?null:Math.max(0,selected.length-returned),
+        candidateLimit:ARCHIVE_LIMITS.sceneCandidates,candidates:bounded.length},
+      complete:!truncated&&availableCoverage.complete&&selected.length===returned,
+      membershipComplete:!truncated,truncated:truncated||availableCoverage.truncated||selected.length>returned,
+      cursor:!query.id&&remaining.length>size&&last?cursorEncode({v:2,query:queryId,version,eventAt:last.event_at,itemId:last.item_id,
+        ...(query.points?{bufferTo:query.bufferTo}:{})}):null,
+      ...(query.points?{validFrom:!truncated&&query.bufferTo?query.at:null,validTo:!truncated?query.bufferTo:null,
+        nextSceneChangeAt:null,intervalProof:'All selected current source heads in the requested buffered origin interval; local time filtering reconstructs each instant.'}:
+        interval(bounded,query,finalState,truncated)),...(query.id?{event:events[0]||null}:{} )};
+  };
+  return query.points?fitPointPage(points,renderPage,pointsByteLimit):renderPage(page.length);
 }
 
 /** Stored-only public routes. Neither request URLs nor queries choose providers. */
-export function createWorldSceneHandler({env={},now=Date.now}={}) {
+export function createWorldSceneHandler({env={},now=Date.now,pointsByteLimit=POINT_PAGE_BYTES}={}) {
   return async(request)=>{
     const url=new URL(request.url),detail=/^\/api\/world\/scene\/events\/(event:usgs:[a-f0-9]{64})$/.exec(url.pathname);
     if(url.pathname!=='/api/world/scene'&&!detail) return null;
@@ -366,12 +400,13 @@ export function createWorldSceneHandler({env={},now=Date.now}={}) {
         detail&&(params.metadata!==undefined||params.cursor!==undefined||params.limit!==undefined||params.points!==undefined||params.span!==undefined))
         throw new TypeError('Invalid bounded scene query');
       const value=await readWorldScene(env,{...params,...(params.limit===undefined?{}:{limit:Number(params.limit)}),metadata:params.metadata==='1',
-        ...(params.points===undefined?{}:{points:true}),...(detail?{id:detail[1]}:{})},{now});
+        ...(params.points===undefined?{}:{points:true}),...(detail?{id:detail[1]}:{})},{now,pointsByteLimit});
       if(!value.available) return json(value,503);
       if(value.errorCode==='revision-changed')return json({...value,error:'The selected event revision changed; reload the scene'},409);
       if(detail&&!value.event) return json({...value,error:'Event is not in the selected stored scene'},404);
       return json(value);
-    } catch(error) { return error instanceof WorldSceneVersionConflict?json({schemaVersion:1,configured:true,available:false,
+    } catch(error) { return error instanceof SceneDeliveryBudgetError?json({schemaVersion:1,configured:true,available:false,
+      scope:{id:ARCHIVE_SCOPE.id},errorCode:'scene-delivery-byte-budget',error:error.message},503):error instanceof WorldSceneVersionConflict?json({schemaVersion:1,configured:true,available:false,
       scope:{id:ARCHIVE_SCOPE.id},errorCode:'scene-version-changed',requestedVersion:error.requestedVersion,currentVersion:error.currentVersion,
       error:'The archive edition changed while loading; restart the scene read'},409):error instanceof TypeError?json({error:'Invalid bounded scene query'},400):
       json({schemaVersion:1,configured:true,available:false,error:'Retained archive evidence is unavailable or failed integrity validation'},503); }

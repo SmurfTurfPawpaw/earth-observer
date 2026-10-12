@@ -56,7 +56,7 @@ test('calculated astronomy is separate from observed acquisition and event predi
 });
 
 test('typed institutional/data plugins match the actual registry and cannot become four-source incident layers', () => {
-  assert.equal(SOURCE_CAPABILITIES.schemaVersion, 1); assert.equal(SOURCE_CAPABILITIES.revision, 5);
+  assert.equal(SOURCE_CAPABILITIES.schemaVersion, 1); assert.equal(SOURCE_CAPABILITIES.revision, 6);
   const typed = listSourceCapabilities().filter(source => source.implementation.typedPluginRegistry);
   assert.deepEqual(typed.map(source => source.id), SOURCE_PLUGINS.map(plugin => plugin.pluginId));
   for (const plugin of SOURCE_PLUGINS) {
@@ -68,7 +68,8 @@ test('typed institutional/data plugins match the actual registry and cannot beco
     assert.equal(source.incidentLayer, false); assert.equal(source.implementation.independentTrigger, 'unverified');
     assert.equal(source.history.backfillImplemented, false); assert.equal(source.history.future, 'unsupported');
     assert.equal(source.interpolation.extrapolation, false); assert.equal(source.cadence.providerIntervalMs, null);
-    assert.equal(COLLECTOR_PLUGINS.some(collector => collector.id === source.id || collector.id === source.sourceId), false);
+    assert.equal(COLLECTOR_PLUGINS.some(collector => collector.id === source.id), false);
+    if(plugin.kind!=='observation-feed')assert.equal(COLLECTOR_PLUGINS.some(collector=>collector.id===source.sourceId),false);
     assert.throws(() => { source.incidentLayer = true; }, TypeError);
   }
   assert.equal(getSourceCapability('eurostat-gas-origins-v1').bounds.unit, 'TJ_GCV');
@@ -77,6 +78,10 @@ test('typed institutional/data plugins match the actual registry and cannot beco
   assert.equal(getSourceCapability('ec-press-v1').bounds.observedProviderWindow, 10);
   assert.equal(getSourceCapability('ec-press-v1').geography.type, 'none');
   assert.match(getSourceCapability('ec-press-v1').history.upstreamArchive, /body language is unknown/);
+  const live=getSourceCapability('usgs-live-day-m2-5-v1');
+  assert.equal(live.bounds.minimumMagnitude,2.5);assert.equal(live.bounds.windowHours,24);assert.equal(live.bounds.maxObservationRecords,500);
+  assert.equal(live.access.publicRead,'/api/layers/earthquakes');assert.notEqual(live.access.endpoint,getSourceCapability('usgs').access.endpoint);
+  assert.equal(getSourceCapability('usgs').bounds.minimumMagnitude,4.5);assert.equal(getSourceCapability('usgs').bounds.windowDays,7);
 });
 
 test('actual MCP capability schema and read-only tool return both typed entries without acquiring or publishing', async () => {

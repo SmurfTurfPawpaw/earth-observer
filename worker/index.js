@@ -20,6 +20,7 @@ import { createWorldSceneHandler } from './world-scene.js';
 import { createInvestigationApiHandler } from './investigation-api.js';
 import { createPluginApiHandler } from './plugins/api.js';
 import { createDocumentInvestigationApiHandler } from './document-investigation-api.js';
+import { createObservationApiHandler } from './observation-api.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -44,6 +45,7 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
   const handleInvestigations = createInvestigationApiHandler({ now });
   const handlePluginApi = createPluginApiHandler({ now });
   const handleDocumentApi = createDocumentInvestigationApiHandler({ now });
+  const handleObservationApi = createObservationApiHandler({ now });
   let state;
   const admit = makeRateLimiter({ windowMs: 60000, max: 240, globalMax: 4000 });
   const services = (env) => state ||= {
@@ -91,6 +93,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (plugin) return secured(plugin);
         const document = await handleDocumentApi(internal, env, ctx);
         if (document) return secured(document);
+        const observations = await handleObservationApi(internal, env);
+        if (observations) return secured(observations);
         const world = await createWorldModelHandler({ env, now })(internal);
         if (world) return secured(world);
         // Aggregate actions own their methods and never enter public provider caches.

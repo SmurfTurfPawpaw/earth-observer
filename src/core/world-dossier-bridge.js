@@ -3,6 +3,14 @@ import { WORLD_SCENE_SCOPE } from './world-scene-controller.js';
 
 const MAX_BYTES = 256 * 1024;
 const iso = (value) => Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+// Proof itself is deliberately excluded. Live clock ticks do not change source
+// facts; an explicit historical cutoff or corrected scene basis does.
+const selectionKey = (selected, scene) => JSON.stringify([
+  selected?.usgsId, selected?.mag, selected?.time, selected?.lat, selected?.lon, selected?.depth, selected?.place,
+  selected?.sourceUrl, selected?.updatedAt, selected?.eventType, selected?.reviewStatus, selected?.sourceTitle,
+  selected?._worldScene || null, selected?._worldReport || null,
+  selected?._worldReport?.kind === 'retained-source-context' ? 'source-context' : [scene?.mode, scene?.mode === 'history' ? scene.at : null],
+]);
 
 /** Reject another event or revision, even when its stable USGS identity matches. */
 export function matchingWorldEvent(event, selected, { id, knownAt, revision, archiveScope } = {}) {
@@ -13,6 +21,10 @@ export function matchingWorldEvent(event, selected, { id, knownAt, revision, arc
       !Number.isFinite(selected.time) || !Number.isFinite(new Date(selected.time).getTime()) ||
       iso(event.eventTime?.at) !== new Date(selected.time).toISOString() ||
       event.reportedFacts?.magnitude !== selected.mag ||
+      selected.updatedAt != null && (!Number.isFinite(selected.updatedAt) || !Number.isFinite(new Date(selected.updatedAt).getTime()) ||
+        iso(event.sourceTimes?.updatedAt) !== new Date(selected.updatedAt).toISOString()) ||
+      selected.reviewStatus != null && event.reportedFacts?.reviewStatus !== selected.reviewStatus ||
+      selected.eventType != null && event.kind !== selected.eventType ||
       !Number.isFinite(selected.lat) || !Number.isFinite(selected.lon) ||
       Math.abs(event.place?.lat - selected.lat) > .00001 || Math.abs(event.place?.lon - selected.lon) > .00001 ||
       !Number.isFinite(event.place?.lat) || !Number.isFinite(event.place?.lon) ||
@@ -37,6 +49,12 @@ export function installWorldDossierBridge({ viewer, readSelection, fetchImpl = g
     try { selected = readSelection(entity); } catch { return false; }
     if (!selected || !/^[a-zA-Z0-9_-]{1,100}$/.test(selected.usgsId || '')) { clear(entity); return false; }
     const scene = viewer.earthTime.getState();
+    const capturedKey = selectionKey(selected, scene);
+    const currentSelection = () => {
+      if (destroyed || owner !== generation || viewer.selectedEntity !== entity) return null;
+      try { const current = readSelection(entity); return current && selectionKey(current, viewer.earthTime.getState()) === capturedKey ? current : null; }
+      catch { return null; }
+    };
     const context = selected._worldScene;
     const ownedScene = context !== undefined;
     const archiveScope = ownedScene ? WORLD_SCENE_SCOPE : null;
@@ -48,11 +66,11 @@ export function installWorldDossierBridge({ viewer, readSelection, fetchImpl = g
     if (scene.mode === 'history' && (!ownedScene || context.mode === 'as-known') && !knownAt) return false;
     let id;
     try { id = `event:usgs:${await worldHash(['usgs', `usgs:${selected.usgsId}`])}`; } catch { return false; }
-    if (destroyed || owner !== generation || viewer.selectedEntity !== entity) return false;
+    const current = currentSelection(); if (!current) return false;
     // A report opened from source context is a fixed retained revision. It is
     // not a scene feature and never borrows the selected historical cutoff.
     if (selected._worldReport?.schemaVersion === 1 && selected._worldReport.kind === 'retained-source-context') {
-      const valid = Boolean(matchingWorldEvent(selected._worldEvent, selected, { id, revision: selected._worldReport.revision }));
+      const valid = Boolean(matchingWorldEvent(current._worldEvent, current, { id, revision: selected._worldReport.revision }));
       if (!valid) clear(entity);
       return valid;
     }
@@ -60,12 +78,12 @@ export function installWorldDossierBridge({ viewer, readSelection, fetchImpl = g
     const matchOptions = { id, knownAt, ...(ownedScene ? { archiveScope, revision: context.revision } : {}) };
     // A complete scene already carries its admitted projection. Keep it; a
     // recent live-membership endpoint cannot establish archived evidence.
-    if (ownedScene && matchingWorldEvent(selected._worldEvent, selected, matchOptions)) return true;
+    if (ownedScene && matchingWorldEvent(current._worldEvent, current, matchOptions)) return true;
     clear(entity);
     const key = ownedScene ? `${id}:scene:${context.version}:${context.revision}:${scene.at}:${context.mode}` : `${id}:${knownAt || 'live'}`;
     let event = cache.get(key);
     try {
-      if (!event || now() - event.cachedAt > 60000) {
+      if (!event || event.selectionKey !== capturedKey || now() - event.cachedAt > 60000) {
         const controller = new AbortController(); request = controller;
         const endpoint = ownedScene ? `${sceneUrl}/${id}?${new URLSearchParams({ at: iso(scene.at), window: '7d', scope: archiveScope,
           revision: context.revision, ...(knownAt ? { knownMode: 'scene' } : {}) })}` : `${url}/${id}${knownAt ? `?${new URLSearchParams({ knownAt })}` : ''}`;
@@ -85,13 +103,14 @@ export function installWorldDossierBridge({ viewer, readSelection, fetchImpl = g
         if (payload.schemaVersion !== 1 || payload.available !== true || payload.configured !== true ||
             knownAt && payload.knownAt !== knownAt || ownedScene && (payload.scope?.id !== archiveScope || payload.at !== iso(scene.at) ||
               payload.mode !== context.mode || payload.version !== context.version || payload.knownMode !== context.knownMode)) return false;
-        event = { value: payload.event, cachedAt: now() };
-        if (destroyed || owner !== generation) return false;
+        event = { value: payload.event, cachedAt: now(), selectionKey: capturedKey };
+        if (!currentSelection()) return false;
         cache.set(key, event);
         if (cache.size > 24) cache.delete(cache.keys().next().value);
       }
-      const value = matchingWorldEvent(event.value, selected, matchOptions);
-      if (!value || destroyed || owner !== generation || viewer.selectedEntity !== entity) return false;
+      const latest = currentSelection();
+      const value = latest && matchingWorldEvent(event.value, latest, matchOptions);
+      if (!value) return false;
       entity.properties.addProperty('_worldEvent', value);
       return true;
     } catch { return false; }

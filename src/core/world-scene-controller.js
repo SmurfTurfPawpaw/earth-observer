@@ -2,7 +2,7 @@ import { worldTime, worldHash, isWorldDigest } from './world-identity.js';
 
 export const WORLD_SCENE_SCOPE = 'usgs-catalog-m4.5-v1';
 export const WORLD_SCENE_REFRESH_MS = 60000;
-export const WORLD_SCENE_LIMITS = Object.freeze({ events: 1000, pages: 10, bytes: 1024 * 1024, cacheBytes: 3 * 1024 * 1024, cacheEntries: 6 });
+export const WORLD_SCENE_LIMITS = Object.freeze({ events: 1000, pages: 10, bytes: 1024 * 1024, cacheBytes: 3 * 1024 * 1024, cacheEntries: 6, pointsPageLimit: 250 });
 const WEEK = 7 * 86400000;
 const canonical = (value) => { try { return worldTime(value); } catch { return null; } };
 const count = (value) => Number.isInteger(value) && value >= 0 && value <= 10000000;
@@ -49,9 +49,15 @@ export function sceneCoverageAt(coverage, at, knownMode = 'none') {
 }
 
 /** Reject an incompatible scope, future observation, or an unbound source projection. */
-export async function normalizeWorldScene(value, { at = null, lens = 'reconstruction', metadata = false, buffered = false } = {}) {
+export async function normalizeWorldScene(value, { at = null, lens = 'reconstruction', metadata = false, buffered = false, pageLimit = 100 } = {}) {
   if (value?.schemaVersion !== 1 || typeof value.configured !== 'boolean' || typeof value.available !== 'boolean') throw new Error('Historical scene response is invalid');
+  if (value.configured && !value.available && value.errorCode === 'scene-delivery-byte-budget' && value.scope?.id === WORLD_SCENE_SCOPE)
+    throw new Error('Stored historical point metadata and one record exceed the delivery budget.');
   if (!value.configured || !value.available) throw new Error(value.configured ? 'Stored historical evidence is unavailable.' : 'The historical archive is not configured on this host.');
+  if (!Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > (buffered ? WORLD_SCENE_LIMITS.pointsPageLimit : 100)) throw new Error('Historical page limit is invalid');
+  const delivery = value.delivery === undefined ? null : value.delivery;
+  if (delivery !== null && (!delivery || typeof delivery !== 'object' || Array.isArray(delivery) || ![100, WORLD_SCENE_LIMITS.pointsPageLimit].includes(delivery.pointsPageLimit)))
+    throw new Error('Historical delivery capability is invalid');
   const mode = lens === 'known-then' ? 'as-known' : 'reconstruction', knownMode = lens === 'known-then' ? 'scene' : 'none';
   if (value.scope?.id !== WORLD_SCENE_SCOPE || value.scope.sourceId !== 'usgs' || value.window !== '7d' || value.mode !== mode ||
       value.knownMode !== knownMode || (metadata ? value.at !== null : canonical(value.at) !== at) ||
@@ -71,7 +77,7 @@ export async function normalizeWorldScene(value, { at = null, lens = 'reconstruc
   if ([...coverage.segments,...coverage.gaps].some((piece) => !requestedRange || piece.from < requestedRange.from || piece.to > requestedRange.to))
     throw new Error('Historical coverage leaves its loaded date window');
   const members = buffered ? value.points : value.events;
-  if (!Array.isArray(members) || members.length > 100 || !count(value.counts?.returned) || value.counts.returned !== members.length ||
+  if (!Array.isArray(members) || members.length > pageLimit || !count(value.counts?.returned) || value.counts.returned !== members.length ||
       (!metadata && (value.counts.eligible !== null && !count(value.counts.eligible) || value.counts.omitted !== null && !count(value.counts.omitted))) ||
       typeof value.complete !== 'boolean' || typeof value.truncated !== 'boolean' ||
       value.cursor !== null && (typeof value.cursor !== 'string' || value.cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(value.cursor))) throw new Error('Historical scene membership is invalid');
@@ -107,7 +113,7 @@ export async function normalizeWorldScene(value, { at = null, lens = 'reconstruc
   if (new Set((points || events).map((event) => event.id)).size !== (points || events).length) throw new Error('Historical scene has duplicate events');
   const validFrom = canonical(value.validFrom), validTo = canonical(value.validTo);
   if ((value.validFrom !== null || value.validTo !== null) && (!validFrom || !validTo || !at || validFrom > at || validTo <= at)) throw new Error('Historical cache interval is invalid');
-  return { ...value, at, events, ...(buffered ? { points, bufferFrom, bufferTo } : {}), coverage, validFrom, validTo, nextSceneChangeAt: validTo,
+  return { ...value, at, events, delivery, ...(buffered ? { points, bufferFrom, bufferTo } : {}), coverage, validFrom, validTo, nextSceneChangeAt: validTo,
     membershipComplete: value.membershipComplete === true, counts: { ...value.counts } };
 }
 
@@ -200,10 +206,12 @@ export function createWorldSceneController({ fetchImpl = globalThis.fetch, docum
     while (true) {
       pages++; signal.throwIfAborted();
       try {
-        const response = await fetchImpl(`${url}?${query(at, selectedLens, { limit: '100', ...(cursor ? { cursor } : {}) })}`,
+        const capacity = selectedLens === 'reconstruction' ? metadata?.delivery?.pointsPageLimit || 100 : 100;
+        const pageLimit = Math.min(capacity, WORLD_SCENE_LIMITS.events - events.size);
+        const response = await fetchImpl(`${url}?${query(at, selectedLens, { limit: String(pageLimit), ...(cursor ? { cursor } : {}) })}`,
           { signal, cache: 'no-store', headers: { Accept: 'application/json' } });
         const body = await readBounded(response, signal, WORLD_SCENE_LIMITS.bytes - bytes); bytes += body.bytes;
-        const page = await normalizeWorldScene(body.value, { at, lens: selectedLens, buffered: selectedLens === 'reconstruction' }); signal.throwIfAborted();
+        const page = await normalizeWorldScene(body.value, { at, lens: selectedLens, buffered: selectedLens === 'reconstruction', pageLimit }); signal.throwIfAborted();
         if (result && page.version !== result.version) throw new SceneVersionConflict();
         if (result && (page.counts.eligible !== result.counts.eligible || page.validFrom !== result.validFrom || page.validTo !== result.validTo || page.bufferTo !== result.bufferTo)) {
           if (page.currentVersion !== result.currentVersion) throw new SceneVersionConflict();
