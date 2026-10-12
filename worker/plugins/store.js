@@ -2,6 +2,7 @@ import { pluginBytesDigest, pluginFactsDigest, pluginJson } from '../../src/core
 import { sourcePlugin, publicPlugin } from './registry.js';
 import { rssPublicationTime } from './bounded-rss.js';
 import { USGS_LIVE_DAY,validateUsgsLiveDayFacts,decodeUsgsLiveDay,usgsLiveDayOverview } from '../../src/core/usgs-live-day.js';
+import { ensurePreparedUsgsScene } from '../prepared-usgs-store.js';
 
 export const PLUGIN_STORE_LIMITS = Object.freeze({ deadlineMs: 27000, storageMs: 2000,
   leaseMs: 60000, factsBytes: 768 * 1024, artifactBytes: 65536, projectionBytes: 65536,
@@ -130,11 +131,18 @@ export async function runSourcePlugin(env, input, { now = Date.now, fetchImpl = 
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), PLUGIN_STORE_LIMITS.deadlineMs);
   const signal = external ? AbortSignal.any([external, controller.signal]) : controller.signal;
   const db = primary(env); let lease;
+  const completed = async outcome => {
+    if (plugin.pluginId !== USGS_LIVE_DAY.pluginId || !['stored','checked','not-due'].includes(outcome.status)) return outcome;
+    // Acquisition is already settled. A reconstructable derivative failure must
+    // never relabel a verified receipt as failed, or start work on a visitor read.
+    try { return { ...outcome, preparation: await ensurePreparedUsgsScene(env,{now,signal,readObservations:readPluginObservations}) }; }
+    catch { return { ...outcome, preparation:{configured:true,status:'unavailable'} }; }
+  };
   try {
     const state = (await rows(db, 'SELECT * FROM earth_plugin_state WHERE plugin_id=?', [plugin.pluginId], signal))[0];
     if (state && state.scope_id !== plugin.scopeId) throw fail('plugin_scope_conflict');
     if (state && Date.parse(state.next_check_at) > now() || state?.lease_until && Date.parse(state.lease_until) > now())
-      return { configured: true, pluginId: plugin.pluginId, status: 'not-due', acquired: false };
+      return await completed({ configured: true, pluginId: plugin.pluginId, status: 'not-due', acquired: false });
     const token = nonce();
     const claim = await batch(db, [
       db.prepare(`INSERT INTO earth_plugin_state (plugin_id,scope_id,next_check_at,status,failure_count,fence)
@@ -177,8 +185,8 @@ export async function runSourcePlugin(env, input, { now = Date.now, fetchImpl = 
         last_successful_at=${DB_NOW},status='ready',failure_count=0,validators_json=?,source_updated_at=COALESCE(?,source_updated_at),
         source_version=COALESCE(?,source_version),lease_token=NULL,lease_until=NULL WHERE plugin_id=? AND scope_id=? AND fence=? AND lease_token=? AND lease_until>${DB_NOW}`)
         .bind(...fields, result.sourceUpdatedAt ?? null, result.sourceVersion ?? null, ...fenceValues(plugin, lease))], signal);
-      return { configured: true, pluginId: plugin.pluginId, status: Number(saved[0]?.meta?.changes) === 1 ? 'checked' : 'superseded',
-        acquired: true, changed: false, receiptId: lease.current_receipt };
+      return await completed({ configured: true, pluginId: plugin.pluginId, status: Number(saved[0]?.meta?.changes) === 1 ? 'checked' : 'superseded',
+        acquired: true, changed: false, receiptId: lease.current_receipt });
     }
     const facts = UTF8.encode(pluginJson(result.canonicalFacts)), artifact = UTF8.encode(pluginJson(result.artifact));
     if (facts.byteLength > PLUGIN_STORE_LIMITS.factsBytes || artifact.byteLength > Math.min(PLUGIN_STORE_LIMITS.artifactBytes, plugin.maxArtifactBytes || PLUGIN_STORE_LIMITS.artifactBytes))
@@ -226,8 +234,8 @@ export async function runSourcePlugin(env, input, { now = Date.now, fetchImpl = 
         WHERE plugin_id=? AND scope_id=? AND fence=? AND lease_token=? AND ${admitted}`)
         .bind(...fields, receiptId, result.factsDigest, result.sourceUpdatedAt ?? null, result.sourceVersion ?? null, ...args, receiptId),
     ], signal);
-    return { configured: true, pluginId: plugin.pluginId, status: Number(committed[4]?.meta?.changes) === 1 ? 'stored' : 'superseded',
-      acquired: true, changed: Number(committed[4]?.meta?.changes) === 1, receiptId };
+    return await completed({ configured: true, pluginId: plugin.pluginId, status: Number(committed[4]?.meta?.changes) === 1 ? 'stored' : 'superseded',
+      acquired: true, changed: Number(committed[4]?.meta?.changes) === 1, receiptId });
   } catch (error) {
     if (!lease) return { configured: false, pluginId: plugin.pluginId, status: 'unavailable', acquired: false };
     const failures = Math.min(100, lease.failure_count + 1), retry = Math.min(PLUGIN_STORE_LIMITS.maximumRetryMs,

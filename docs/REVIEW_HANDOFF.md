@@ -1,5 +1,26 @@
 # Nine-hour foundation checkpoint
 
+## Latest checkpoint: 12 October 2026, 10:12 UTC
+
+Site50 published at09:45:19.168508Z, deployment
+appgdep_6accac0bde1881919fdc1f944670e688, saved
+appgprj_6ac8f0348bd88191af3151d9d31fb388~appgver_30475be784648191a862b63f224d7e1e.
+App60341e66e1190ffad2203e218b0a45afe8215f3e; combined
+403202d087fb483a9312d1d908fd51f7d7f86b95. Environment7 and public access remain.
+Full GitHub Check38231618415 passed. The shared/batched browser package is live.
+
+The prepared-USGS server pilot passed43 integrated checks and independent review,
+including primary-head rechecks, exact conditional cache fencing, current/prior
+corruption recovery, finite streamed reads and the actual hosted router. The pilot
+is being packaged; actual hosted owner-wake/scene delivery and client cutover remain.
+No new database, broker, schema, provider permission or raw/history deletion is added.
+
+New visual quality gate: first lean rebuild removed detailed imagery/terrain and
+introduced250m minimum zoom. The user's current close-up confirms street outlines,
+not aerial/3D detail. See ZOOM_DETAIL_RESTORATION.md; restore capabilities through
+one terrain-aware camera/ground-anchoring contract and progressive detail. The
+diagnostic's low-resolution Natural Earth imagery is not production acceptance.
+
 ## Latest checkpoint: 12 October 2026, 09:41 UTC
 
 Production remains Site version48; version49 containing satellite render ownership

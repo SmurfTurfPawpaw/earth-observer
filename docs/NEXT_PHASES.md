@@ -6,6 +6,22 @@ execution has already passed operating acceptance. Each gate can change the phas
 
 ## Current blocking design gate: recurring blank globe presentation
 
+Update,12October2026 at10:12UTC: Site50 published successfully09:45:19Z from
+app60341e66e1190ffad2203e218b0a45afe8215f3e and combined
+403202d087fb483a9312d1d908fd51f7d7f86b95. Its full GitHub Check passed.
+The central prepared-USGS pilot now has43 integrated changed-path checks and
+independent review. It is not published at this checkpoint. Prove scheduled owner
+preparation and stored regional/delta delivery on the actual host, then cut over
+the browser; do not claim all sources or arbitrary processing capacity.
+
+The new zoom-detail review found a capability regression in the first lean rebuild:
+250m minimum, overview-only aerial imagery and flat terrain. Re:Earth remained
+admitted by policy. ZOOM_DETAIL_RESTORATION.md orders a shared terrain-aware camera
+contract, progressive terrain plus marker anchoring, and genuinely detailed aerial
+imagery. This is a separate quality gate; data streaming cannot create missing
+texture pixels or terrain. No source, camera minimum or terrain change is activated
+by the prepared-scene pilot.
+
 Update,12October2026 at09:41UTC: the user proposed sending data to a central
 processor and streaming prepared results. Adopt that as the primary delivery
 architecture: collect/retain facts independently, prepare reusable regional scene
