@@ -22,7 +22,9 @@ test('WebCrypto signature interoperates with existing fixed collect-only server 
   const env=settings();Object.defineProperty(env,'EARTH_COLLECTOR_TOKEN',{get(){assert.fail('Runner must not read broad secret');}});
   Object.defineProperty(env,'COLLECTOR_STATE',{get(){assert.fail('Runner must not access KV');}});
   const timer=createMinuteTimer({now:()=>NOW,nonce:()=>NONCE,fetchImpl:async(url,options)=>{
-    assert.equal(url,MINUTE_TRIGGER_URL);assert.equal(options.method,'POST');assert.equal(options.redirect,'error');assert.equal(options.credentials,'omit');
+    // Unlike Node fetch, Workers rejects redirect:error while constructing its Request.
+    if(options.redirect==='error')throw new TypeError('TEST ONLY Workers unsupported redirect mode');
+    assert.equal(url,MINUTE_TRIGGER_URL);assert.equal(options.method,'POST');assert.equal(options.redirect,'manual');assert.equal(options.credentials,'omit');
     assert.equal(options.cache,'no-store');assert.equal(options.body,COLLECTOR_TRIGGER_BODY);assert.equal(new Headers(options.headers).has('authorization'),false);
     const normalized=new URL(url);normalized.pathname=normalized.pathname.slice('/earth'.length);return handle(new Request(normalized,options),host);
   }});
@@ -62,6 +64,41 @@ test('bounded success summaries discard secrets/source text and fail responses n
   assert.equal(calls,2);assert.equal(logs.at(-1).recordCount,null);
   const busy=createMinuteTimer({logger:()=>{},fetchImpl:async()=>Response.json({status:'busy',stored:false},{status:429})});
   assert.equal((await busy.scheduled(controller(),settings())).summary.status,'busy');
+});
+
+test('manual redirects are rejected before headers/body consumption, while a normal denied acknowledgment remains attributable',async()=>{
+  let calls=0,cancelled=0,bodyReads=0;const logs=[];
+  const redirect={status:302,ok:false,redirected:false,
+    get url(){assert.fail('A redirect target must not be inspected');},
+    headers:{get(){assert.fail('A redirect must not read Location or other headers');}},
+    body:{cancel(){cancelled++;return Promise.resolve();},getReader(){bodyReads++;assert.fail('A redirect body must not be consumed');}}};
+  const timer=createMinuteTimer({now:()=>NOW,logger:summary=>logs.push(summary),fetchImpl:async(_url,options)=>{
+    calls++;assert.equal(options.redirect,'manual');return redirect;}});
+  await assert.rejects(timer.scheduled(controller(),settings()),/Earth minute timer: request_failed/);
+  assert.equal(calls,1);assert.equal(cancelled,1);assert.equal(bodyReads,0);
+  assert.equal(logs[0].phase,'headers');assert.equal(logs[0].reason,'response_redirect');
+  assert.equal(logs[0].stored,null);assert.equal(logs[0].readStatusBeforeRetry,true);
+  const denied=createMinuteTimer({now:()=>NOW,fetchImpl:async(_url,options)=>{
+    calls++;assert.equal(options.redirect,'manual');return Response.json({status:'denied',stored:false},{status:403});}});
+  const result=await denied.run(settings());assert.equal(result.ok,false);assert.equal(result.summary.status,'denied');
+  assert.equal(result.summary.httpStatus,403);assert.equal(result.summary.stored,false);assert.equal(calls,2);
+});
+
+test('failure diagnostics contain only owned phase/reason enums and never raw errors, signing material or response text',async()=>{
+  const logs=[],privateMessage=`${KEY} https://private.invalid/ authorization ${TOKEN}`;
+  const transport=createMinuteTimer({now:()=>NOW,logger:summary=>logs.push(summary),fetchImpl:async()=>{
+    throw Object.assign(new TypeError(privateMessage),{timerReason:privateMessage});}});
+  await assert.rejects(transport.scheduled(controller(),settings()),/^Error: Earth minute timer: request_failed$/);
+  assert.equal(logs[0].phase,'fetch');assert.equal(logs[0].reason,'transport_failed');
+  const invalidJson=createMinuteTimer({now:()=>NOW,logger:summary=>logs.push(summary),fetchImpl:async()=>
+    new Response(privateMessage,{headers:{'content-type':'application/json'}})});
+  await assert.rejects(invalidJson.scheduled(controller(),settings()),/request_failed/);
+  assert.equal(logs[1].phase,'decode');assert.equal(logs[1].reason,'response_json');
+  const signing=createMinuteTimer({now:()=>NOW,nonce:()=>privateMessage,fetchImpl:()=>assert.fail('Invalid signing configuration must not dispatch')});
+  const failed=await signing.run(settings());assert.equal(failed.summary.phase,'sign');assert.equal(failed.summary.reason,'signing_failed');
+  assert.equal(failed.summary.stored,false);
+  const output=JSON.stringify([logs,failed]);assert.equal(output.includes(KEY),false);assert.equal(output.includes(TOKEN),false);
+  assert.equal(output.includes('private.invalid'),false);assert.equal(output.includes('authorization'),false);
 });
 
 test('oversized declared/streamed JSON, invalid UTF8, mismatched targets and misleading successful payloads are bounded failures',async()=>{

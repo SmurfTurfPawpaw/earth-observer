@@ -6,6 +6,9 @@ export const MINUTE_TRIGGER_LIMITS = Object.freeze({ responseBytes: 4096, deadli
 const BODY = '{"action":"collect"}', PATH = '/api/collector/trigger', encoder = new TextEncoder();
 const keyPattern = /^[A-Za-z0-9_-]{43,128}$/;
 const statuses = new Set(['stored','failed','busy','denied','unavailable','invalid_request','replayed','uncertain','deadline']);
+const failureReasons = new Set(['signing_failed','transport_failed','response_redirect','response_target','response_media','response_body',
+  'response_limit','response_stream','response_utf8','response_json','response_contract']);
+const responseFailure = reason => Object.assign(new Error('Minute timer response rejected'), { timerReason: reason });
 const count = (value,max) => Number.isSafeInteger(value)&&value>=0&&value<=max?value:null;
 const randomNonce = () => [...crypto.getRandomValues(new Uint8Array(16))].map((value)=>value.toString(16).padStart(2,'0')).join('');
 
@@ -34,21 +37,31 @@ export async function signMinuteTrigger(key,{now=Date.now(),nonce=randomNonce()}
   return {'content-type':'application/json',accept:'application/json','x-earth-trigger-timestamp':timestamp,
     'x-earth-trigger-nonce':nonce,'x-earth-trigger-signature':signature};
 }
-async function readSummary(response,signal) {
+async function readSummary(response,signal,setPhase) {
   const rejectBody=()=>{void response.body?.cancel().catch(()=>{});};
-  if(response.redirected||response.url&&response.url!==MINUTE_TRIGGER_URL||
-      !/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type')||'')||!response.body){rejectBody();throw new Error('Invalid timer response');}
+  setPhase('headers');
+  // Workers supports manual/follow, not browser redirect:error. Never follow a
+  // redirect or inspect its Location; reject it before any body consumption.
+  if(response.status>=300&&response.status<=399||response.redirected){rejectBody();throw responseFailure('response_redirect');}
+  if(response.url&&response.url!==MINUTE_TRIGGER_URL){rejectBody();throw responseFailure('response_target');}
+  if(!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type')||'')){rejectBody();throw responseFailure('response_media');}
+  if(!response.body)throw responseFailure('response_body');
   const declared=response.headers.get('content-length');
-  if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)>MINUTE_TRIGGER_LIMITS.responseBytes)){rejectBody();throw new Error('Invalid timer response size');}
+  if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)>MINUTE_TRIGGER_LIMITS.responseBytes)){rejectBody();throw responseFailure('response_limit');}
   const reader=response.body.getReader(),decoder=new TextDecoder('utf-8',{fatal:true});let text='',bytes=0;
   const cancel=()=>{void reader.cancel().catch(()=>{});};signal.addEventListener('abort',cancel,{once:true});
   try {
+    setPhase('body');
     for(;;){signal.throwIfAborted();const {value,done}=await abortable(reader.read(),signal);signal.throwIfAborted();if(done)break;
-      bytes+=value.byteLength;if(bytes>MINUTE_TRIGGER_LIMITS.responseBytes)throw new Error('Invalid timer response size');text+=decoder.decode(value,{stream:true});}
-    const payload=JSON.parse(text+decoder.decode());
+      bytes+=value.byteLength;if(bytes>MINUTE_TRIGGER_LIMITS.responseBytes)throw responseFailure('response_limit');
+      try{text+=decoder.decode(value,{stream:true});}catch{throw responseFailure('response_utf8');}}
+    setPhase('decode');
+    try{text+=decoder.decode();}catch{throw responseFailure('response_utf8');}
+    let payload;try{payload=JSON.parse(text);}catch{throw responseFailure('response_json');}
+    setPhase('contract');
     if(!payload||typeof payload!=='object'||Array.isArray(payload)||!statuses.has(payload.status)||
         ![true,false,null].includes(payload.stored)||payload.status==='stored'&&payload.stored!==true||
-        response.ok!==(payload.status==='stored')||payload.status!=='stored'&&payload.stored===true)throw new Error('Invalid timer response');
+        response.ok!==(payload.status==='stored')||payload.status!=='stored'&&payload.stored===true)throw responseFailure('response_contract');
     return {status:payload.status,httpStatus:response.status,stored:payload.stored,...collectionAcknowledgment(payload),sourceCount:count(payload.sourceCount,4),
       snapshotCount:count(payload.snapshotCount,4),failureCount:count(payload.failureCount,20),recordCount:count(payload.recordCount,500),
       worldStored:payload.worldStored===true,updatesPublished:payload.updatesPublished===true,
@@ -65,16 +78,19 @@ export function createMinuteTimer({fetchImpl=(...args)=>fetch(...args),now=Date.
     if(configured!=='ready')return {ok:false,summary:{status:configured,stored:false}};
     if(externalSignal?.aborted)return {ok:false,summary:{status:'cancelled',stored:false}};
     const deadline=new AbortController(),signal=externalSignal?AbortSignal.any([deadline.signal,externalSignal]):deadline.signal;
-    const timer=setTimeout(()=>deadline.abort(new Error('Minute timer deadline')),timeoutMs);let dispatched=false;
+    const timer=setTimeout(()=>deadline.abort(new Error('Minute timer deadline')),timeoutMs);let dispatched=false,phase='sign';
     try {
       const headers=await abortable(signMinuteTrigger(env.EARTH_TRIGGER_HMAC_KEY,{now:now(),nonce:nonce()}),signal);
       const operation=Promise.resolve().then(()=>{signal.throwIfAborted();dispatched=true;
-        return fetchImpl(MINUTE_TRIGGER_URL,{method:'POST',headers,body:BODY,signal,redirect:'error',credentials:'omit',cache:'no-store'});});
-      const response=await abortable(operation,signal),summary=await readSummary(response,signal);
+        phase='fetch';return fetchImpl(MINUTE_TRIGGER_URL,{method:'POST',headers,body:BODY,signal,redirect:'manual',credentials:'omit',cache:'no-store'});});
+      const response=await abortable(operation,signal),summary=await readSummary(response,signal,value=>{phase=value;});
       return {ok:response.ok&&summary.status==='stored'&&summary.stored===true,summary};
-    }catch{
+    }catch(error){
       return {ok:false,summary:{status:signal.aborted?(externalSignal?.aborted?'cancelled':'uncertain'):'request_failed',
-        stored:dispatched?null:false,...(dispatched?{readStatusBeforeRetry:true}:{})}};
+        stored:dispatched?null:false,phase,
+        reason:signal.aborted?(externalSignal?.aborted?'cancelled':'deadline'):failureReasons.has(error?.timerReason)?error.timerReason:
+          phase==='sign'?'signing_failed':phase==='fetch'?'transport_failed':'response_stream',
+        ...(dispatched?{readStatusBeforeRetry:true}:{})}};
     }finally{clearTimeout(timer);}
   }
   async function scheduled(controller,env) {

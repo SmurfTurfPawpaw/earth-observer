@@ -2,6 +2,7 @@
   "name": "earth-observer-collector",
   "main": "minute-trigger.js",
   "compatibility_date": "2026-10-11",
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "workers_dev": false,
   "triggers": { "crons": ["* * * * *"] },
   "vars": { "EARTH_MINUTE_TIMER_ENABLED": "1" },

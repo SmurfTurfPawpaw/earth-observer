@@ -64,17 +64,33 @@ async function fixture({ automatic = false, permission = Promise.resolve({ state
     geo: Promise.withResolvers(), initial: { view: { lat: 50, lon: 4, alt: 90000 }, temporal, area: null, layers: ['earthquakes'], requestLocation: automatic },
     timers: new Map(), nextTimer: 0, streamActive: false, rafActive: true, clockActive: true, viewerDestroyed: false, logs: [], startupError,
     temporal: { mode: 'live' }, serialized: [], savedTemporal: [], restoreModes: [], timelineRestores: [], initialError, replaced: [] };
-  const nodes = new Map();
+  const nodes = new Map(), createdElements = [];
+  const element = (tag = 'div') => {
+    const result = new EventTarget(), attributes = new Map();
+    result.tagName = tag.toUpperCase(); result.hidden = false; result.disabled = false;
+    result.textContent = ''; result.value = '10'; result.children = [];
+    result.setAttribute = (name, value) => attributes.set(name, String(value));
+    result.getAttribute = name => attributes.get(name) ?? null;
+    result.append = (...children) => { for (const child of children) { child.parentNode = result; result.children.push(child); } };
+    result.remove = () => {
+      const parent = result.parentNode;
+      if (parent) { const index = parent.children.indexOf(result); if (index >= 0) parent.children.splice(index, 1); }
+      result.parentNode = null;
+    };
+    return result;
+  };
   const node = id => {
     if (!nodes.has(id)) {
-      const element = new EventTarget(); element.hidden = id === 'error'; element.disabled = false;
-      element.setAttribute = () => {}; element.textContent = ''; element.value = '10'; element.children = [];
-      element.append = child => element.children.push(child); element.remove = () => {}; nodes.set(id, element);
+      const result = element(); result.hidden = id === 'error'; nodes.set(id, result);
     }
     return nodes.get(id);
   };
   const document = new EventTarget(); document.hidden = hidden; document.getElementById = node;
-  document.createElement = () => new EventTarget();
+  document.createElement = tag => { const result = element(tag); createdElements.push(result); return result; };
+  document.createElementNS = (namespace, tag) => {
+    assert.equal(namespace, 'http://www.w3.org/2000/svg');
+    return document.createElement(tag);
+  };
   document.querySelector = node;
   const window = new EventTarget();
   const canvas = new EventTarget(), renderError = event(), postRender = event();
@@ -105,20 +121,26 @@ async function fixture({ automatic = false, permission = Promise.resolve({ state
   assert.equal(f.cameraWrites.length, 0, 'Importing main does not own an implicit second startup');
   const starting = context.application.start({ earlySearchIntent: intentFactory?.(f) });
   await flush();
+  if (!startupError && !initialError) assert.equal(f.logs.length, 0,
+    `Unexpected fixture startup error: ${f.logs[0]?.[1]?.message || 'unknown'}`);
   const loseGraphics = () => { const loss = new Event('webglcontextlost', { cancelable: true }); canvas.dispatchEvent(loss); return loss; };
-  return { ...f, f, node, document, window, canvas, context, renderError, loseGraphics, starting,
+  return { ...f, f, node, createdElements, document, window, canvas, context, renderError, loseGraphics, starting,
     locate: () => { const click = new Event('click'); node('locate').dispatchEvent(click); },
     navigate: () => f.navigation.onPlace({ lat: 51, lon: 5 }), flush };
 }
 
 test('successful Locate changes the area and camera without overriding disabled layer intent', async () => {
   const u = await fixture();
+  const display = u.node('header-tools').children.find(child => child.id === 'compatible-display');
+  assert.ok(display); assert.equal(display.getAttribute('aria-pressed'), 'false');
+  assert.equal(u.createdElements.some(element => element.tagName === 'CANVAS'), false, 'Default startup creates no replacement framebuffer');
   u.locate(); u.f.geo.resolve({ lat: 51, lon: 5, radiusKm: 10 }); await u.flush();
   assert.equal(u.f.area.radiusKm, 10); assert.equal(u.f.cameraWrites.at(-1).lat, 51);
   assert.equal(u.f.layerRestores.length, 1, 'Locate must not apply another layer preset');
   assert.equal(u.f.manager.getState().flights.enabled, false);
   assert.match(u.f.calls.at(-1), /^notice:Local data is loading/);
   await u.context.application.destroy();
+  assert.equal(u.node('header-tools').children.includes(display), false, 'Main disposal removes its optional display control');
 });
 
 test('a canceled permission check cannot initiate geolocation, and canceled activation cannot announce local loading', async () => {
@@ -195,12 +217,18 @@ test('startup failure disposes pending search without readiness, and hidden read
 });
 
 test('real main restores History before enabling layers and preserves exact time on camera/layer/committed edits without writing on ticks', async () => {
-  const temporal = { mode: 'history', at: '2025-11-15T12:00:00.123Z', lens: 'known-then', rate: 86400 }, restorationGate = Promise.withResolvers();
-  const u = await fixture({ temporal, restorationGate });
-  assert.equal(u.f.restoreModes[0], 'history'); assert.equal(u.f.sessionSaves, 0, 'Intermediate startup publications cannot replace the incoming URL');
+  const temporal = { mode: 'history', at: '2025-11-15T12:00:00.123Z', lens: 'known-then', rate: 86400 };
+  const modeGate = Promise.withResolvers(), restorationGate = Promise.withResolvers();
+  const u = await fixture({ temporal, modeGate, restorationGate });
+  assert.equal(u.f.restoreModes.length, 0); assert.equal(u.f.sessionSaves, 0, 'Unapplied startup intent cannot replace the incoming URL');
   assert.equal(u.f.shellOptions.canShare(), false, 'Share cannot sample intermediate restored layer intent');
   u.f.navigation.onViewChange({ lat: 50, lon: 4, alt: 90000 }); u.f.managerSubscriber(); assert.equal(u.f.sessionSaves, 0);
-  restorationGate.resolve(); await u.starting; assert.equal(u.f.sessionSaves, 1); assert.equal(u.f.savedTemporal[0].at, temporal.at);
+  modeGate.resolve(); await u.flush();
+  assert.equal(u.f.restoreModes[0], 'history');
+  assert.equal(u.f.shellOptions.canShare(), true, 'Complete requested intent may checkpoint while source delivery is pending');
+  u.f.navigation.onViewChange({ lat: 51, lon: 4, alt: 90000 }); u.f.managerSubscriber();
+  assert.equal(u.f.sessionSaves, 2); assert.ok(u.f.savedTemporal.every(saved => saved.at === temporal.at && saved.lens === temporal.lens && saved.rate === temporal.rate));
+  restorationGate.resolve(); await u.starting; assert.equal(u.f.sessionSaves, 3); assert.equal(u.f.savedTemporal[0].at, temporal.at);
   assert.equal(u.f.shellOptions.canShare(), true); assert.equal(u.f.shellOptions.getTemporal().at, temporal.at);
   assert.equal(u.f.serialized[0].temporal.lens, temporal.lens); assert.equal(u.f.serialized[0].temporal.rate, temporal.rate);
   u.f.temporal = { ...u.f.temporal, at: '2025-11-15T12:00:00.456Z' };
