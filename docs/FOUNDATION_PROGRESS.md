@@ -595,3 +595,43 @@ Scene consumers depend only on that pure contract; optional report inspection
 keeps its domain projection work. Stable IDs, factual revisions, knowledge dates,
 historical buffering and cancellation pass 23 focused existing/new checks. This
 is a dependency-boundary correction, rather than duplicate hashing logic.
+
+### Report package published and accepted — 01:11 UTC
+
+Site version 33 succeeded at 2026-10-12T01:07:50Z, app commit
+ba9676a769e7fe8218b3c91b1ad529bb16c1edbe and combined source
+8ed787c00a4f5c17a79b99aaa3fa62298ef36ab7. The local deployment archive SHA-256
+is a569ce5edb15ed0b6ec259c7d452efaa47c69420797f64d3a9aeba47c2a41d80.
+The initial main module is 164.79 KB / 57.15 KB gzip, compared with version 32's
+162.94 KB / 56.57 KB gzip. Report inspection is a separate 6.06 KB optional
+module. The previously held eager build's roughly 21 KB initial increase was
+not published. Combined Worker size is 59,835,916 bytes / 41,077,719 gzip;
+successful deployment does not establish the separate startup-CPU budget.
+
+The actual hosted browser adopted index-BvwCA4nk and the retained CSS. On both
+desktop and 390×844, opening the current Nabire USGS report from Current feeds
+preserved globe UTC 2025-10-08 00:00:00 and the earthquakes layer choice. Its
+independently retained occurrence, source correction and capture dates opened
+in the dossier. Focus moved to clear-selection and returned to toggle-news on
+close; Context reopened with Current feeds selected. Narrow document width and
+scroll width both remained 390. Screenshots are retained in
+qa-artifacts/published-foundation-v33-report-history.png and
+qa-artifacts/published-foundation-v33-mobile-report.png. The remembered coarse
+NASA imagery choice is visibly blurred at close zoom; default street-map quality
+and imagery-resolution design remain distinct acceptance questions.
+
+Two bounded manual GDELT runs exercised the new diagnostic path. Run38190690763
+rejected batch 20261012011500 at 01:08:07.618Z as manifest-batch-future, reporting
+the unchanged five-minute boundary's notBefore 01:10:00Z. Run38190865346 at
+01:10:47.965Z passed that boundary but the fixed advertised archive returned
+HTTP404. Both jobs completed while acquisition was skipped and prior sample
+bytes/dates stayed intact; workflow success is not fresh-data success. The
+browser's retained sample displayed batch 00:45, retrieved 00:45:39.090Z.
+
+Re-examination found that the controller currently requests whole-calendar
+metadata. The new daily reader's 736-day cap protects storage but would become
+a near-term UI limitation as the two-year pilot grows. Bounded calendar windows,
+full availableRange and window-local gaps must be connected before claiming
+the timeline scales indefinitely. Original-document extraction separately
+passed isolated bundled pypdf6.10.0 and Windows resource quotas; it remains
+local pending independent raw/analysis receipts and scoped producer admission.

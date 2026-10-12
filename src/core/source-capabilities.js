@@ -249,7 +249,7 @@ const sources = [
     history: { current: 'calculated-at-time', firstAvailableAt: 'Model evaluation, not a collected archive.', asKnownThen: 'not-applicable', upstreamArchive: 'not-applicable', backfillImplemented: false, future: 'calculated' },
     interpolation: { mode: 'calculated', extrapolation: false, note: 'Evaluate at chosen UTC without a network request; the model does not forecast events.' },
     rights: { status: 'reviewed-public-display', policyProvider: 'cesium-library', scope: 'Existing CesiumJS library and model; preserve third-party notices.', attribution: 'CesiumJS', evidence: ['https://cesium.com/learn/cesiumjs/ref-doc/Simon1994PlanetaryPositions.html'] },
-    implementation: { adapter: 'implemented', collectorRegistry: false, independentTrigger: 'not-applicable', verification: 'Code reviewed; shared playback integration is a separate foundation phase.', paths: ['src/core/astronomy.js', 'src/core/live-clock.js'] },
+    implementation: { adapter: 'implemented', collectorRegistry: false, independentTrigger: 'not-applicable', verification: 'Code reviewed; astronomy reads the shared scene clock.', paths: ['src/core/astronomy.js', 'src/core/scene-clock.js'] },
     documentation: ['https://cesium.com/learn/cesiumjs/ref-doc/Simon1994PlanetaryPositions.html'],
     gaps: ['No numerical precision or astronomical accuracy range verified here.', 'Visual night brightness includes a usability floor.', 'Satellite orbits require their own element epoch/model contract.'],
   },
