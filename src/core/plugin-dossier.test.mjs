@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { collectEurostatGasOrigins } from '../../server/hosted/eurostat-gas-origins.js';
 import { collectEcbPress } from '../../worker/plugins/ecb-press.js';
 import { pluginFactsDigest } from './plugin-evidence.js';
+import { collectEcPress } from '../../worker/plugins/ec-press.js';
 
 class Element {
   constructor(tag, ownerDocument) { this.tagName = tag; this.ownerDocument = ownerDocument; this.children = []; this.listeners = new Map(); this.attributes = {}; this._text = ''; }
@@ -264,6 +265,9 @@ test('the closed scenario opens against actual retained 2024 evidence, binds its
   const payload = await scenarioEnvelope(), before = JSON.stringify(payload), f = fixture(async () => Response.json(payload));
   await f.panel.select('gas'); await f.panel.open(); const s = scenarioElements(f.container);
   assert.ok(!s.details.open); assert.ok(s.output.hidden); assert.match(visibleText(f.container), /Explore a scenario/);
+  assert.equal(s.origin.attributes['aria-label'], 'Reported origin');
+  assert.equal(s.reduction.attributes['aria-label'], 'Reduce this origin’s imports (%)');
+  assert.equal(s.replacement.attributes['aria-label'], 'Replace the lost volume (%)');
   assert.doesNotMatch(visibleText(f.container), /Hypothetical result|Remaining gap/);
   assert.equal(s.origin.value, 'NO'); assert.equal(s.origin.children.length, 10); assert.ok(s.origin.children.every(option => /^[A-Z]{2}$/.test(option.value)));
   s.details.open = true; s.details.trigger('toggle'); await waitFor(() => !s.output.hidden, 'the local annual scenario');
@@ -312,4 +316,59 @@ test('scenario gaps fail closed and asynchronous local calculations cannot overw
   await waitFor(() => !s.output.hidden, 'the newest local assumptions'); assert.match(s.output.textContent, /Lost origin volume0 TJ/);
   s.reduction.value = '25'; s.reduction.trigger('input'); assert.ok(s.output.hidden); g.panel.destroy();
   await new Promise(resolve => setImmediate(resolve)); assert.ok(s.output.hidden); assert.equal(g.container.textContent, ''); assert.equal(g.requests.length, 1);
+});
+
+async function commission() {
+  const bytes = await readFile(new URL('../../server/hosted/fixtures/ec-press-20261012.xml', import.meta.url));
+  const capture = await collectEcPress({ now: () => Date.parse(receipt.capturedAt),
+    fetchImpl: async () => new Response(bytes, { headers: { 'content-type': 'application/rss+xml' } }) });
+  const own = { ...clone(receipt), sourceUpdatedAt: capture.sourceUpdatedAt, sourceVersion: capture.sourceVersion,
+    rawSha256: capture.raw.sha256, factsDigest: capture.factsDigest, artifactSha256: await pluginFactsDigest(capture.artifact) };
+  return { schemaVersion: 1, available: true, configured: true,
+    plugin: { id: capture.pluginId, scopeId: capture.scopeId, kind: 'publication-feed', name: 'European Commission publication metadata', sourceUrl: capture.sourceUrl },
+    receipt: own, check: { checkedAt: receipt.capturedAt }, artifact: capture.artifact,
+    items: capture.canonicalFacts.items.map(({ sourceRevision, ...item }) => ({ ...item, revision: sourceRevision, firstRecordedAt: own.recordedAt,
+      lastRecordedAt: own.recordedAt, evidence: { ...clone(own), locator: { kind: 'rss-guid', guid: item.sourceRecordId } } })),
+    counts: { returned: capture.canonicalFacts.items.length, more: false } };
+}
+
+test('Commission publications lazily preserve actual source metadata, visible attribution and dates while source evidence stays closed', async () => {
+  const payload = await commission(), f = fixture(async () => Response.json(payload));
+  await f.panel.select('commission'); assert.equal(f.requests.length, 0); await f.panel.open();
+  assert.equal(f.requests.length, 1); assert.equal(f.requests[0][0], '/api/publications?plugin=ec-press-v1&limit=20');
+  assert.equal(elements(f.container).find(el => el.className === 'context-navigation').children.length, 4);
+  assert.match(visibleText(f.container), /Source: European Commission \/ European Union/); assert.match(visibleText(f.container), /document body language is unknown/);
+  assert.match(visibleText(f.container), /Published 2026-10-09 12:14:20 UTC/); assert.match(visibleText(f.container), /Statement · statement_26_2127/);
+  assert.doesNotMatch(visibleText(f.container), /SHA-256|RSS GUID|POLICY_AREA|Raw publication date|independent corroboration/);
+  const article = elements(f.container).find(el => el.className === 'plugin-publication' && el.textContent.includes('statement_26_2127'));
+  const proof = elements(article).find(el => el.className === 'plugin-item-evidence'); assert.ok(!proof.open); proof.open = true;
+  assert.match(visibleText(proof), /Source publication dateFri, 09 Oct 2026 12:14:20 GMT/); assert.match(visibleText(proof), /Source policy tagsPOLICY_AREA=GROWTH,JFRC/);
+  assert.ok(proof.textContent.includes(payload.items.find(item => item.documentReference === 'statement_26_2127').evidence.rawSha256));
+  assert.equal(elements(article).find(el => el.tagName === 'a').href, 'https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2127');
+  f.panel.destroy();
+  for (const mutate of [p => { p.plugin.sourceUrl += '&foreign=1'; }, p => { p.artifact.scopeId = 'other-scope'; },
+    p => { p.items[0].documentReference = 'statement_26_999999'; }, p => { p.items[0].documentType = 'incident'; },
+    p => { p.items[0].publisherId = 'independent-media'; }, p => { p.items[0].url = p.items[0].url.replace('/detail/en/', '/detail/fr/'); },
+    p => { p.items[0].publishedRaw = 'Sun, 11 Oct 2026 15:26:33 GMT'; }, p => { p.items[0].categories = ['GEOMETRY=50,4']; },
+    p => { p.items[0].categories = ['POLICY_AREA=GROWTH', 'POLICY_AREA=GROWTH']; }]) {
+    const invalid = clone(payload); mutate(invalid); assert.throws(() => normalizePluginDossier(invalid, 'commission'));
+  }
+});
+
+test('Commission events are source-isolated and receipt renewal preserves each publication’s own evidence and focus', async () => {
+  let current = await commission(); const older = current.items.find(item => item.documentReference === 'statement_26_2127');
+  older.firstRecordedAt = older.lastRecordedAt = '2026-10-11T14:00:00.000Z';
+  older.evidence = { ...clone(older.evidence), id: `receipt:${'1'.repeat(64)}`, capturedAt: '2026-10-11T13:59:00.000Z', recordedAt: older.lastRecordedAt,
+    rawSha256: '2'.repeat(64), factsDigest: '3'.repeat(64), artifactSha256: '4'.repeat(64) };
+  current.artifact.items = current.artifact.items.filter(item => item.itemId !== older.itemId);
+  const f = fixture(async url => Response.json(url.includes('plugin=ec-press-v1') ? current : gas())); await f.panel.select('gas'); await f.panel.open();
+  f.emit(update(current, 1)); assert.equal(f.requests.length, 1); await f.panel.select('commission'); assert.equal(f.requests.length, 2);
+  const article = elements(f.container).find(el => el.className === 'plugin-publication' && el.textContent.includes('statement_26_2127'));
+  const proof = elements(article).find(el => el.className === 'plugin-item-evidence'); proof.open = true; f.documentRef.activeElement = proof.children[0];
+  assert.ok(proof.textContent.includes(older.evidence.id)); assert.ok(!proof.textContent.includes(current.receipt.rawSha256));
+  f.emit(update(publications(), 1)); f.emit(update(gas(), 1)); assert.equal(f.requests.length, 2);
+  current = edition(current, 'f', current.receipt.factsDigest); f.emit(update(current, 2)); await f.panel.open();
+  assert.equal(f.requests.length, 3); assert.equal(elements(f.container).find(el => el.className === 'plugin-publication' && el.textContent.includes('statement_26_2127')), article);
+  assert.equal(proof.open, true); assert.equal(f.documentRef.activeElement, proof.children[0]); assert.ok(proof.textContent.includes(older.evidence.id));
+  assert.ok(!proof.textContent.includes(current.receipt.rawSha256)); f.panel.destroy();
 });

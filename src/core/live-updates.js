@@ -1,5 +1,6 @@
 export const PLUGIN_UPDATE_SCOPES = Object.freeze({
   'ecb-press-v1': 'ecb-institutional-press-en-v1',
+  'ec-press-v1': 'ec-presscorner-en-metadata-v1',
   'eurostat-gas-origins-v1': 'belgium-natural-gas-origins',
 });
 const pluginFields = new Set(['schemaVersion', 'pluginId', 'scopeId', 'receiptId', 'fence', 'factsDigest', 'recordedAt', 'type']);

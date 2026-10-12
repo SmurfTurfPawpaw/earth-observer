@@ -1,11 +1,11 @@
 import { readFile, unlink, writeFile } from 'node:fs/promises';
-import { prepareOfflineShell, preloadStartupModules, OFFLINE_MANIFEST } from './offline-shell.mjs';
+import { prepareOfflineShell, preloadStartupModules, stampPublicDocumentIdentity, OFFLINE_MANIFEST } from './offline-shell.mjs';
 import { renderServiceWorker } from './service-worker-runtime.mjs';
 const scope = process.env.EARTH_BASE_PATH || '/';
 const [html, manifest] = await Promise.all([readFile('dist/index.html', 'utf8'), readFile('dist/' + OFFLINE_MANIFEST, 'utf8')]);
-await writeFile('dist/index.html', preloadStartupModules({ manifest: JSON.parse(manifest), html, scope }));
-const { critical, version, bytes, shell } = await prepareOfflineShell({ scope });
+await writeFile('dist/index.html', stampPublicDocumentIdentity({ html: preloadStartupModules({ manifest: JSON.parse(manifest), html, scope }), scope }).html);
+const { critical, version, bytes, shell, documentIdentity } = await prepareOfflineShell({ scope });
 await writeFile('dist/' + shell.filename, shell.body);
-await writeFile('dist/sw.js', renderServiceWorker({ critical, version, scope, shell: shell.descriptor }));
+await writeFile('dist/sw.js', renderServiceWorker({ critical, version, scope, shell: shell.descriptor, documentIdentity }));
 await unlink('dist/' + OFFLINE_MANIFEST);
 console.log(`Prepared offline shell: ${critical.length} public assets, ${bytes} bytes; optional dynamic layers excluded.`);

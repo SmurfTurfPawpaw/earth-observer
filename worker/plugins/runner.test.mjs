@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile, readdir } from 'node:fs/promises';
-import { advanceSourcePlugins, startSourcePlugins } from './runner.js';
+import { advanceSourcePlugins, startSourcePlugins, PLUGIN_RUNNER_LIMITS } from './runner.js';
 import { SOURCE_PLUGINS } from './registry.js';
 
 const CLOCK = Date.parse('2026-10-12T02:00:00.000Z'), now = () => CLOCK;
 const UTF8 = new TextEncoder(), gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const gas = new Uint8Array(await readFile(new URL('../../server/hosted/fixtures/eurostat-gas-belgium-2024.json', import.meta.url)));
+const ec = new Uint8Array(await readFile(new URL('../../server/hosted/fixtures/ec-press-20261012.xml', import.meta.url)));
 const ecb = '<rss version="2.0"><channel><title>ECB - European Central Bank</title><link>https://www.ecb.europa.eu/</link><language>en</language>' +
   '<item><title>TEST ONLY institutional statement</title><link>https://www.ecb.europa.eu/press/pr/date/2026/html/ecb.pr261007~0000000001.en.html</link>' +
   '<guid>https://www.ecb.europa.eu/press/pr/date/2026/html/ecb.pr261007~0000000001.en.html</guid><pubDate>Wed, 07 Oct 2026 10:00:00 +0200</pubDate></item></channel></rss>';
@@ -25,7 +26,7 @@ async function fixture(t, { failure = null, held = false } = {}) {
   });
   const directory = new URL('../../drizzle/', import.meta.url);
   for (const name of (await readdir(directory)).filter(name => /^\d{4}_.+\.sql$/.test(name)).sort()) sqlite.exec(await readFile(new URL(name, directory), 'utf8'));
-  const activity = { reads: 0, writes: 0, puts: 0, fetches: [], gets: 0 }, objects = new Map(), ready = gate(), finish = gate();
+  const activity = { reads: 0, writes: 0, puts: 0, fetches: [], gets: 0, active: 0, maximumActive: 0 }, objects = new Map(), ready = gate(), finish = gate();
   let sequence = Promise.resolve();
   const db = { withSession(value) { assert.equal(value, 'first-primary'); return this; },
     prepare(sql) { const bind = (...values) => ({ sql, values, async all() {
@@ -51,12 +52,15 @@ async function fixture(t, { failure = null, held = false } = {}) {
   const fetchImpl = async (url, options) => {
     const plugin = SOURCE_PLUGINS.find(item => item.sourceUrl === url); assert.ok(plugin, 'runner admits only reviewed fixed source URLs');
     assert.equal(options.redirect, 'error'); assert.equal(options.credentials, 'omit'); options.signal.throwIfAborted();
-    activity.fetches.push(plugin.pluginId); if (activity.fetches.length === SOURCE_PLUGINS.length) ready.resolve();
-    if (held) await finish.promise;
-    options.signal.throwIfAborted();
-    if (plugin.pluginId === failure) return new Response('TEST ONLY provider failure', { status: 503 });
-    return plugin.kind === 'dataset' ? new Response(gas, { headers: { 'content-type': 'application/json' } }) :
-      new Response(ecb, { headers: { 'content-type': 'application/rss+xml' } });
+    activity.fetches.push(plugin.pluginId); activity.active++; activity.maximumActive = Math.max(activity.maximumActive, activity.active);
+    if (activity.fetches.length === PLUGIN_RUNNER_LIMITS.concurrentSources) ready.resolve();
+    try {
+      if (held) await finish.promise;
+      options.signal.throwIfAborted();
+      if (plugin.pluginId === failure) return new Response('TEST ONLY provider failure', { status: 503 });
+      return plugin.kind === 'dataset' ? new Response(gas, { headers: { 'content-type': 'application/json' } }) :
+        new Response(plugin.pluginId === 'ec-press-v1' ? ec : ecb, { headers: { 'content-type': 'application/rss+xml' } });
+    } finally { activity.active--; }
   };
   const quiet = () => { assert.deepEqual(activity.fetches, []); assert.equal(activity.reads, 0); assert.equal(activity.writes, 0); assert.equal(activity.puts, 0); assert.equal(activity.gets, 0); };
   return { env, activity, fetchImpl, quiet, ready, finish, sqlite, options: { now, fetchImpl },
@@ -90,9 +94,10 @@ test('registered independent source checks persist the other fixed source when e
     const result = await operation;
     assert.deepEqual([...f.activity.fetches].sort(), SOURCE_PLUGINS.map(plugin => plugin.pluginId).sort());
     assert.equal(result.results.find(item => item.pluginId === failure).status, 'retry');
-    const successful = result.results.find(item => item.pluginId !== failure); assert.equal(successful.status, 'stored'); assert.equal(successful.changed, true);
-    assert.equal(f.count('earth_plugin_captures'), 1); assert.equal(f.count('earth_plugin_heads'), 1);
-    assert.equal(f.sqlite.prepare('SELECT plugin_id FROM earth_plugin_captures').get().plugin_id, successful.pluginId);
+    const successful = result.results.filter(item => item.pluginId !== failure);
+    assert.ok(successful.every(item => item.status === 'stored' && item.changed));
+    assert.equal(f.count('earth_plugin_captures'), successful.length);
+    assert.equal(f.count('earth_plugin_heads'), successful.reduce((sum, item) => sum + (item.pluginId === 'ec-press-v1' ? 10 : 1), 0));
     assert.equal(f.count('earth_investigation_jobs'), 0); assert.equal(f.count('earth_world_captures'), 0);
   }
 });
@@ -102,6 +107,7 @@ test('coalesced wakes reuse exactly one retained operation; a rejected second re
   t.after(() => f.finish.resolve());
   assert.equal(startSourcePlugins(f.env, { waitUntil(value) { first = value; } }, f.options).scheduled, true);
   await within(f.ready.promise);
+  assert.equal(f.activity.fetches.length, 2); assert.equal(f.activity.maximumActive, 2);
   assert.deepEqual(startSourcePlugins(f.env, { waitUntil(value) { second = value; } }, f.options), { scheduled: false, status: 'already_running' });
   assert.equal(first, second);
   let rejected;
@@ -110,6 +116,20 @@ test('coalesced wakes reuse exactly one retained operation; a rejected second re
   assert.deepEqual(rejected, { scheduled: false, status: 'background_unavailable' });
   const result = await first; assert.ok(result.results.every(item => item.status === 'stored'));
   assert.equal(f.activity.fetches.length, SOURCE_PLUGINS.length); assert.equal(f.count('earth_plugin_captures'), SOURCE_PLUGINS.length);
+  assert.equal(f.activity.maximumActive, 2); assert.equal(f.activity.active, 0);
+});
+
+test('one shared wake deadline defers a queued source without acquiring or writing its state', async t => {
+  const f = await fixture(t, { held: true }); t.after(() => f.finish.resolve());
+  const result = await advanceSourcePlugins(f.env, { ...f.options, deadlineMs: 100 });
+  assert.equal(f.activity.fetches.length, 2); assert.equal(f.activity.maximumActive, 2);
+  const queued = SOURCE_PLUGINS[2];
+  assert.equal(result.results[2].pluginId, queued.pluginId); assert.equal(result.results[2].status, 'deferred');
+  assert.equal(result.results[2].acquired, false);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_plugin_state WHERE plugin_id=?').get(queued.pluginId).n, 0);
+  assert.equal(f.count('earth_plugin_captures'), 0);
+  f.finish.resolve();
+  await assert.rejects(advanceSourcePlugins(f.env, { ...f.options, deadlineMs: 27001 }), TypeError);
 });
 
 test('not-due source wakes make one bounded state read per source with no provider calls or evidence writes', async t => {

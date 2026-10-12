@@ -72,6 +72,19 @@ test('unconfigured and missing-migration public GETs explain unavailable evidenc
   f.quiet();
 });
 
+test('Commission is an explicit stored-only publication scope with the same mounted method and cutoff limits', async t => {
+  const f = activityGuard(t), handle = createPluginApiHandler({ now });
+  const path = '/api/publications?plugin=ec-press-v1&limit=20';
+  const response = await handle(request(path), f.env), body = await response.json();
+  assert.equal(response.status, 200); assert.equal(body.available, false); assert.equal(body.plugin.id, 'ec-press-v1');
+  assert.equal(body.plugin.scopeId, 'ec-presscorner-en-metadata-v1'); assert.equal(body.plugin.kind, 'publication-feed');
+  assert.deepEqual(body.items, []); assert.equal(body.receipt, null);
+  assert.equal((await handle(request(path, 'POST'), f.env)).status, 405);
+  assert.equal((await handle(request(`${path}&sourceUrl=https://evil.example`), f.env)).status, 400);
+  assert.equal((await handle(request(`${path}&knownAt=2026-10-10T00:00:00Z`), f.env)).status, 400);
+  f.quiet();
+});
+
 test('the mounted /earth plugin endpoints preserve stored-only and method admission instead of falling through to provider services', async t => {
   const f = activityGuard(t), runtime = createEarthRuntime({ now, cache: null,
     fetchImpl: async () => { f.activity.fetches++; throw Error('TEST ONLY provider fallback forbidden'); } });

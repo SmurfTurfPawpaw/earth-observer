@@ -18,7 +18,7 @@ function alteredAsset(payload) {
   const body = JSON.stringify(payload), digest = createHash('sha256').update(body).digest('hex');
   return { body, descriptor: { ...asset.descriptor, digest, url: scope + `assets/public-shell-${digest}.json` } };
 }
-function harness({ fetchImpl, online = true, values = new Map(), putImpl, shell = asset, version = 'fixture', critical = [scope, engine, scope + 'assets/main-one.js'] } = {}) {
+function harness({ fetchImpl, online = true, values = new Map(), putImpl, shell = asset, version = 'fixture', documentIdentity = null, critical = [scope, engine, scope + 'assets/main-one.js'] } = {}) {
   const listeners = new Map(), reads = [], writes = [], fetches = [], timers = new Map(), messages = [], deleted = [];
   let timerId = 0, now = 100000, activated = 0, claimed = 0;
   const path = request => { const url = new URL(typeof request === 'string' ? request : request.url, origin); return url.pathname + url.search; };
@@ -34,7 +34,7 @@ function harness({ fetchImpl, online = true, values = new Map(), putImpl, shell 
     caches: { async open(name) { return cache(name); }, async keys() { return [...new Set([...values.keys()].map(key => key.split(':')[0]))]; }, async delete(name) { deleted.push(name); for (const key of values.keys()) if (key.startsWith(name + ':')) values.delete(key); } },
     fetch(request, options) { fetches.push([request, options]); if (fetchImpl) return fetchImpl(request, options); const route = path(request); return Promise.resolve(route === shell.descriptor.url ? response(shell.body, route, { 'content-type': 'application/json', 'cache-control': 'public, max-age=31536000, immutable' }) : response('public asset', route)); },
     setTimeout(fn, ms) { timers.set(++timerId, { fn, ms }); return timerId; }, clearTimeout(id) { timers.delete(id); } };
-  vm.runInNewContext(renderServiceWorker({ version, critical, scope, shell: shell.descriptor }), context);
+  vm.runInNewContext(renderServiceWorker({ version, critical, scope, shell: shell.descriptor, documentIdentity }), context);
   function dispatch(route, { mode = 'cors', clientId = 'page', method = 'GET', headers = {} } = {}) {
     const pending = []; let result;
     listeners.get('fetch')({ request: { method, mode, url: route.startsWith('https:') ? route : origin + route, headers: new Headers(headers) }, clientId, resultingClientId: mode === 'navigate' ? clientId : '', respondWith(value) { result = value; }, waitUntil(value) { pending.push(value); } });
@@ -165,6 +165,20 @@ test('offline engine and optional assets preserve the existing cache safety net 
   const optional = scope + 'assets/optional-one.js', h = harness({ online: false, values: new Map([[release + ':' + engine, response('offline engine')], ['earth-observer-assets-v2:' + optional, response('saved optional', optional)]]), fetchImpl() { assert.fail('Offline fetch'); } });
   const event = h.dispatch(engine); assert.equal(await (await event.result).text(), 'offline engine'); await settled(event); assert.equal(await (await h.dispatch(optional).result).text(), 'saved optional'); assert.equal(h.fetches.length, 0); assert.match(h.messages[0].message, /offline storage/);
   const handshake = []; h.listeners.get('message')({ data: { type: 'earth-observer:shell-status' }, source: { id: 'page', postMessage(message) { handshake.push(message); } } }); assert.equal(handshake[0].message, h.messages[0].message);
+});
+
+test('document identity responds only to the requesting in-scope window with fixed public identity, no acquisition, cache access or private payload', () => {
+  const identity = 'a'.repeat(64), h = harness({ documentIdentity: identity }), replies = [];
+  const request = { type: 'earth-observer:document-identity', schemaVersion: 1, requestId: 'b'.repeat(32), scope };
+  const client = { id: 'page', type: 'window', url: origin + scope + '#v=3&lat=50', postMessage(value) { replies.push(value); } };
+  const message = (data = request, source = client, from = origin) => h.listeners.get('message')({ data, source, origin: from });
+  message(); assert.equal(replies.length, 1); assert.equal(JSON.stringify(replies[0]), JSON.stringify({ ...request, identity }));
+  for (const [data, source, from] of [[{ ...request, scope: '/' }, client], [{ ...request, requestId: 'wrong' }, client], [{ ...request, secret: 'private' }, client],
+    [request, { ...client, type: 'serviceworker' }], [request, { ...client, url: origin + '/earth/private' }], [request, { ...client, url: origin + scope + '?session=private' }],
+    [request, { ...client, url: 'https://other.example/earth/' }], [request, client, 'https://other.example']]) message(data, source, from);
+  assert.equal(replies.length, 1); assert.equal(h.fetches.length, 0); assert.equal(h.reads.length, 0); assert.equal(h.writes.length, 0);
+  const legacy = harness(); legacy.listeners.get('message')({ data: request, source: client, origin }); assert.equal(replies.length, 1);
+  assert.throws(() => renderServiceWorker({ critical: [scope], version: 'fixture', scope, documentIdentity: [identity] }), /fixed document identity/);
 });
 
 test('a complete new release retains one matching offline document without persisting newer request-specific navigation', async () => {

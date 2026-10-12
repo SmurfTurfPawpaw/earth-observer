@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLiveUpdates, collectionRevision, pluginRevision } from './live-updates.js';
+import { createLiveUpdates, collectionRevision, pluginRevision, PLUGIN_UPDATE_SCOPES } from './live-updates.js';
 
 const revision = (at = '2026-10-11T13:00:00.000Z') => ({ schemaVersion: 1, collectedAt: at,
   inputDigest: 'a'.repeat(64), recordCount: 350, revision: `${at}:${'a'.repeat(64)}` });
 const plugin = (fence = 1, marker = 'a', facts = marker, pluginId = 'ecb-press-v1') => ({ schemaVersion: 1, pluginId,
-  scopeId: pluginId === 'ecb-press-v1' ? 'ecb-institutional-press-en-v1' : 'belgium-natural-gas-origins',
+  scopeId: PLUGIN_UPDATE_SCOPES[pluginId],
   receiptId: `receipt:${marker.repeat(64)}`, fence, factsDigest: facts.repeat(64), recordedAt: '2026-10-11T13:00:00.000Z' });
 function fixture() {
   const streams = [], timers = new Map(), doc = new EventTarget(), win = new EventTarget(); let timerId = 0, online = true;
@@ -77,15 +77,16 @@ test('typed receipts use independent fences, preserve A/B/A at equal recorded da
   first.send(plugin(), 'plugin'); first.send(plugin(), 'plugin'); first.send(plugin(2, 'b'), 'plugin'); first.send(plugin(3, 'c', 'a'), 'plugin');
   first.send(plugin(1, 'd'), 'plugin'); first.send(plugin(3, 'd'), 'plugin'); first.send(plugin(4, 'c', 'a'), 'plugin');
   first.send(plugin(1, 'd', 'd', 'eurostat-gas-origins-v1'), 'plugin'); first.send(revision());
+  first.send(plugin(1, 'f', 'f', 'ec-press-v1'), 'plugin'); first.send(plugin(1, 'f', 'f', 'ec-press-v1'), 'plugin');
   assert.deepEqual(seen.filter(value => value.type === 'plugin').map(value => [value.pluginId, value.fence, value.factsDigest]),
-    [['ecb-press-v1', 1, 'a'.repeat(64)], ['ecb-press-v1', 2, 'b'.repeat(64)], ['ecb-press-v1', 3, 'a'.repeat(64)], ['eurostat-gas-origins-v1', 1, 'd'.repeat(64)]]);
-  assert.equal(f.streams.length, 1); assert.equal(f.updates.getState().plugins.length, 2);
-  const replay = []; f.updates.subscribe(value => replay.push(value)); assert.deepEqual(replay.filter(value => value.type === 'plugin').map(value => value.fence), [3, 1]);
+    [['ecb-press-v1', 1, 'a'.repeat(64)], ['ecb-press-v1', 2, 'b'.repeat(64)], ['ecb-press-v1', 3, 'a'.repeat(64)], ['eurostat-gas-origins-v1', 1, 'd'.repeat(64)], ['ec-press-v1', 1, 'f'.repeat(64)]]);
+  assert.equal(f.streams.length, 1); assert.equal(f.updates.getState().plugins.length, 3);
+  const replay = []; f.updates.subscribe(value => replay.push(value)); assert.deepEqual(replay.filter(value => value.type === 'plugin').map(value => value.fence), [3, 1, 1]);
   f.doc.hidden = true; f.doc.dispatchEvent(new Event('visibilitychange')); f.doc.hidden = false; f.doc.dispatchEvent(new Event('visibilitychange'));
   const second = f.streams[1]; second.open(); second.send(plugin(3, 'c', 'a'), 'plugin'); second.send(plugin(4, 'e', 'b'), 'plugin');
-  assert.equal(seen.filter(value => value.type === 'plugin').length, 5); first.send(plugin(100, 'f'), 'plugin');
-  assert.equal(seen.filter(value => value.type === 'plugin').length, 5); f.updates.destroy(); second.send(plugin(101, 'f'), 'plugin');
-  assert.equal(seen.filter(value => value.type === 'plugin').length, 5); assert.deepEqual(f.updates.getState().plugins, []);
+  assert.equal(seen.filter(value => value.type === 'plugin').length, 6); first.send(plugin(100, 'f'), 'plugin');
+  assert.equal(seen.filter(value => value.type === 'plugin').length, 6); f.updates.destroy(); second.send(plugin(101, 'f'), 'plugin');
+  assert.equal(seen.filter(value => value.type === 'plugin').length, 6); assert.deepEqual(f.updates.getState().plugins, []);
 });
 
 test('malformed typed receipt fields, foreign scopes and oversized events are rejected before fan-out', () => {

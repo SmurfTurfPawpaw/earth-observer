@@ -4,10 +4,10 @@ Baseline reviewed 11 October 2026 against `822d73a`, with a typed-plugin update 
 12 October. This is a source and
 code audit, not a deployment, freshness, completeness or uptime assertion. The
 machine-readable ledger is [source-capabilities.js](../src/core/source-capabilities.js),
-schema 1, revision 4. `getSourceCapability(id)` returns a frozen reviewed entry or
+schema 1, revision 5. `getSourceCapability(id)` returns a frozen reviewed entry or
 `null`; it does not enable an adapter. The existing public-hosting provider policy
 governs map/proxy admission; the separate reviewed typed-plugin registry admits
-the two institutional/data pilots. The ledger activates neither. Actual manifests, outages and retained evidence restrict
+three institutional/data pilots. The ledger activates neither. Actual manifests, outages and retained evidence restrict
 the ledger further at query time.
 
 Foundation update, 12 October: the separate USGS archive is now hosted with
@@ -49,7 +49,7 @@ do not establish causality or independent confirmation.
 These are separate compiled plugins with D1 leases/completed receipts and immutable
 R2 original bytes, canonical facts and compact artifacts. They do not change the
 four-source hazard/discovery packet, enable a map layer or turn a jurisdiction into
-an incident point. Both source adapters and their storage tests are implemented;
+an incident point. Source adapters and their storage tests are implemented;
 hosted plugin publication/readback and long-running collector availability remain
 separate release gates. Public `/api/publications` and dossier reads never acquire.
 
@@ -63,8 +63,18 @@ receipts, independently of source publication and annual observation periods.
 Changed/reverted facts retain immutable item revisions; unchanged and 304 checks
 update only operational state. A historical cutoff excludes later acquisitions.
 Known-then delivery has a bounded membership budget and cannot substitute partial
-history when that budget is exceeded. Neither pilot supplies a complete two-year
+history when that budget is exceeded. These pilots do not supply a complete two-year
 publisher knowledge archive, forecasts or independent corroboration.
+
+The third typed plugin, `ec-press-v1`, acquires fixed European Commission RSS
+metadata. Its native source proof on 12 October at 00:19:20Z retained 7,100 bytes
+and ten publications with exact GUIDs, UTC/raw source dates and document/category
+fields. English-route metadata does not prove body language, and the rolling window
+can omit releases between checks. Credited EU-owned metadata follows CC BY4.0 with
+changes indicated and individual/third-party exceptions; no image/full body is
+included. This backend package remains local pending publication/readback.
+[Exact scope and source evidence](EC_PRESS_SOURCE.md),
+[Commission legal notice](https://commission.europa.eu/legal-notice_en).
 
 Primary evidence: [ECB official feed directory](https://www.ecb.europa.eu/home/html/rss.en.html),
 [ECB reuse terms](https://www.ecb.europa.eu/services/using-our-site/disclaimer/html/index.en.html),

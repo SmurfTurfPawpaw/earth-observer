@@ -6,7 +6,7 @@
  * separate reviewed plugin registry. This ledger activates neither.
  */
 export const SOURCE_CAPABILITY_SCHEMA_VERSION = 1;
-export const SOURCE_CAPABILITY_REVISION = 4;
+export const SOURCE_CAPABILITY_REVISION = 5;
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const WEATHER_BASE = 'https://nowcoast.noaa.gov/geoserver/observations/';
@@ -215,6 +215,29 @@ const sources = [
     gaps: ['Initial verified query returned 2024 annual data; no invented 2025/2026 observations.',
       'Missing/suppressed values stay missing rather than zero.', 'Supported origin shares do not establish current dependence, route, disruption probability or causation.',
       'No live pricing, trade-flow stream or future model is implemented.'],
+  }),
+  typedPlugin({
+    id: 'ec-press-v1', pluginId: 'ec-press-v1', scopeId: 'ec-presscorner-en-metadata-v1', sourceId: 'european-commission',
+    name: 'European Commission publication metadata', kind: 'publication-feed',
+    access: { type: 'fixed-https-rss', endpoint: 'https://ec.europa.eu/commission/presscorner/api/rss?', credentials: [], publicRead: '/api/publications?plugin=ec-press-v1' },
+    geography: { type: 'none', completeness: 'publisher-metadata-only', resolution: 'Policy tags and publication places are not incident coordinates or proof of applicable geography.' },
+    temporal: { validTime: 'Source publication metadata, not incident time or legal effective dates.',
+      publicationTime: 'Original RSS pubDate retained with explicit timezone and second representation; exact public-release instant is not independently verified.',
+      captureTime: 'Original RSS bytes and actual source acquisition.', knowledgeTime: 'Actual completed database receipt; importing an older publication cannot backdate hosted knowledge.' },
+    cadence: { providerIntervalMs: null, providerMeaning: 'Irregular Commission publications in a rolling feed; no delivery guarantee.', checkIntervalMs: 5 * MINUTE,
+      checkMeaning: 'Due authenticated collector wakes; public reads never acquire. Typed source work has two per-wake slots and a shared 27-second budget; deferred work awaits another wake.', sourceLatencyMs: null, guaranteed: false },
+    bounds: { maxRecords: 32, maxFeedItems: 100, observedProviderWindow: 10, maxCategoriesPerItem: 8,
+      maxResponseBytes: 524288, maxArtifactBytes: 65536, deadlineMs: 20000 },
+    upstreamArchive: 'Rolling English-route metadata only; body language is unknown. Source items leaving the feed stay retained; no historical publication backfill or full-document investigation is implemented.',
+    rights: { status: 'reviewed-public-display', policyProvider: 'ec-owned-publication-metadata',
+      attribution: 'European Commission / European Union; original source linked',
+      scope: 'EU-owned title/link/date/category metadata under CC BY4.0 with credit and changes indicated; individual and third-party exceptions apply. No images, branding or full document bodies.',
+      evidence: ['https://commission.europa.eu/legal-notice_en', 'https://creativecommons.org/licenses/by/4.0/'] },
+    documentation: ['https://ec.europa.eu/commission/presscorner/home/en'],
+    paths: ['worker/plugins/ec-press.js', 'worker/plugins/bounded-rss.js'],
+    gaps: ['The observed ten-item rolling feed can omit publications between checks.', 'English-route metadata does not prove document body language.',
+      'Publication dates and policy categories do not establish incident location, legal effects, causal claims or independent corroboration.',
+      'RSS snippets are raw evidence only; no full-text extraction or document investigation is included.'],
   }),
   {
     id: 'astronomy', name: 'Calculated Sun, Moon and day/night lighting', kind: 'calculated',

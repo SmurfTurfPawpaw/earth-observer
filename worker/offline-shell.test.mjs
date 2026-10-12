@@ -8,7 +8,8 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { collectOfflineShell, prepareOfflineShell, preloadStartupModules, publicShellAsset, PUBLIC_SHELL_MAX_BYTES, OFFLINE_MANIFEST } from '../scripts/offline-shell.mjs';
+import { collectOfflineShell, prepareOfflineShell, preloadStartupModules, publicShellAsset, PUBLIC_SHELL_MAX_BYTES, OFFLINE_MANIFEST,
+  stampPublicDocumentIdentity, publicDocumentIdentity } from '../scripts/offline-shell.mjs';
 import { renderServiceWorker } from '../scripts/service-worker-runtime.mjs';
 const manifest = () => ({
   'index.html': { file: 'assets/bootstrap-one.js', imports: ['_shared.js', '_preview.js'], dynamicImports: ['src/main.js', 'src/optional.js'], css: ['assets/app-one.css'] },
@@ -67,6 +68,19 @@ test('modulepreload follows only the real main static closure, respects mounted 
   assert.throws(() => preloadStartupModules({ manifest: unsafe, html: original }), /unsafe/);
   assert.throws(() => preloadStartupModules({ manifest: input, html: original, maxAssets: 2 }), /budget/);
 });
+
+test('the public UI identity is stamped after startup references without a circular shell hash and changes with UI rather than backend release', () => {
+  const scope = '/earth/', template = '<html><head>' + html(scope) + '</head><body>Public globe</body></html>';
+  const prepared = preloadStartupModules({ manifest: manifest(), html: template, scope });
+  const first = stampPublicDocumentIdentity({ html: prepared, scope });
+  assert.equal(publicDocumentIdentity(first.html), first.identity); assert.equal(stampPublicDocumentIdentity({ html: prepared, scope }).identity, first.identity);
+  const a = publicShellAsset({ html: first.html, version: 'backend-a', scope }), b = publicShellAsset({ html: first.html, version: 'backend-b', scope });
+  assert.notEqual(a.descriptor.digest, b.descriptor.digest); assert.equal(publicDocumentIdentity(JSON.parse(a.body).html), publicDocumentIdentity(JSON.parse(b.body).html));
+  assert.notEqual(stampPublicDocumentIdentity({ html: prepared.replace('main-one.js', 'main-two.js'), scope }).identity, first.identity);
+  assert.notEqual(stampPublicDocumentIdentity({ html: prepared.replace('Public globe', 'Updated globe'), scope }).identity, first.identity);
+  assert.throws(() => stampPublicDocumentIdentity({ html: first.html, scope }), /already stamped/);
+  assert.throws(() => publicDocumentIdentity(first.html.replace('</head>', `<meta name="earth-observer-ui-identity" content="${first.identity}"></head>`)), /Invalid/);
+});
 test('a temporary mounted build resolves plugin vendor folders, checks missing files/byte budget and versions static dependency content', async () => {
   const parent = path.resolve(tmpdir()), folder = await mkdtemp(path.join(parent, 'earth-offline-'));
   assert.equal(path.resolve(folder).startsWith(parent + path.sep), true); assert.match(path.basename(folder), /^earth-offline-/);
@@ -118,6 +132,8 @@ test('the actual generator emits scoped universal JSON after startup preloads wi
     await promisify(execFile)(process.execPath, [script], { cwd: folder, env: { ...process.env, EARTH_BASE_PATH: scope } });
     const builtHtml = await readFile(path.join(folder, 'dist/index.html'), 'utf8'), sw = await readFile(path.join(folder, 'dist/sw.js'), 'utf8');
     assert.match(builtHtml, /modulepreload[^>]+main-one\.js/);
+    const identity = publicDocumentIdentity(builtHtml); assert.match(identity, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.parse(/const DOCUMENT_IDENTITY = ("[a-f0-9]+")/.exec(sw)[1]), identity);
     const descriptor = JSON.parse(/const SHELL = (\{[^;]+\}), SHELL_RELEASE/.exec(sw)[1]);
     const body = await readFile(path.join(folder, 'dist', descriptor.url.slice(scope.length)), 'utf8');
     assert.equal(createHash('sha256').update(body).digest('hex'), descriptor.digest); assert.equal(JSON.parse(body).html, builtHtml);

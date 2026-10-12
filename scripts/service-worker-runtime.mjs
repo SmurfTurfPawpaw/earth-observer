@@ -11,12 +11,14 @@ export function ofmCacheKind(url) {
   return z <= 14 && x < 2 ** z && y < 2 ** z ? 'tile' : null;
 }
 
-export function renderServiceWorker({ critical, version, scope, shell = null }) {
+export function renderServiceWorker({ critical, version, scope, shell = null, documentIdentity = null }) {
   if (shell && (shell.url !== `${scope}assets/public-shell-${shell.digest}.json` || !/^[a-f0-9]{64}$/.test(shell.digest) || !/^[a-f0-9]{64}$/.test(shell.htmlDigest))) throw new Error('Invalid fixed public shell descriptor');
+  if (documentIdentity !== null && (typeof documentIdentity !== 'string' || !/^[a-f0-9]{64}$/.test(documentIdentity))) throw new Error('Invalid fixed document identity');
   return `/* Generated cache release ${version}. Public assets only; no API/image submission cache. */
 const RELEASE = 'earth-observer-shell-v3-${version}', RUNTIME = 'earth-observer-assets-v2', TILES = 'earth-observer-basemap-v2';
 const PRECACHE = ${JSON.stringify(critical)};
 const SCOPE = ${JSON.stringify(scope)};
+const DOCUMENT_IDENTITY = ${JSON.stringify(documentIdentity)};
 const SHELL = ${JSON.stringify(shell)}, SHELL_RELEASE = ${JSON.stringify(version)}, SHELL_BYTES = ${PUBLIC_SHELL_MAX_BYTES};
 const DOCUMENT_HEADERS = ${JSON.stringify(DOCUMENT_HEADERS)};
 const COMPLETE = new URL('__earth-shell-complete__', location.origin + SCOPE).href, MARKER_BYTES = ${RELEASE_MARKER_MAX_BYTES};
@@ -230,6 +232,15 @@ function reportFallback(event, message) {
   background(event, self.clients.get(id).then(client => client?.postMessage({type:'earth-observer:shell-status', message})));
 }
 self.addEventListener('message', event => {
+  if (event.data?.type === 'earth-observer:document-identity') {
+    const value = event.data, source = event.source;
+    if (!DOCUMENT_IDENTITY || Array.isArray(value) || !source?.id || source.type !== 'window' || typeof source.postMessage !== 'function' || event.origin !== location.origin ||
+      Object.keys(value).sort().join(',') !== 'requestId,schemaVersion,scope,type' || value.schemaVersion !== 1 || value.scope !== SCOPE ||
+      typeof value.requestId !== 'string' || !/^[a-f0-9]{32}$/.test(value.requestId)) return;
+    let url; try { url = new URL(source.url); } catch { return; }
+    if (url.origin !== location.origin || url.pathname !== SCOPE || url.search || url.username || url.password) return;
+    source.postMessage({type:'earth-observer:document-identity', schemaVersion:1, requestId:value.requestId, scope:SCOPE, identity:DOCUMENT_IDENTITY}); return;
+  }
   if (event.data?.type === 'earth-observer:shell-status' && event.source?.id) {
     const message = offlineClients.get(event.source.id);
     if (message) event.source.postMessage({type:'earth-observer:shell-status', message});

@@ -56,7 +56,7 @@ test('calculated astronomy is separate from observed acquisition and event predi
 });
 
 test('typed institutional/data plugins match the actual registry and cannot become four-source incident layers', () => {
-  assert.equal(SOURCE_CAPABILITIES.schemaVersion, 1); assert.equal(SOURCE_CAPABILITIES.revision, 4);
+  assert.equal(SOURCE_CAPABILITIES.schemaVersion, 1); assert.equal(SOURCE_CAPABILITIES.revision, 5);
   const typed = listSourceCapabilities().filter(source => source.implementation.typedPluginRegistry);
   assert.deepEqual(typed.map(source => source.id), SOURCE_PLUGINS.map(plugin => plugin.pluginId));
   for (const plugin of SOURCE_PLUGINS) {
@@ -74,6 +74,9 @@ test('typed institutional/data plugins match the actual registry and cannot beco
   assert.equal(getSourceCapability('eurostat-gas-origins-v1').bounds.unit, 'TJ_GCV');
   assert.equal(getSourceCapability('eurostat-gas-origins-v1').bounds.frequency, 'A');
   assert.equal(getSourceCapability('ecb-press-v1').access.publicRead, '/api/publications');
+  assert.equal(getSourceCapability('ec-press-v1').bounds.observedProviderWindow, 10);
+  assert.equal(getSourceCapability('ec-press-v1').geography.type, 'none');
+  assert.match(getSourceCapability('ec-press-v1').history.upstreamArchive, /body language is unknown/);
 });
 
 test('actual MCP capability schema and read-only tool return both typed entries without acquiring or publishing', async () => {

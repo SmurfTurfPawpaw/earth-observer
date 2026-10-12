@@ -8,7 +8,7 @@ const SELECT_ALL = `SELECT id,collected_at,input_digest,record_count,revision,
   UNION ALL SELECT 0,NULL,NULL,NULL,NULL,s.plugin_id,s.scope_id,c.receipt_id,c.fence,c.facts_digest,c.recorded_at
   FROM earth_plugin_state s JOIN earth_plugin_captures c ON c.receipt_id=s.current_receipt
     AND c.plugin_id=s.plugin_id AND c.scope_id=s.scope_id
-  WHERE s.plugin_id IN ('ecb-press-v1','eurostat-gas-origins-v1')`;
+  WHERE s.plugin_id IN ('ecb-press-v1','ec-press-v1','eurostat-gas-origins-v1')`;
 const UPSERT = `INSERT INTO earth_collection_revision (id, collected_at, input_digest, record_count, revision)
   VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET collected_at = excluded.collected_at,
   input_digest = excluded.input_digest, record_count = excluded.record_count, revision = excluded.revision

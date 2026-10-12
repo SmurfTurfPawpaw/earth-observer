@@ -1,5 +1,6 @@
 import { pluginBytesDigest, pluginFactsDigest, pluginJson } from '../../src/core/plugin-evidence.js';
 import { sourcePlugin, publicPlugin } from './registry.js';
+import { rssPublicationTime } from './bounded-rss.js';
 
 export const PLUGIN_STORE_LIMITS = Object.freeze({ deadlineMs: 27000, storageMs: 2000,
   leaseMs: 60000, factsBytes: 768 * 1024, artifactBytes: 65536, projectionBytes: 65536,
@@ -75,9 +76,24 @@ function projection(item, plugin) {
     new URL(item.url).protocol !== 'https:' || item.publishedAt !== null && !utc(item.publishedAt) ||
     !['unknown', 'second', 'day', 'year'].includes(item.publishedPrecision) ||
     item.kind !== (plugin.kind === 'dataset' ? 'statistical-dataset' : 'original-publication')) throw fail('invalid_plugin_evidence');
+  let document = {};
+  if (plugin.pluginId === 'ec-press-v1') {
+    const match = /^https:\/\/ec\.europa\.eu\/commission\/presscorner\/detail\/en\/(ip|statement|read|qanda|fs|mex|speech)_([0-9]{2})_([0-9]{1,7})$/.exec(item.url);
+    let sourceTime;
+    try { sourceTime = typeof item.publishedRaw === 'string' && item.publishedRaw.length <= 128 ? rssPublicationTime(item.publishedRaw.trim()) : null; }
+    catch { throw fail('invalid_plugin_evidence'); }
+    if (plugin.scopeId !== 'ec-presscorner-en-metadata-v1' || !match || item.sourceRecordId !== item.url ||
+        item.publisherId !== 'european-commission' || !/^publication:ec:[a-f0-9]{64}$/.test(item.itemId) ||
+        item.publishedPrecision !== 'second' || sourceTime === null || sourceTime !== item.publishedAt || UTF8.encode(item.title).byteLength > 512 ||
+        item.documentType !== match[1] || item.documentReference !== `${match[1]}_${match[2]}_${match[3]}` ||
+        !Array.isArray(item.categories) || item.categories.length > 8 || new Set(item.categories).size !== item.categories.length ||
+        item.categories.some(value => typeof value !== 'string' || value.length > 256 || !/^POLICY_AREA=[A-Z][A-Z0-9]{0,63}(?:,[A-Z][A-Z0-9]{0,63}){0,15}$/.test(value)))
+      throw fail('invalid_plugin_evidence');
+    document = { documentReference: item.documentReference, documentType: item.documentType, categories: [...item.categories] };
+  }
   return { itemId: item.itemId, revision: item.sourceRevision, kind: item.kind, title: item.title, url: item.url,
     sourceRecordId: item.sourceRecordId, publishedAt: item.publishedAt, publishedPrecision: item.publishedPrecision,
-    ...(typeof item.publishedRaw === 'string' ? { publishedRaw: item.publishedRaw } : {}) };
+    ...(typeof item.publishedRaw === 'string' ? { publishedRaw: item.publishedRaw } : {}), ...document };
 }
 function validators(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['etag', 'lastModified'].includes(key))) throw fail('invalid_plugin_evidence');

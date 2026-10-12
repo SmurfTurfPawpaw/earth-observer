@@ -5,8 +5,30 @@ import path from 'node:path';
 export const OFFLINE_MANIFEST = '.offline-manifest.json';
 export const PUBLIC_SHELL_MAX_BYTES = 64 * 1024;
 export const RELEASE_MARKER_MAX_BYTES = 16 * 1024;
+export const DOCUMENT_IDENTITY_META = 'earth-observer-ui-identity';
 const validScope = (scope) => /^\/(?:[a-z0-9-]+\/)*$/.test(scope);
 const safeFile = (file) => typeof file === 'string' && /^assets\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$/.test(file) && !file.split('/').some((part) => part === '.' || part === '..');
+
+export function publicDocumentIdentity(html) {
+  const identities = [];
+  for (const tag of String(html).matchAll(/<meta\b[^>]*>/gi)) {
+    const attributes = new Map([...tag[0].matchAll(/\b([a-z][a-z0-9-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(match => [match[1].toLowerCase(), match[2] ?? match[3]]));
+    if (attributes.get('name') === DOCUMENT_IDENTITY_META) identities.push(attributes.get('content'));
+  }
+  if (!identities.length) return null;
+  if (identities.length !== 1 || !/^[a-f0-9]{64}$/.test(identities[0] || '')) throw new Error('Invalid public document identity');
+  return identities[0];
+}
+
+/** Hash the final public UI template and content-addressed startup references,
+ * before adding its identity. Backend-only releases keep the same UI identity.
+ */
+export function stampPublicDocumentIdentity({ html, scope = '/' }) {
+  if (!validScope(scope) || typeof html !== 'string' || !/<\/head\s*>/i.test(html)) throw new Error('Public document head or scope is missing');
+  if (publicDocumentIdentity(html)) throw new Error('Public document identity is already stamped');
+  const identity = createHash('sha256').update('earth-observer-ui-v1\0').update(scope).update('\0').update(html).digest('hex');
+  return { identity, html: html.replace(/<\/head\s*>/i, `<meta name="${DOCUMENT_IDENTITY_META}" content="${identity}">\n</head>`) };
+}
 
 function mainEntry(manifest) {
   const startup = [...new Set(manifest['index.html']?.dynamicImports || [])].filter((key) => {
@@ -118,5 +140,5 @@ export async function prepareOfflineShell({ outDir = 'dist', scope = '/', maxAss
   // Replace the root acquisition with JSON rather than adding another request or relaxing the budget.
   bytes += Buffer.byteLength(shell.body) - Buffer.byteLength(html) + markerBytes;
   if (bytes > maxBytes) throw new Error('Offline shell bytes exceeded their budget');
-  return { critical, version, bytes, shell };
+  return { critical, version, bytes, shell, documentIdentity: publicDocumentIdentity(html) };
 }

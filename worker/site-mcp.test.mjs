@@ -217,7 +217,7 @@ test('typed evidence tools advertise fixed scopes, strict UTC and read-only anno
   const handle = createSiteMcpHandler(), listed = await (await handle(rpc('tools/list'))).json();
   const dossier = listed.result.tools.find(({ name }) => name === 'source_dossier'), publications = listed.result.tools.find(({ name }) => name === 'list_publications');
   assert.deepEqual(dossier.inputSchema.properties.dossierId.enum, ['belgium-natural-gas-origins']); assert.deepEqual(dossier.inputSchema.required, ['dossierId']);
-  assert.deepEqual(publications.inputSchema.properties.pluginId.enum, ['ecb-press-v1']); assert.deepEqual(publications.inputSchema.required, ['pluginId']);
+  assert.deepEqual(publications.inputSchema.properties.pluginId.enum, ['ecb-press-v1', 'ec-press-v1']); assert.deepEqual(publications.inputSchema.required, ['pluginId']);
   for (const tool of [dossier, publications]) {
     assert.equal(tool.inputSchema.additionalProperties, false); assert.equal(tool.annotations.readOnlyHint, true); assert.equal(tool.annotations.openWorldHint, false);
     assert.equal(tool.annotations.destructiveHint, false); assert.ok(new RegExp(tool.inputSchema.properties.knownAt.pattern).test('2026-10-10T12:00:00.000Z'));
@@ -292,4 +292,16 @@ test('new stored evidence tools preserve delivery budgets, deadline admission an
   assert.equal(toolValue(JSON.parse(limitedText)).error, 'result_too_large'); assert.ok(new TextEncoder().encode(limitedText).byteLength < SITE_MCP_LIMITS.resultBytes);
   const stalled = createSiteMcpHandler({ deadlineMs: 15, readPublications: async () => new Promise(() => {}) });
   assert.equal(toolValue(await (await stalled(call('list_publications', { pluginId: 'ecb-press-v1' }))).json()).error, 'request_deadline');
+});
+
+test('Commission publication tool keeps exact reviewed scope and metadata in an anonymous read without acquisition or writes', async () => {
+  let reads = 0, writes = 0, fetches = 0;
+  const payload = { schemaVersion: 1, available: true, plugin: { id: 'ec-press-v1', scopeId: 'ec-presscorner-en-metadata-v1' },
+    items: [{ documentReference: 'statement_26_2127', documentType: 'statement', categories: ['POLICY_AREA=GROWTH,JFRC'] }], counts: { returned: 1, more: false } };
+  const knownAt = '2026-10-10T13:00:00.000Z', at = '2026-10-09T00:00:00.000Z';
+  const handle = createSiteMcpHandler({ now: () => NOW,
+    readPublications: async (_, plugin, options) => { reads++; assert.equal(plugin, 'ec-press-v1'); assert.equal(options.knownAt, knownAt); assert.equal(options.at, at); assert.equal(options.limit, 20); return payload; },
+    collectionHandler: async () => { writes++; }, fetchImpl: async () => { fetches++; } });
+  const result = await (await handle(call('list_publications', { pluginId: 'ec-press-v1', at, knownAt }), {})).json();
+  assert.deepEqual(toolValue(result), payload); assert.equal(reads, 1); assert.equal(writes, 0); assert.equal(fetches, 0);
 });

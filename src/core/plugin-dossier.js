@@ -4,7 +4,10 @@ import { createGasExposureScenario } from './gas-scenario.js';
 
 export const PLUGIN_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, publications: 40, years: 10, origins: 20, refreshMs: 300000 });
 const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', pluginId: 'eurostat-gas-origins-v1', url: '/api/dossiers/belgium-natural-gas-origins', kind: 'dataset-dossier' },
-  publications: { label: 'ECB releases', pluginId: 'ecb-press-v1', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' } });
+  publications: { label: 'ECB releases', title: 'ECB institutional releases', subtitle: 'Original publications · European Central Bank', pluginId: 'ecb-press-v1', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' },
+  commission: { label: 'Commission', title: 'European Commission publications', subtitle: 'Original publication metadata · European Commission / European Union', pluginId: 'ec-press-v1', url: '/api/publications?plugin=ec-press-v1&limit=20', kind: 'publication-feed-overview' } });
+const EC_DOCUMENT_TYPES = Object.freeze({ ip: 'Press release', statement: 'Statement', read: 'Readout', qanda: 'Questions and answers', fs: 'Factsheet', mex: 'Daily news', speech: 'Speech' });
+const EC_REFERENCE = /^https:\/\/ec\.europa\.eu\/commission\/presscorner\/detail\/en\/([a-z]+)_([0-9]{2})_([0-9]{1,7})$/;
 const time = (value) => { try { return worldTime(value); } catch { return null; } };
 const displayTime = (value) => time(value)?.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') || 'Not supplied';
 const text = (value, bound = 1000) => typeof value === 'string' && value.length > 0 && value.length <= bound;
@@ -12,14 +15,15 @@ const finite = (value) => typeof value === 'number' && Number.isFinite(value);
 const number = new Intl.NumberFormat('en', { maximumFractionDigits: 2 });
 const sourceUrl = (value, view) => {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password && url.href.length <= 2048 &&
-    (view === 'gas' ? url.hostname === 'ec.europa.eu' : url.hostname === 'www.ecb.europa.eu') ? url.href : null; } catch { return null; }
+    (view === 'publications' ? url.hostname === 'www.ecb.europa.eu' : url.hostname === 'ec.europa.eu') ? url.href : null; } catch { return null; }
 };
 
 /** Admit reviewed stored projections; external strings never become markup or map features. */
 export function normalizePluginDossier(value, view) {
   const spec = VIEWS[view];
   if (!spec || value?.schemaVersion !== 1 || typeof value.configured !== 'boolean' || typeof value.available !== 'boolean' ||
-    value.plugin?.id !== spec.pluginId || value.plugin.scopeId !== PLUGIN_UPDATE_SCOPES[spec.pluginId] || !sourceUrl(value.plugin.sourceUrl, view)) throw new Error('Stored source context has an incompatible contract');
+    value.plugin?.id !== spec.pluginId || value.plugin.scopeId !== PLUGIN_UPDATE_SCOPES[spec.pluginId] || !sourceUrl(value.plugin.sourceUrl, view) ||
+    view === 'commission' && value.plugin.sourceUrl !== 'https://ec.europa.eu/commission/presscorner/api/rss?') throw new Error('Stored source context has an incompatible contract');
   if (!value.available) return value;
   if (!value.configured) throw new Error('Stored source context is unavailable');
   const receipt = value.receipt, artifact = value.artifact;
@@ -38,14 +42,23 @@ export function normalizePluginDossier(value, view) {
       for (const row of year.shares) if (!text(row.partner?.code, 40) || !text(row.partner.label, 160) || !finite(row.quantity) || row.sharePercent !== null && !finite(row.sharePercent)) throw new Error('Annual gas origin row is invalid');
     }
   } else {
-    if (value.plugin.id !== 'ecb-press-v1' || artifact.pluginId !== 'ecb-press-v1' || !Array.isArray(value.items) || value.items.length > PLUGIN_DOSSIER_LIMITS.publications ||
+    if (artifact.pluginId !== spec.pluginId || artifact.scopeId !== PLUGIN_UPDATE_SCOPES[spec.pluginId] || !Array.isArray(value.items) || value.items.length > PLUGIN_DOSSIER_LIMITS.publications ||
       value.counts?.returned !== value.items.length || typeof value.counts?.more !== 'boolean') throw new Error('Institutional publication context is invalid');
     const ids = new Set();
     for (const item of value.items) {
       const url = sourceUrl(item.url, view);
       if (!text(item.itemId, 256) || ids.has(item.itemId) || !isWorldDigest(item.revision) || item.kind !== 'original-publication' || !text(item.title, 1000) ||
-        !url || !/^\/{1,2}press\/pr\/date\//.test(new URL(url).pathname) || !time(item.publishedAt) || item.publishedPrecision !== 'second' ||
+        !url || (view === 'commission' ? !EC_REFERENCE.test(url) : !/^\/{1,2}press\/pr\/date\//.test(new URL(url).pathname)) || !time(item.publishedAt) || item.publishedPrecision !== 'second' ||
         !time(item.firstRecordedAt) || !time(item.lastRecordedAt)) throw new Error('Institutional publication record is invalid');
+      if (view === 'commission') {
+        const reference = EC_REFERENCE.exec(url), documentReference = `${reference[1]}_${reference[2]}_${reference[3]}`;
+        if (!/^publication:ec:[a-f0-9]{64}$/.test(item.itemId) || item.publisherId !== 'european-commission' ||
+          !Object.hasOwn(EC_DOCUMENT_TYPES, item.documentType) || item.documentType !== reference[1] || item.documentReference !== documentReference ||
+          !text(item.publishedRaw, 128) || Date.parse(item.publishedRaw.trim()) !== Date.parse(item.publishedAt) ||
+          !Array.isArray(item.categories) || item.categories.length > 8 || new Set(item.categories).size !== item.categories.length ||
+          item.categories.some((category, index) => !text(category, 256) || !/^POLICY_AREA=[A-Z][A-Z0-9]{0,63}(?:,[A-Z][A-Z0-9]{0,63}){0,15}$/.test(category) ||
+            index > 0 && item.categories[index - 1] >= category)) throw new Error('Commission publication metadata is incompatible with its source reference');
+      }
       const own = item.evidence;
       if (!own || !/^receipt:[a-f0-9]{64}$/.test(own.id || '') || !time(own.capturedAt) || !time(own.recordedAt) ||
         !['factsDigest', 'rawSha256', 'artifactSha256'].every((key) => isWorldDigest(own[key])) ||
@@ -128,7 +141,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     const controls = node('div', 'intelligence-filters'), origin = node('select'), reduction = node('input'), replacement = node('input');
     origin.name = 'gas-scenario-origin'; reduction.name = 'gas-scenario-reduction'; replacement.name = 'gas-scenario-replacement';
     for (const [label, input] of [['Reported origin', origin], ['Reduce this origin’s imports (%)', reduction], ['Replace the lost volume (%)', replacement]]) {
-      const field = node('label', '', label); field.append(input); controls.append(field);
+      input.setAttribute('aria-label', label); const field = node('label', '', label); field.append(input); controls.append(field);
     }
     for (const [input, value] of [[reduction, '25'], [replacement, '40']]) { input.type = 'number'; input.min = '0'; input.max = '100'; input.step = '0.1'; input.value = value; input.required = true; }
     const notice = node('p', 'plugin-note plugin-scenario-status'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
@@ -231,11 +244,13 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
       methods.append(node('p', 'plugin-note', artifact.limitations), link('Open Eurostat dataset', artifact.source.datasetUrl)); content.append(methods);
       scenario ||= gasScenario(); content.append(scenario.element); scenario.update(payload);
     } else {
-      title.textContent = 'ECB institutional releases'; subtitle.textContent = 'Original publications · European Central Bank';
+      title.textContent = VIEWS[view].title; subtitle.textContent = VIEWS[view].subtitle;
+      if (view === 'commission') content.append(node('p', 'plugin-note', 'Source: European Commission / European Union. Publication metadata only; document body language is unknown.'));
       const list = node('div', 'plugin-publications');
       for (const item of payload.items) {
         const article = node('article', 'plugin-publication'), heading = node('h4'); heading.append(link(item.title, item.url)); article.append(heading);
         article.append(node('p', 'plugin-publication-date', `Published ${displayTime(item.publishedAt)}`));
+        if (view === 'commission') article.append(node('p', 'plugin-note', `${EC_DOCUMENT_TYPES[item.documentType]} · ${item.documentReference}`));
         const knowledge = node('p', 'plugin-note', `First retained ${displayTime(item.firstRecordedAt)} · latest retained ${displayTime(item.lastRecordedAt)}`);
         const currentItem = p => p.items.find(value => value.itemId === item.itemId);
         evidenceBindings.push({ data: knowledge, getter: p => `First retained ${displayTime(currentItem(p).firstRecordedAt)} · latest retained ${displayTime(currentItem(p).lastRecordedAt)}` });
@@ -244,20 +259,28 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
         const facts = node('dl', 'plugin-facts'), own = p => currentItem(p).evidence;
         bindFacts(facts, payload, [['Source receipt', p => own(p).id], ['Source retrieved', p => displayTime(own(p).capturedAt)], ['Receipt recorded', p => displayTime(own(p).recordedAt)],
           ['Source revised', p => own(p).sourceUpdatedAt ? displayTime(own(p).sourceUpdatedAt) : null], ['Raw SHA-256', p => own(p).rawSha256],
-          ['Facts SHA-256', p => own(p).factsDigest], ['Artifact SHA-256', p => own(p).artifactSha256], ['RSS GUID locator', p => own(p).locator.guid]]);
+          ['Facts SHA-256', p => own(p).factsDigest], ['Artifact SHA-256', p => own(p).artifactSha256], ['RSS GUID locator', p => own(p).locator.guid],
+          ...(view === 'commission' ? [['Source publication date', p => currentItem(p).publishedRaw], ['Document reference', p => currentItem(p).documentReference],
+            ['Source document type', p => currentItem(p).documentType], ['Source policy tags', p => currentItem(p).categories.join(' · ') || 'None supplied']] : [])]);
         details.append(facts); article.append(details); list.append(article);
       }
       if (!payload.items.length) list.append(node('p', 'plugin-note', 'No institutional releases are retained in this bounded view.'));
-      content.append(list, node('p', 'plugin-note', `${payload.counts.returned} retained original publications${payload.counts.more ? ' · more retained records exist beyond this view' : ''}. The provider feed is rolling; absence is not withdrawal or a complete historical archive.`),
-        node('p', 'plugin-note', 'Euro-area context reflects the publisher’s institutional remit; it does not identify an incident location.'), evidence(payload, [], 'Latest feed receipt'));
+      const feedEvidence = evidence(payload, [], 'Latest feed receipt');
+      if (view === 'commission') {
+        feedEvidence.append(node('p', 'plugin-note', 'Policy tags are publisher metadata, not verified claims or incident locations. The linked publication is an original institutional source, not independent corroboration.'),
+          node('p', 'plugin-note', text(artifact.limitations, 4000) ? artifact.limitations : 'The rolling provider feed is not a complete historical archive.'));
+      }
+      content.append(list, node('p', 'plugin-note', `${payload.counts.returned} retained original publications${payload.counts.more ? ' · more retained records exist beyond this view' : ''}. The provider feed is rolling; absence is not withdrawal or a complete historical archive.`));
+      if (view === 'publications') content.append(node('p', 'plugin-note', 'Euro-area context reflects the publisher’s institutional remit; it does not identify an incident location.'));
+      content.append(feedEvidence);
     }
   }
   function presentation() {
     for (const [id, button] of buttons) button.setAttribute('aria-pressed', String(id === view));
     feedHost.hidden = view !== 'feeds'; dossierHost.hidden = view === 'feeds'; scope.hidden = mode !== 'history';
     if (view !== 'feeds') {
-      title.textContent = view === 'gas' ? 'Belgian natural-gas origins' : 'ECB institutional releases';
-      subtitle.textContent = view === 'gas' ? 'Annual reported imports · source-backed dataset' : 'Original publications · European Central Bank';
+      title.textContent = view === 'gas' ? 'Belgian natural-gas origins' : VIEWS[view].title;
+      subtitle.textContent = view === 'gas' ? 'Annual reported imports · source-backed dataset' : VIEWS[view].subtitle;
       const saved = cache.get(view); rendered = null; if (saved) render(saved.payload); else content.replaceChildren(node('p', 'plugin-note', 'Stored source context loads when selected.'));
     }
   }

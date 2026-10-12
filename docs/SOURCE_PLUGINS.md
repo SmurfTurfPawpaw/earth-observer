@@ -2,13 +2,14 @@
 
 These plugins extend the intelligence foundation without forcing publications or
 annual statistics into incident pins. The existing four-source collection packet
-and its notifications remain a separate contract. Both scopes reuse the current
+and its notifications remain a separate contract. The three scopes reuse the current
 private R2 evidence bucket and D1 database; no second warehouse or dependency was added.
 
 | Plugin | Acquisition | Meaning and limits |
 | --- | --- | --- |
 | `ecb-press-v1` | Fixed anonymous ECB RSS; conditional check at most every five minutes | Institutional press releases only. Publication is irregular. Speeches, interviews, named-author material and images are excluded. A rolling feed is not a complete archive; disappearance is not withdrawal. |
 | `eurostat-gas-origins-v1` | Fixed Eurostat JSON-stat query; check at most every six hours | Belgian annual natural-gas import origins, gross calorific value in TJ. The verified current response has reference year 2024. Annual origin shares do not establish current consumption dependency, routes or 2026 quantities. |
+| `ec-press-v1` | Fixed anonymous Commission RSS; check at most every five minutes | English-route title/GUID/date/type/category metadata, with body language unknown. Ten items were observed; busy intervals can omit publications. No full-text claims, legal-effect inference or incident pins. |
 
 Adapters have fixed scope, rights, response size, deadline and item bounds. Their
 original bytes, canonical facts and derived artifact hashes are independently
@@ -21,8 +22,12 @@ they do not create new statistical revisions.
 
 Only an authenticated admitted `collect` action registers plugin work. The original
 packet can fail without starving a different plugin; public reads never fetch or
-enqueue. Both due plugins run in parallel with a 27-second total bound per plugin,
-20-second provider bound, 512 KiB maximum response and 64 KiB artifact. No work starts
+enqueue. The reviewed three-plugin registry has two concurrent source slots and
+one shared 27-second wake budget, in addition to each store deadline. Queued work
+that cannot start is deferred to another authenticated wake; not-due state reads
+free slots without provider requests. This is a per-wake bound; per-source durable
+leases remain the cross-isolate authority. Providers have a 20-second bound,
+512 KiB maximum response and 64 KiB artifact. No work starts
 if the host cannot retain the background operation. Repeated wakes coalesce locally;
 durable SQL claims and a 60-second lease/fence govern cross-isolate writers.
 
@@ -56,6 +61,7 @@ Stored-only routes:
 ```text
 GET /earth/api/dossiers/belgium-natural-gas-origins[?knownAt=canonical-UTC]
 GET /earth/api/publications?plugin=ecb-press-v1&limit=20[&at=UTC&knownAt=UTC]
+GET /earth/api/publications?plugin=ec-press-v1&limit=20[&at=UTC&knownAt=UTC]
 ```
 
 `at` filters original publication time; `knownAt` independently selects hosted
@@ -78,9 +84,18 @@ query work against large retained histories.
 ## Rollout gate
 
 Local checks prove storage/admission invariants, not hosted acquisition or browser
-appearance. Deploy generated migrations 0007 and 0008 with the matching worker,
-perform an authenticated collection wake, read both stored receipts, verify an ECB
+appearance. Existing generated migrations 0007 and 0008 are required; Commission
+integration introduces no new tables or migration. Publish the matching worker,
+perform an authenticated collection wake, read the selected stored receipts, verify an
 unchanged check, then exercise Context views on desktop/mobile. Source-specific
 rights and scope live in the common capability ledger. Permanent cloud minute
 execution remains a separate infrastructure gate; a temporary awake-laptop bridge
 cannot be described as always-on hosting.
+
+Commission integration uses existing tables and item-owned receipts. Reviewed
+document references/types/categories are retained in projections, so publications
+leaving the latest rolling feed keep their original metadata and evidence. ECB and
+Commission now share bounded XML and explicit-offset calendar primitives, with
+publisher-specific field/namespace/URL admission unchanged. The Commission adapter
+and backend integration are local until the matching release/readback succeeds;
+see [its exact source proof and rollout gate](EC_PRESS_SOURCE.md).

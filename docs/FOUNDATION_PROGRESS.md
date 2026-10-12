@@ -423,3 +423,54 @@ performs no provider fetch and preserves evidence dates. A slow successful claim
 and unknown-admission fixture pass. Actual post-release source acquisition is
 required to determine whether this resolves the observed stall; it is not yet
 a proven diagnosis or a permanent execution gate.
+
+## Continuous-context acceptance and next gate — 2026-10-12 00:35 UTC
+
+Site version 30 succeeded at 00:24:53.094Z on app
+6b5058046ebe23493e5e7b8a1ba2a3c97209e202 and combined source
+7518e853b0aa8d3493cccd35014ddc7409f0a841. Exact package SHA-256 is
+3a757e0de95222f6a0a8f0a9a3d6b3ce0f1a9030db2214b25e8ae44b7e2ac2f6.
+The portfolio and mounted route checks passed before publication.
+
+The finite cloud trial 38187094037 completed successfully at 00:31:48Z.
+It made 19 successful requests, three factual publications and 16 unchanged
+checks, with zero HTTP failures. Its 20-minute bound reserves time for the
+last bounded request; elapsed execution was 1,116,715 ms. The laptop bridge
+was stopped throughout. Early checks exposed the old storage-admission stall;
+after version 30, factual publications occurred at 00:25, 00:29 and 00:31.
+Public readback at 00:32 showed USGS retrieved at 00:31:30.601Z, GDACS at
+00:31:31.008Z and EONET at 00:31:31.574Z, all ready. This supports the bounded
+storage-admission repair for the observed stall. It does not establish a
+permanent runtime SLA. GDELT still retained its 23:40 acquisition and was stale;
+its separate discovery producer remains a dependency.
+
+After the cloud job terminated, the temporary collect-only laptop bridge
+resumed at 00:33:11Z, with at least 61 seconds between sequential starts and
+the same 06:39:10Z stop boundary. No credentials are written into source,
+arguments, files or logs. This bridge is temporary, not a durable hosted daemon.
+
+Actual version 30 browser controls calculated the Norway 25% reduction / 40%
+replacement scenario, then Russia 100% / 0%, against the unchanged retained
+2024 evidence. The latter shows 135,495.4 TJ lost and an 18.3% gap against
+reported TOTAL. An immediate Context opening during a calendar seek preserved
+2025-10-08 00:00 UTC, the scenario inputs and selected earthquake layer.
+Ordinary coordinate search settled at 50.85, 4.35 and 90 km without changing
+that history time or layer. The selected historical scene contains 184 scoped
+reports in its preceding seven-day window.
+
+Re-examination found two concrete UI issues. A current online document still
+reloaded when its new offline worker activated; the next package compares
+deterministic UI identities and preserves active exploration on uncertain
+identity. Responsive testing also found inactive desktop-sized overlay surfaces
+extending the document beyond a 390 px viewport; the next package constrains
+their CSS bounds without forcing idle backing-store allocation. Actual release
+adoption and narrow-layout readback remain gates after publication.
+
+The reviewed Commission metadata adapter and shared bounded RSS parser are
+ready, with a fixed source, attributed titles/identities/dates/categories and
+no claims, body-language assumptions or incident geography. Three typed plugins
+share two concurrent slots and one 27-second wake deadline. Archive maintenance
+is being staged with durable due state, fences and first-proof daily coverage;
+existing import and historical readers remain untouched until its atomic
+integration is reviewed. Automatic history extension now takes priority over
+additional sources or broader claims of timeline completeness.

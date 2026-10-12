@@ -1,9 +1,24 @@
 import { SOURCE_PLUGINS } from './registry.js';
-import { runSourcePlugin } from './store.js';
+import { runSourcePlugin, PLUGIN_STORE_LIMITS } from './store.js';
 
 const pending = new WeakMap();
+export const PLUGIN_RUNNER_LIMITS = Object.freeze({ concurrentSources: 2, deadlineMs: PLUGIN_STORE_LIMITS.deadlineMs });
 export async function advanceSourcePlugins(env, options = {}) {
-  const results = await Promise.all(SOURCE_PLUGINS.map(plugin => runSourcePlugin(env, plugin, options)));
+  const { deadlineMs = PLUGIN_RUNNER_LIMITS.deadlineMs, ...sourceOptions } = options;
+  if (!Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > PLUGIN_RUNNER_LIMITS.deadlineMs)
+    throw new TypeError('Use the bounded source-plugin wake deadline');
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(new DOMException('Source-plugin wake budget exceeded', 'TimeoutError')), deadlineMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+  const results = new Array(SOURCE_PLUGINS.length); let next = 0;
+  async function worker() {
+    while (next < SOURCE_PLUGINS.length) {
+      const index = next++, plugin = SOURCE_PLUGINS[index];
+      if (signal.aborted) { results[index] = { pluginId: plugin.pluginId, status: 'deferred', acquired: false, changed: false }; continue; }
+      results[index] = await runSourcePlugin(env, plugin, { ...sourceOptions, signal });
+    }
+  }
+  try { await Promise.all(Array.from({ length: Math.min(PLUGIN_RUNNER_LIMITS.concurrentSources, SOURCE_PLUGINS.length) }, worker)); }
+  finally { clearTimeout(timer); }
   return { schemaVersion: 1, results };
 }
 

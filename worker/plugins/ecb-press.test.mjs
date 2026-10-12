@@ -91,7 +91,7 @@ test('strict fixed RSS grammar rejects DTD/entity expansion, ambiguous namespace
   const bad = [
     valid.replace('<rss', '<!DOCTYPE rss SYSTEM "https://evil.example/secret"><rss'),
     valid.replace('<rss', '<!DOCTYPE rss [<!ENTITY a "huge"><!ENTITY b "&a;&a;">]><rss'),
-    valid.replace('TEST ONLY', '&unknown;'), valid.replace('TEST ONLY', '&#0;'),
+    valid.replace('TEST ONLY', '&unknown;'), valid.replace('TEST ONLY', '&#0;'), valid.replace('TEST ONLY', '\ufffe'),
     feed(item(), { rootAttrs: ' xmlns="https://evil.example/namespace"' }), feed(item(), { channelAttrs: ' xmlns:atom="https://evil.example/atom"' }),
     valid.replace('http://www.w3.org/2005/Atom', 'https://evil.example/atom'), valid.replace('<item>', '<other:item>').replace('</item>', '</other:item>'),
     valid.replace('<title> TEST', '<title x="one" x="two"> TEST'), valid.replace('<guid>', '<guid __proto__="ignored">'),

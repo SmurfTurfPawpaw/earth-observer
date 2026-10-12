@@ -3,6 +3,7 @@ import { getCollectorStatus } from './collector.js';
 import { handleCollection } from './collection-api.js';
 import { readWorldEvents } from './world-model.js';
 import { readPluginEnvelope, readPluginPublications } from './plugins/store.js';
+import { PUBLICATION_PLUGIN_IDS } from './plugins/registry.js';
 import { worldTime } from '../src/core/world-model.js';
 import { makeRateLimiter } from '../src/sources/rateLimit.js';
 
@@ -35,8 +36,8 @@ const tools = [
   { name: 'source_dossier', description: 'Read the retained annual Belgium natural-gas origins dossier and its exact evidence receipt. Reporting years are not current supply or shipment routes. No source acquisition.', inputSchema: {
     type: 'object', properties: { dossierId: { type: 'string', enum: ['belgium-natural-gas-origins'] }, knownAt: canonicalCutoff },
     required: ['dossierId'], additionalProperties: false }, annotations: readOnly },
-  { name: 'list_publications', description: 'Read retained original ECB institutional publications and each item’s own evidence receipt. Publication time and hosted knowledge time are independent; a rolling feed is not a complete archive. No source acquisition.', inputSchema: {
-    type: 'object', properties: { pluginId: { type: 'string', enum: ['ecb-press-v1'] }, knownAt: canonicalCutoff,
+  { name: 'list_publications', description: 'Read retained original ECB or European Commission publication metadata and each item’s own evidence receipt. Publication time and hosted knowledge time are independent; a rolling feed is not a complete archive. No source acquisition.', inputSchema: {
+    type: 'object', properties: { pluginId: { type: 'string', enum: [...PUBLICATION_PLUGIN_IDS] }, knownAt: canonicalCutoff,
       at: { ...canonicalCutoff, description: 'UTC source publication cutoff, independent of the hosted knowledge cutoff.' },
       limit: { type: 'integer', minimum: 1, maximum: SITE_MCP_LIMITS.maxPublications, default: 20 } },
     required: ['pluginId'], additionalProperties: false }, annotations: readOnly },
@@ -152,7 +153,7 @@ function argumentsFor(name, input, now) {
   }
   if (name === 'list_world_events' && value.limit !== undefined && (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > SITE_MCP_LIMITS.maxEvents)) return null;
   if (name === 'event_detail' && !/^event:usgs:[a-f0-9]{64}$/.test(value.id || '')) return null;
-  if (name === 'source_dossier' && value.dossierId !== 'belgium-natural-gas-origins' || name === 'list_publications' && value.pluginId !== 'ecb-press-v1') return null;
+  if (name === 'source_dossier' && value.dossierId !== 'belgium-natural-gas-origins' || name === 'list_publications' && !PUBLICATION_PLUGIN_IDS.includes(value.pluginId)) return null;
   if (name === 'source_dossier' || name === 'list_publications') {
     for (const field of ['knownAt', ...(name === 'list_publications' ? ['at'] : [])]) if (value[field] !== undefined) {
       try { if (typeof value[field] !== 'string' || worldTime(value[field]) !== value[field] || Date.parse(value[field]) > now() + 300_000) return null; } catch { return null; }
@@ -192,7 +193,7 @@ export function createSiteMcpHandler({ now = Date.now, fetchImpl = (...args) => 
     if (name === 'source_dossier' || name === 'list_publications') {
       const value = await abortable(name === 'source_dossier'
         ? readSourceDossier(env, 'eurostat-gas-origins-v1', { knownAt: args.knownAt ?? null, now })
-        : readPublications(env, 'ecb-press-v1', { at: args.at ?? null, knownAt: args.knownAt ?? null, limit: args.limit ?? 20, now }), signal);
+        : readPublications(env, args.pluginId, { at: args.at ?? null, knownAt: args.knownAt ?? null, limit: args.limit ?? 20, now }), signal);
       signal.throwIfAborted(); return toolData(value);
     }
     if (name === 'list_world_events' || name === 'event_detail') {

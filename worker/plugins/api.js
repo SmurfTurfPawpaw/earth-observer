@@ -1,4 +1,5 @@
 import { readPluginEnvelope, readPluginPublications } from './store.js';
+import { PUBLICATION_PLUGIN_IDS } from './registry.js';
 
 const json = (data, status = 200, headers = {}) => Response.json(data, { status,
   headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...headers } });
@@ -14,7 +15,7 @@ export function createPluginApiHandler({ now = Date.now } = {}) {
       const knownAt = url.searchParams.get('knownAt');
       if (dataset) return json(await readPluginEnvelope(env, 'eurostat-gas-origins-v1', { knownAt, now }));
       const plugin = url.searchParams.get('plugin') ?? 'ecb-press-v1', rawLimit = url.searchParams.get('limit');
-      if (plugin !== 'ecb-press-v1' || rawLimit !== null && !/^[1-9]\d?$/.test(rawLimit)) throw new TypeError('Invalid reviewed publication scope');
+      if (!PUBLICATION_PLUGIN_IDS.includes(plugin) || rawLimit !== null && !/^[1-9]\d?$/.test(rawLimit)) throw new TypeError('Invalid reviewed publication scope');
       return json(await readPluginPublications(env, plugin, { knownAt, at: url.searchParams.get('at'), limit: rawLimit === null ? 20 : Number(rawLimit), now }));
     } catch (error) {
       return json({ error: error instanceof TypeError ? 'Use canonical UTC dates and a reviewed bounded source query' : 'Stored source context unavailable' }, error instanceof TypeError ? 400 : 503);

@@ -204,15 +204,17 @@ test('fixed typed receipts join collection delivery in one indexed query shared 
   let objects = 0; const env = { EARTH_DB: db, EARTH_STORE: { get() { objects++; throw Error('Forbidden stream evidence read'); }, put() { objects++; throw Error('Forbidden stream write'); } } };
   await channel.publishCollectionRevision(env, input());
   const ecb = retainedPlugin(db), gas = retainedPlugin(db, { pluginId: 'eurostat-gas-origins-v1', scopeId: 'belgium-natural-gas-origins', marker: 'b' });
+  const commission = retainedPlugin(db, { pluginId: 'ec-press-v1', scopeId: 'ec-presscorner-en-metadata-v1', marker: 'f' });
   db.counters.reads = 0; const writes = db.counters.writes;
   const clients = Array.from({ length: 8 }, () => connect(channel, env)); t.after(() => clients.forEach(client => client.abort.abort())); await flush();
   // Followers can enter their wait while the first shared query is in flight;
   // all observe its retained result by the next one-second presentation tick.
   await clock.advance(1000);
   for (const client of clients) {
-    await nextEvent(client.reader); const first = await nextEvent(client.reader, 'plugin'), second = await nextEvent(client.reader, 'plugin');
-    assert.deepEqual(first.value, ecb); assert.deepEqual(second.value, gas); assert.match(first.frame, /^id: plugin:ecb-press-v1:1:receipt:/m);
-    assert.deepEqual(Object.keys(first.value), ['schemaVersion', 'pluginId', 'scopeId', 'receiptId', 'fence', 'factsDigest', 'recordedAt']);
+    await nextEvent(client.reader); const events = [await nextEvent(client.reader, 'plugin'), await nextEvent(client.reader, 'plugin'), await nextEvent(client.reader, 'plugin')];
+    assert.deepEqual(events.map(event => event.value).sort((a, b) => a.pluginId.localeCompare(b.pluginId)), [ecb, gas, commission].sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
+    assert.match(events.find(event => event.value.pluginId === 'ec-press-v1').frame, /^id: plugin:ec-press-v1:1:receipt:/m);
+    assert.deepEqual(Object.keys(events[0].value), ['schemaVersion', 'pluginId', 'scopeId', 'receiptId', 'fence', 'factsDigest', 'recordedAt']);
   }
   assert.equal(db.counters.reads, 2, 'one grouped query per elapsed read slot, independent of eight connected clients'); assert.equal(db.counters.writes, writes); assert.equal(objects, 0);
   const plan = db.sqlite.prepare(`EXPLAIN QUERY PLAN ${db.counters.queries.at(-1)}`).all().map(row => row.detail).join('\n');

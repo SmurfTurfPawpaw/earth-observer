@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Press releases - RSS</title>
+    <link>https://ec.europa.eu/commission/presscorner/api/rss?</link>
+    <description>Search={format=RSS,size=10}</description>
+    <language>EN</language>
+    <copyright>Copyright European Commission DG COMM</copyright>
+    <item>
+      <title>Read-out by President von der Leyen following her call with President Zelenskyy</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/read_26_2131</link>
+      <description>European Commission Read-out Brussels, 11 Oct 2026 Good call with President Zelenskyy.
+Fully supported the call of President Zelenskyy for a ceasefire that would protect global food supplies and energy infrastru...</description>
+      <category>POLICY_AREA=HREXTRELS</category>
+      <pubDate>Sun, 11 Oct 2026 15:26:32 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/read_26_2131</guid>
+    </item>
+    <item>
+      <title>Press Remarks by Commissioner Lahbib at the Foreign Affairs Council on Development</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/speech_26_2129</link>
+      <description>European Commission Speech Dublin, 09 Oct 2026 Yesterday evening we discussed the future of development, along with the important link between humanitarian aid and development, together with key stakeholders...</description>
+      <category>POLICY_AREA=ICHACR</category>
+      <pubDate>Fri, 09 Oct 2026 15:09:05 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/speech_26_2129</guid>
+    </item>
+    <item>
+      <title>Statement on the International Criminal Court following announcement of US sanctions</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2127</link>
+      <description>European Commission Statement Brussels, 09 Oct 2026 The European Union has been a constant supporter of the International Criminal Court (ICC). It is deeply regrettable that the United States has announced intent...</description>
+      <category>POLICY_AREA=GROWTH,JFRC</category>
+      <pubDate>Fri, 09 Oct 2026 12:14:20 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2127</guid>
+    </item>
+    <item>
+      <title>Press remarks by Commissioner Šefčovič at the second meeting of the EU-China Trade and Investment Consultations</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2124</link>
+      <description>European Commission Statement Beijing, 09 Oct 2026 "Check against delivery"
+ 
+Good evening,
+As I wrap up my visit to Beijing, let me begin by thanking my counterpart, Minister Wang Wentao, for his time, engageme...</description>
+      <category>POLICY_AREA=TRADEPOL</category>
+      <pubDate>Fri, 09 Oct 2026 09:33:37 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2124</guid>
+    </item>
+    <item>
+      <title>Daily News 09 / 10 / 2026</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/mex_26_2123</link>
+      <description>European Commission Daily news Brussels, 09 Oct 2026 Commission to grant temporary trade preferences to support Armenian exports to the EU 
+The European Union is granting temporary trade preferences to Armenia to ...</description>
+      <category>POLICY_AREA=GENINFO</category>
+      <pubDate>Fri, 09 Oct 2026 09:08:45 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/mex_26_2123</guid>
+    </item>
+    <item>
+      <title>Joint Statement at the second meeting of the EU-China Trade and Investment Consultations</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2122</link>
+      <description>European Commission Statement Beijing, 09 Oct 2026 On 8-9 October 2026, Wang Wentao, Minister of Commerce of China, and Maroš Šefčovič, Commissioner for Trade and Economic Security, Interinstitutional Relations and Transparency, of the European Commission, held the second meeting of the EU-China Trade and Investment Consultations (TIC) in Beijing.</description>
+      <category>POLICY_AREA=TRADEPOL</category>
+      <pubDate>Fri, 09 Oct 2026 09:05:57 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2122</guid>
+    </item>
+    <item>
+      <title>Opening remarks by Executive Vice-President Séjourné at the press point on the second group of strategic projects under the Critical Raw Materials Act</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/speech_26_2121</link>
+      <description>European Commission Speech Brussels, 09 Oct 2026 Bonjour à toutes et à tous,
+Pour la quatrième fois du mandat, je reviens devant vous faire état de l'avancement de notre politique sur les matières premières cr...</description>
+      <category>POLICY_AREA=BUSINDUS</category>
+      <pubDate>Fri, 09 Oct 2026 08:25:02 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/speech_26_2121</guid>
+    </item>
+    <item>
+      <title>Factsheet - Critical Raw Materials Strategic Projects</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/fs_26_2115</link>
+      <description>European Commission Factsheet Brussels, 09 Oct 2026   Factsheet - Critical Raw Materials Strategic Projects Factsheet - Critical Raw Materials Strategic Projects</description>
+      <category>POLICY_AREA=BUSINDUS</category>
+      <pubDate>Thu, 08 Oct 2026 22:00:00 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/fs_26_2115</guid>
+    </item>
+    <item>
+      <title>Questions and answers on the Critical Raw Materials strategic projects</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/qanda_26_2114</link>
+      <description>European Commission Questions and answers Brussels, 09 Oct 2026 
+What is a strategic project?
+
+Strategic projects are projects that make a significant contribution to the EU's security of supply of strategic raw materials by...</description>
+      <category>POLICY_AREA=BUSINDUS</category>
+      <pubDate>Thu, 08 Oct 2026 22:00:00 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/qanda_26_2114</guid>
+    </item>
+    <item>
+      <title>Statement by Commissioner Várhelyi ahead of World Mental Health Day</title>
+      <link>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2100</link>
+      <description>European Commission Statement Brussels, 09 Oct 2026 Ahead of the World Mental Health Day, Commissioner for Health and Animal Safety, Olivér Várhelyi, issued the following statement:
+"More than 84 million people i...</description>
+      <category>POLICY_AREA=HEALTHPOL</category>
+      <pubDate>Thu, 08 Oct 2026 22:00:00 GMT</pubDate>
+      <guid>https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2100</guid>
+    </item>
+  </channel>
+</rss>

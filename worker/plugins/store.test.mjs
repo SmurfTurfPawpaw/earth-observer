@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile, readdir } from 'node:fs/promises';
 import { ECB_PRESS_PLUGIN, collectEcbPress, ecbPressItems } from './ecb-press.js';
-import { pluginBytesDigest } from '../../src/core/plugin-evidence.js';
+import { EC_PRESS_PLUGIN, collectEcPress, ecPressItems } from './ec-press.js';
+import { pluginBytesDigest, pluginFactsDigest } from '../../src/core/plugin-evidence.js';
 import { runSourcePlugin, readPluginEnvelope, readPluginPublications, PLUGIN_STORE_LIMITS } from './store.js';
 
 const CLOCK = Date.parse('2026-10-12T02:00:00.000Z'), stamp = offset => new Date(CLOCK + offset).toISOString();
@@ -15,7 +16,7 @@ function sourceFeed(label = 'A', absent = false) {
   return UTF8.encode(`\ufeff<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>ECB - European Central Bank</title><link>https://www.ecb.europa.eu/</link><language>en</language><lastBuildDate>Sun, 11 Oct 2026 10:00:00 +0200</lastBuildDate>${item}</channel></rss>`);
 }
 
-async function fixture(t, { migrated = true } = {}) {
+async function fixture(t, { migrated = true, descriptor = null, sourceFeedImpl = sourceFeed } = {}) {
   let clock = CLOCK, databaseClock = null, serial = 0, sqlHook = null, objectHook = null, fetchHook = null, responseMode = '200', label = 'A', absent = false;
   const sqlite = new DatabaseSync(':memory:'); t.after(() => sqlite.close());
   sqlite.function('strftime', { varargs: true }, (format, value, ...modifiers) => {
@@ -82,13 +83,13 @@ async function fixture(t, { migrated = true } = {}) {
     },
   };
   const fetchImpl = async (url, options = {}) => {
-    activity.provider.push({ url, headers: options.headers }); assert.equal(url, ECB_PRESS_PLUGIN.sourceUrl);
+    activity.provider.push({ url, headers: options.headers }); assert.equal(url, plugin.sourceUrl);
     const currentLabel = label, currentAbsent = absent; const result = await fetchHook?.({ url, options, label: currentLabel, absent: currentAbsent });
     if (result) return result;
     if (responseMode === '304') return new Response(null, { status: 304, headers: { etag: `"fixture-${currentLabel}"` } });
-    return new Response(sourceFeed(currentLabel, currentAbsent), { headers: { 'content-type': 'application/rss+xml', etag: `"fixture-${currentLabel}"` } });
+    return new Response(sourceFeedImpl(currentLabel, currentAbsent), { headers: { 'content-type': 'application/rss+xml', etag: `"fixture-${currentLabel}"` } });
   };
-  const plugin = { ...ECB_PRESS_PLUGIN, collect: collectEcbPress, items: ecbPressItems }, env = { EARTH_DB: db, EARTH_STORE: bucket };
+  const plugin = descriptor ?? { ...ECB_PRESS_PLUGIN, collect: collectEcbPress, items: ecbPressItems }, env = { EARTH_DB: db, EARTH_STORE: bucket };
   return { env, plugin, now: () => clock, sqlite, records, activity, fetchImpl,
     advance(offset = STEP) { clock += offset; }, clock(offset) { clock = CLOCK + offset; }, databaseClock(offset) { databaseClock = CLOCK + offset; },
     source(nextLabel, nextAbsent = false) { label = nextLabel; absent = nextAbsent; responseMode = '200'; }, mode(value) { responseMode = value; },
@@ -104,6 +105,46 @@ async function fixture(t, { migrated = true } = {}) {
 const run = (f, plugin = f.plugin) => runSourcePlugin(f.env, plugin, { now: f.now, fetchImpl: f.fetchImpl });
 const counts = f => ['earth_plugin_captures', 'earth_plugin_revisions', 'earth_plugin_membership', 'earth_plugin_heads'].map(table => [table, f.count(table)]);
 const publication = f => readPluginPublications(f.env, f.plugin.pluginId, { now: f.now });
+
+const originalEc = await readFile(new URL('../../server/hosted/fixtures/ec-press-20261012.xml', import.meta.url), 'utf8');
+function ecFeed(label, absent) {
+  return UTF8.encode(absent ? originalEc.replace(/<item>[\s\S]*?<\/item>/g, '') :
+    label === 'B' ? originalEc.replace('POLICY_AREA=GROWTH,JFRC', 'POLICY_AREA=GENINFO') : originalEc);
+}
+const ecDescriptor = { ...EC_PRESS_PLUGIN, collect: collectEcPress, items: ecPressItems };
+
+test('EC current and historical delivery retain reviewed document fields and each item own receipt after feed disappearance', async t => {
+  const f = await fixture(t, { descriptor: ecDescriptor, sourceFeedImpl: ecFeed });
+  const stored = await run(f); assert.equal(stored.status, 'stored'); const first = f.receipts()[0];
+  let read = await publication(f), item = read.items.find(item => item.documentReference === 'statement_26_2127');
+  assert.ok(item); assert.equal(item.documentType, 'statement'); assert.deepEqual(item.categories, ['POLICY_AREA=GROWTH,JFRC']);
+  assert.equal(item.evidence.id, first.receipt_id); assert.equal(read.plugin.id, 'ec-press-v1');
+  f.advance(); f.source('B'); assert.equal((await run(f)).status, 'stored'); const second = f.receipts()[1];
+  read = await publication(f); item = read.items.find(item => item.documentReference === 'statement_26_2127');
+  assert.deepEqual(item.categories, ['POLICY_AREA=GENINFO']); assert.equal(item.evidence.id, second.receipt_id);
+  const known = await readPluginPublications(f.env, f.plugin.pluginId, { knownAt: first.recorded_at, now: f.now });
+  assert.deepEqual(known.items.find(item => item.documentReference === 'statement_26_2127').categories, ['POLICY_AREA=GROWTH,JFRC']);
+  f.advance(); f.source('B', true); assert.equal((await run(f)).status, 'stored'); const empty = f.receipts()[2];
+  f.reset(); read = await publication(f); item = read.items.find(item => item.documentReference === 'statement_26_2127');
+  assert.equal(read.receipt.id, empty.receipt_id); assert.equal(item.evidence.id, second.receipt_id);
+  assert.deepEqual(item.categories, ['POLICY_AREA=GENINFO']); assert.equal(read.artifact.items.length, 0); assert.equal(read.items.length, 10);
+  assert.equal(f.activity.provider.length, 0); assert.equal(f.activity.sql.some(item => item.write), false);
+  assert.equal(f.count('earth_world_captures'), 0); assert.equal(f.count('earth_investigation_jobs'), 0);
+});
+
+test('EC persistence rejects forged reference/type/category fields before factual publication', async t => {
+  for (const mutate of [item => { item.documentReference = 'statement_26_99999'; }, item => { item.documentType = 'ip'; },
+    item => { item.categories = ['POLICY_AREA=GENINFO', 'POLICY_AREA=GENINFO']; }, item => { item.categories = ['GEOMETRY=50,4']; },
+    item => { item.categories = Array.from({ length: 9 }, (_, index) => `POLICY_AREA=A${index}`); },
+    item => { item.publishedRaw = 'unknown'; }, item => { item.publishedAt = null; }, item => { item.publishedPrecision = 'day'; },
+    item => { item.publisherId = 'other'; }]) {
+    const f = await fixture(t, { descriptor: ecDescriptor, sourceFeedImpl: ecFeed });
+    const bad = { ...ecDescriptor, collect: async input => { const result = await collectEcPress(input); mutate(result.canonicalFacts.items[0]);
+      result.factsDigest = await pluginFactsDigest(result.canonicalFacts); return result; } };
+    const result = await run(f, bad); assert.equal(result.status, 'retry'); assert.equal(result.errorCode, 'invalid_plugin_evidence');
+    assert.equal(f.count('earth_plugin_captures'), 0); assert.equal(f.count('earth_plugin_heads'), 0);
+  }
+});
 
 test('first complete source publication retains byte authority and not-due wakes make zero provider calls or mutation statements', async t => {
   const f = await fixture(t), stored = await run(f); assert.equal(stored.status, 'stored'); assert.equal(stored.changed, true);
