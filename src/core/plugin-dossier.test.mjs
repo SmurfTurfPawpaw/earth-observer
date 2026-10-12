@@ -51,7 +51,7 @@ function publications() {
 function fixture(fetchImpl = async (url) => Response.json(url.startsWith('/api/publications') ? publications() : gas())) {
   const listeners = new Map(), timers = new Map(); let id = 0, now = 0, feedCreates = 0, feedOpens = 0, feedCloses = 0, feedDestroys = 0;
   const updates = new Set();
-  const documentRef = { hidden: false, createElement: (tag) => new Element(tag, documentRef),
+  const documentRef = { hidden: false, createElement: (tag) => new Element(tag, documentRef), createElementNS: (_namespace, tag) => new Element(tag, documentRef),
     addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); }, removeEventListener(type, fn) { listeners.get(type)?.delete(fn); } };
   const container = documentRef.createElement('div'), requests = [];
   const panel = createPluginDossierPanel({ container, documentRef, windowRef: null, now: () => now,
@@ -65,6 +65,24 @@ function fixture(fetchImpl = async (url) => Response.json(url.startsWith('/api/p
 }
 const update = (payload, fence) => ({ type: 'plugin', schemaVersion: 1, pluginId: payload.plugin.id, scopeId: payload.plugin.scopeId,
   receiptId: payload.receipt.id, fence, factsDigest: payload.receipt.factsDigest, recordedAt: payload.receipt.recordedAt });
+test('purpose navigation remembers the publication source and only the visible selected view acquires stored data', async () => {
+  const ec = await commission(), f = fixture(async url => Response.json(url.includes('plugin=ec-press-v1') ? ec : url.startsWith('/api/publications') ? publications() : gas()));
+  const nav = elements(f.container).find(el => el.className === 'context-navigation');
+  const chooser = elements(f.container).find(el => el.attributes['aria-label'] === 'Context source');
+  const publicationsButton = nav.children.find(el => el.textContent === 'Publications'), dataButton = nav.children.find(el => el.textContent === 'Data');
+  assert.deepEqual(nav.children.map(el => el.textContent), ['Reports', 'Data', 'Publications']);
+  publicationsButton.trigger('click'); assert.equal(f.panel.getView(), 'publications'); assert.equal(f.requests.length, 0);
+  await f.panel.open(); assert.equal(f.requests[0][0], '/api/publications?plugin=ecb-press-v1&limit=20');
+  assert.equal(chooser.attributes['aria-label'], 'Publication source'); assert.equal(chooser.parentElement.hidden, false);
+  chooser.value = 'commission'; chooser.trigger('change');
+  await waitFor(() => f.requests.length === 2 && visibleText(f.container).includes(ec.items.find(item => item.documentReference === 'statement_26_2127').title), 'Retained Commission source');
+  assert.equal(f.panel.getView(), 'commission'); assert.equal(f.requests[1][0], '/api/publications?plugin=ec-press-v1&limit=20');
+  dataButton.trigger('click'); await waitFor(() => f.requests.length === 3, 'Data source'); assert.equal(chooser.parentElement.hidden, true);
+  publicationsButton.trigger('click'); await waitFor(() => f.panel.getView() === 'commission', 'Remembered publication');
+  assert.equal(chooser.value, 'commission'); assert.equal(f.requests.length, 3, 'A compatible retained source cache serves the revisit');
+  f.panel.close(); chooser.value = 'publications'; chooser.trigger('change'); assert.equal(f.requests.length, 3);
+  f.panel.destroy(); assert.equal(chooser.listeners.get('change').size, 0);
+});
 function edition(payload, marker, facts = payload.receipt.factsDigest) {
   const value = clone(payload), at = '2026-10-12T04:02:00.000Z';
   value.receipt = { ...value.receipt, id: `receipt:${marker.repeat(64)}`, rawSha256: marker.repeat(64), factsDigest: facts, capturedAt: at, recordedAt: at };
@@ -75,7 +93,7 @@ test('closed construction and selection do not fetch; one context source owns la
   const f = fixture(); assert.equal(f.requests.length, 0); assert.equal(f.stats().feedCreates, 0);
   await f.panel.select('gas'); assert.equal(f.requests.length, 0); f.panel.setSceneMode('history'); await f.panel.open();
   assert.equal(f.requests.length, 1); assert.equal(f.requests[0][0], '/api/dossiers/belgium-natural-gas-origins'); assert.equal(f.stats().feedCreates, 0);
-  assert.match(f.container.textContent, /Annual reported imports · 2024/); assert.match(f.container.textContent, /not a historical globe layer/);
+  assert.match(f.container.textContent, /Annual reported imports · 2024/); assert.match(f.container.textContent, /Source dates remain independent of globe time/);
   assert.match(f.container.textContent, /2024 reported imports/); assert.match(f.container.textContent, /Source retrieved2026-10-12 04:00:00 UTC/);
   assert.match(f.container.textContent, /Source revised2026-10-09 21:00:00 UTC/);
   await f.panel.select('feeds'); assert.equal(f.stats().feedCreates, 1); assert.equal(f.stats().feedOpens, 1); assert.equal(f.timers.size, 0);
@@ -336,7 +354,7 @@ test('Commission publications lazily preserve actual source metadata, visible at
   const payload = await commission(), f = fixture(async () => Response.json(payload));
   await f.panel.select('commission'); assert.equal(f.requests.length, 0); await f.panel.open();
   assert.equal(f.requests.length, 1); assert.equal(f.requests[0][0], '/api/publications?plugin=ec-press-v1&limit=20');
-  assert.equal(elements(f.container).find(el => el.className === 'context-navigation').children.length, 4);
+  assert.equal(elements(f.container).find(el => el.className === 'context-navigation').children.length, 3);
   assert.match(visibleText(f.container), /Source: European Commission \/ European Union/); assert.match(visibleText(f.container), /document body language is unknown/);
   assert.match(visibleText(f.container), /Published 2026-10-09 12:14:20 UTC/); assert.match(visibleText(f.container), /Statement · statement_26_2127/);
   assert.doesNotMatch(visibleText(f.container), /SHA-256|RSS GUID|POLICY_AREA|Raw publication date|independent corroboration/);

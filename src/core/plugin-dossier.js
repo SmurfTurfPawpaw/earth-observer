@@ -1,12 +1,17 @@
 import { worldTime, isWorldDigest } from './world-identity.js';
 import { pluginRevision, newerPluginRevision, PLUGIN_UPDATE_SCOPES } from './live-updates.js';
 import { createGasExposureScenario } from './gas-scenario.js';
+import { createIcon } from './icons.js';
 
 export const PLUGIN_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, publications: 40, years: 10, origins: 20, refreshMs: 300000 });
 const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', pluginId: 'eurostat-gas-origins-v1', url: '/api/dossiers/belgium-natural-gas-origins', kind: 'dataset-dossier' },
   publications: { label: 'ECB releases', title: 'ECB institutional releases', subtitle: 'Original publications · European Central Bank', pluginId: 'ecb-press-v1', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' },
   commission: { label: 'Commission', title: 'European Commission publications', subtitle: 'Original publication metadata · European Commission / European Union', pluginId: 'ec-press-v1', url: '/api/publications?plugin=ec-press-v1&limit=20', kind: 'publication-feed-overview' } });
 const EC_DOCUMENT_TYPES = Object.freeze({ ip: 'Press release', statement: 'Statement', read: 'Readout', qanda: 'Questions and answers', fs: 'Factsheet', mex: 'Daily news', speech: 'Speech' });
+const PURPOSES = Object.freeze({ reports: { label: 'Reports', icon: 'news', views: ['feeds'] },
+  data: { label: 'Data', icon: 'layers', views: ['gas'] },
+  publications: { label: 'Publications', icon: 'notebook', views: ['publications', 'commission'] } });
+const purposeFor = view => view === 'feeds' ? 'reports' : view === 'gas' ? 'data' : 'publications';
 const EC_REFERENCE = /^https:\/\/ec\.europa\.eu\/commission\/presscorner\/detail\/en\/([a-z]+)_([0-9]{2})_([0-9]{1,7})$/;
 const time = (value) => { try { return worldTime(value); } catch { return null; } };
 const displayTime = (value) => time(value)?.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') || 'Not supplied';
@@ -97,15 +102,18 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
   const link = (label, url) => { const el = node('a', '', label); el.href = url; el.target = '_blank'; el.rel = 'noopener noreferrer'; return el; };
   const nav = node('nav', 'context-navigation'); nav.setAttribute('aria-label', 'Source context views');
   const feedHost = node('section', 'context-feed'), dossierHost = node('section', 'plugin-dossier'); dossierHost.id = 'plugin-context-details'; feedHost.id = 'current-context-feeds';
-  const scope = node('p', 'plugin-note'); scope.hidden = true; scope.textContent = 'Context follows its own reporting and publication dates. It is not a historical globe layer.';
-  const buttons = new Map(), bindings = [], cache = new Map();
-  for (const [id, label] of [['feeds', 'Current feeds'], ...Object.entries(VIEWS).map(([id, spec]) => [id, spec.label])]) {
-    const button = node('button', '', label); button.type = 'button'; button.setAttribute('aria-controls', id === 'feeds' ? feedHost.id : dossierHost.id);
-    const click = () => { void select(id); }; button.addEventListener('click', click); bindings.push([button, click]); buttons.set(id, button); nav.append(button);
+  const scope = node('p', 'plugin-note'); scope.hidden = true; scope.textContent = 'Source dates remain independent of globe time.';
+  const buttons = new Map(), bindings = [], cache = new Map(), remembered = new Map(Object.entries(PURPOSES).map(([id, spec]) => [id, spec.views[0]]));
+  for (const [id, spec] of Object.entries(PURPOSES)) {
+    const button = node('button'); button.type = 'button'; button.append(createIcon(spec.icon, documentRef), node('span', '', spec.label));
+    button.setAttribute('aria-controls', id === 'reports' ? feedHost.id : dossierHost.id);
+    const click = () => { void select(remembered.get(id)); }; button.addEventListener('click', click); bindings.push([button, click]); buttons.set(id, button); nav.append(button);
   }
+  const sourceField = node('label', 'context-source'), sourceSelect = node('select'); sourceField.append(node('span', '', 'Source'), sourceSelect);
+  const sourceChange = () => { void select(sourceSelect.value); }; sourceSelect.addEventListener('change', sourceChange);
   const title = node('h3', 'plugin-title'), subtitle = node('p', 'plugin-subtitle'), status = node('p', 'plugin-status'); status.setAttribute('role', 'status');
   const content = node('div', 'plugin-content'), refresh = node('button', 'plugin-refresh', 'Refresh stored context'); refresh.type = 'button';
-  dossierHost.append(title, subtitle, status, content, refresh); container.replaceChildren(nav, scope, feedHost, dossierHost);
+  dossierHost.append(title, subtitle, status, content, refresh); container.replaceChildren(nav, sourceField, scope, feedHost, dossierHost);
   let view = 'feeds', opened = false, destroyed = false, generation = 0, request, pending, timer, feed, feedPending, mode = 'live', rendered = null, followupRequested = false;
   const dirty = new Set(), updates = new Map(); let evidenceBindings = [], scenario;
   const stopTimer = () => { if (timer !== undefined) clearTimeoutImpl(timer); timer = undefined; };
@@ -278,7 +286,10 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     }
   }
   function presentation() {
-    for (const [id, button] of buttons) button.setAttribute('aria-pressed', String(id === view));
+    const purpose = purposeFor(view), sources = PURPOSES[purpose].views;
+    for (const [id, button] of buttons) button.setAttribute('aria-pressed', String(id === purpose));
+    sourceField.hidden = sources.length < 2; sourceSelect.setAttribute('aria-label', purpose === 'publications' ? 'Publication source' : 'Context source');
+    sourceSelect.replaceChildren(...sources.map(id => { const option = node('option', '', VIEWS[id]?.label || 'Current reports'); option.value = id; return option; })); sourceSelect.value = view;
     feedHost.hidden = view !== 'feeds'; dossierHost.hidden = view === 'feeds'; scope.hidden = mode !== 'history';
     if (view !== 'feeds') {
       title.textContent = view === 'gas' ? 'Belgian natural-gas origins' : VIEWS[view].title;
@@ -320,7 +331,8 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
       }
     })(); pending = work; return work;
   }
-  async function select(id) { if (destroyed || !buttons.has(id)) return false; if (id !== view) { cancel(); feed?.close(); view = id; presentation(); }
+  async function select(id) { if (destroyed || id !== 'feeds' && !Object.hasOwn(VIEWS, id)) return false;
+    remembered.set(purposeFor(id), id); if (id !== view) { cancel(); feed?.close(); view = id; presentation(); }
     return opened ? view === 'feeds' ? openFeed() : load() : false; }
   const refreshClick = () => { void load(true); }; refresh.addEventListener('click', refreshClick);
   const visibility = () => { if (documentRef.hidden) { cancel(); feed?.close(); } else if (opened) void (view === 'feeds' ? openFeed() : load()); };
@@ -341,6 +353,6 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     open() { if (destroyed) return Promise.resolve(false); opened = true; return view === 'feeds' ? openFeed() : load(); },
     close() { opened = false; cancel(); feed?.close(); }, refresh: refreshClick,
     destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); scenario?.destroy(); feed?.destroy(); unsubscribeUpdates?.(); cache.clear(); dirty.clear(); updates.clear(); evidenceBindings = [];
-      for (const [button, fn] of bindings) button.removeEventListener('click', fn); refresh.removeEventListener('click', refreshClick);
+      for (const [button, fn] of bindings) button.removeEventListener('click', fn); sourceSelect.removeEventListener('change', sourceChange); refresh.removeEventListener('click', refreshClick);
       documentRef.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); container.replaceChildren(); } };
 }

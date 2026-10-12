@@ -119,7 +119,7 @@ async function handlePanel({ panel, open }) {
     if (panel === 'news') {
       const { createPluginDossierPanel } = await import('./core/plugin-dossier.js');
       if (destroyed) return;
-      document.querySelector('#news-panel .panel-note').textContent = 'Investigate retained sources. Reporting periods, publication dates and globe time stay distinct.';
+      document.querySelector('#news-panel .panel-note').textContent = 'Explore reports, datasets and original publications.';
       document.getElementById('news-status').hidden = true;
       intelligence = createPluginDossierPanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, subscribeUpdates: updates.subscribe,
         createFeed: async (container) => {

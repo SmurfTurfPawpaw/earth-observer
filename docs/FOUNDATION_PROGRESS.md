@@ -635,3 +635,32 @@ full availableRange and window-local gaps must be connected before claiming
 the timeline scales indefinitely. Original-document extraction separately
 passed isolated bundled pypdf6.10.0 and Windows resource quotas; it remains
 local pending independent raw/analysis receipts and scoped producer admission.
+
+### Next coherent archive and navigation package — local, 01:18 UTC
+
+The first integrated archive package is committed as ac21985983a29df2ef5c31aa45fbc4a8d7c66583.
+Its 79 focused backend checks passed in 9.60 seconds, including actual generated
+0009 migration, native SQLite and real publisher/API/collector integration,
+interrupted bootstrap, replaced/expired leases, atomic rollback, frozen-body
+retry, 2,100 retained receipts and bounded publisher deadline. Receipt journal
+order does not redefine original publication clocks; explicit earlier proof wins
+independently of traversal. A subsequent self-review found that a new transaction
+planned with an unresolved receipt clock could conservatively miss an earlier
+proof if the database clock regressed. The next patch will reject such a new
+admission instead of backdating or advancing incomplete coverage. This gate
+remains open until the exact same-transaction check is verified.
+
+Cleanup removed 544 obsolete clock/history-controller lines after an entry-point
+inventory; active layers, current scene clock, astronomy and backend history remain.
+It reduces maintained code, not the initial download of already tree-shaken code.
+The seven original-document foundation files are separately committed45f640b;
+isolated parser/resource tests and real local PDF acceptance do not establish
+hosted document retention or unattended document processing.
+
+The local Context design now uses Reports, Data and Publications instead of a
+growing tab for every source. Publications has a secondary native source chooser;
+its last selection is remembered within the open workspace. Backend source
+collection is independent of this choice. Nineteen focused dossier checks pass,
+including publication-source revisit using compatible retained cache, cancellation,
+scenario evidence renewal and original per-item receipt preservation. Responsive
+published design acceptance will follow the exact release; this is not yet live.
