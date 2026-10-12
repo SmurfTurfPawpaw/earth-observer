@@ -779,3 +779,58 @@ lane/API checks; actual mounted runtime/cross-policy verification passed15 check
 No new migration is needed. Public download/reading-mode acceptance awaits release.
 First-visitor and historian agents now run separate synthetic journeys; demand stays
 off and their observations cannot become real popularity or confidence evidence.
+
+## 02:20 UTC gate: immutable originals deployed; visitor review changes the order
+
+Version 36 succeeded at 2026-10-12T02:15:32.776510Z with environment revision 6.
+Saved version is appgprj_6ac8f0348bd88191af3151d9d31fb388~appgver_33d0953d5b748191a5f0f137d796eaa8;
+deployment is appgdep_6acc42a5a03c8191816b93e42166da7f. Application source is
+c09c6478b458e006d4d4cc53261844a83473a117 and combined source is
+0ced7c7abe8c1060023d816cf87dabc4519453c3. Local archive SHA-256 is
+fd95707d6c2e6df20fd4b1f550eaeabfc3c68470c94591b0c4ad151c95153409.
+The exact combined build/check passed; source is 55,943,177 bytes / 40,700,924 gzip.
+
+Actual public acceptance at 02:18:24 returned the original PDF as 66,354 bytes
+with the same retained SHA, attachment disposition, nosniff, and both the stricter
+sandbox and global application policies. The portfolio and exact v36 shell were
+HTTP 200. GDELT retained the same actual generation/batch dates while its successful
+stored check advanced to 02:17:57.524Z through the deployed conditional path. It
+was correctly stale by source age, with no failed acquisition reason or retry time.
+This does not establish a newer publisher batch or a minute-level producer SLA.
+
+Actual root browser adopted index-pzZilsq6.js and index-CvN6bY1T.css. At 390 x 844,
+the focused reader was 482 pixels tall, ended at 642, and the clock dock began at
+660. The first exact quotation was visible at y=582–630; all four retained citation
+targets were 44 pixels high and document scroll width remained 390. Back restored
+the exact Inspect control's focus, the publication controls and the 354.47-pixel
+normal sheet, preserving camera 4.079 S / 136.263 E / 90 km. The temporary viewport
+was reset. Screenshot: qa-artifacts/published-foundation-v36-document-mobile.png.
+
+Both agent browser entries were unavailable, so their journeys used bounded stored
+API reads rather than invented clicks. First visitor made four reads; historian
+made nine. The historian reconstructed 124 eligible events at November 15, 2024,
+observed the platform knowledge gap at the same UTC, and restored reconstruction
+without moving UTC. Five delivered records plus a cursor did not mean only five
+events existed or that source coverage was incomplete. These synthetic observations
+did not contribute to real demand. Root remains the actual UI driver.
+
+The review found duplicate Data vocabulary, unclear platform-knowledge wording,
+current Context beside historical map time, and live geographic disks whose size
+was a magnitude formula rather than sourced shaking geometry. The next local UI
+package uses World / Layers / Evidence, Datasets within Evidence, Platform knew then,
+a clear current-context notice during History, a shorter reader note with full
+explanation in evidence, and compact selectable live event points. Forty-six combined
+focused checks pass; actual deployed marker picking and clarity remain pending.
+
+A separate source trace changes the next dependency order. The live overlay really
+uses the direct M2.5+ 24-hour feed, while the collector uses a separate M4.5+ weekly
+feed; the labels were not a source-window mismatch. However, that live overlay still
+depends on visitor acquisition. Central retention and stored delivery of its exact
+existing scope now precede wider sources or more analysis. The nine-hour goal is
+not allowed to claim that every layer is centrally collected already. The temporary
+laptop bridge remains healthy: attempt 100 completed at 02:13:59 with no failures,
+and its hard stop remains 06:39:10Z. A permanent independent minute trigger remains
+unverified. Legacy GKG scheduledIntervalMinutes metadata migration is deferred because
+it provides no current refresh-speed benefit; provider cadence and checks are already
+represented separately. Compact historical point paging is being evaluated as a
+bounded delivery improvement, independent of collection and historical source scope.

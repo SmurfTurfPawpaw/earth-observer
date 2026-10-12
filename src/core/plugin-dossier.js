@@ -10,7 +10,7 @@ const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', pluginId: 'eurostat-g
 const EC_DOCUMENT_TYPES = Object.freeze({ ip: 'Press release', statement: 'Statement', read: 'Readout', qanda: 'Questions and answers', fs: 'Factsheet', mex: 'Daily news', speech: 'Speech' });
 const INSPECTABLE_DOCUMENT = 'https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2127';
 const PURPOSES = Object.freeze({ reports: { label: 'Reports', icon: 'news', views: ['feeds'] },
-  data: { label: 'Data', icon: 'layers', views: ['gas'] },
+  data: { label: 'Datasets', icon: 'layers', views: ['gas'] },
   publications: { label: 'Publications', icon: 'notebook', views: ['publications', 'commission'] } });
 const purposeFor = view => view === 'feeds' ? 'reports' : view === 'gas' ? 'data' : 'publications';
 const EC_REFERENCE = /^https:\/\/ec\.europa\.eu\/commission\/presscorner\/detail\/en\/([a-z]+)_([0-9]{2})_([0-9]{1,7})$/;
@@ -104,7 +104,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
   const link = (label, url) => { const el = node('a', '', label); el.href = url; el.target = '_blank'; el.rel = 'noopener noreferrer'; return el; };
   const nav = node('nav', 'context-navigation'); nav.setAttribute('aria-label', 'Source context views');
   const feedHost = node('section', 'context-feed'), dossierHost = node('section', 'plugin-dossier'); dossierHost.id = 'plugin-context-details'; feedHost.id = 'current-context-feeds';
-  const scope = node('p', 'plugin-note'); scope.hidden = true; scope.textContent = 'Source dates remain independent of globe time.';
+  const scope = node('p', 'plugin-note'); scope.hidden = true; scope.textContent = 'Current context · source dates do not follow map time.';
   const buttons = new Map(), bindings = [], cache = new Map(), remembered = new Map(Object.entries(PURPOSES).map(([id, spec]) => [id, spec.views[0]]));
   for (const [id, spec] of Object.entries(PURPOSES)) {
     const button = node('button'); button.type = 'button'; button.append(createIcon(spec.icon, documentRef), node('span', '', spec.label));

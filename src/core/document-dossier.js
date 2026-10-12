@@ -130,7 +130,7 @@ export function createDocumentDossier({ container, fetchImpl = globalThis.fetch,
       const retainedPdf = `${ORIGINAL_DOCUMENT_URL}?receipt=${encodeURIComponent(c.rawReceipt.id)}`;
       rendered = signature; fields = []; content.replaceChildren();
       content.append(link(P.title, P.pageUrl), node('p', 'plugin-note', `European Commission / European Union · Published ${display(c.source.publishedAt)}`),
-        node('p', 'plugin-note', 'Attributed source statements. Independent corroboration has not been established. Source dates remain independent of globe time.'));
+        node('p', 'plugin-note', 'Source statements · not independently corroborated.'));
       for (const statement of c.statements) {
         const citation = statement.citation, rule = rules[citation.selector], card = node('article', 'plugin-publication');
         card.append(node('h4', '', rule.label), node('p', 'document-statement', citation.exact));
@@ -141,7 +141,8 @@ export function createDocumentDossier({ container, fetchImpl = globalThis.fetch,
         content.append(card);
       }
       const evidence = node('details', 'plugin-evidence'); evidence.open = open; evidence.append(node('summary', '', 'Source, dates and citation evidence'),
-        link('Download retained original', retainedPdf), link('Publisher PDF', P.downloadUrl));
+        link('Download retained original', retainedPdf), link('Publisher PDF', P.downloadUrl),
+        node('p', 'plugin-note', 'Source dates remain independent of globe time.'));
       const facts = node('dl', 'plugin-facts');
       for (const [label, getter] of [['Source published', p => display(p.content.source.publishedAt)], ['Source date as supplied', p => p.content.source.publishedRaw], ['Publication metadata retained', p => display(p.knowledge.metadataRecordedAt)],
         ['Original PDF observed', p => display(p.content.rawReceipt.acquiredAt)], ['Original PDF first retained', p => display(p.knowledge.documentRecordedAt)],

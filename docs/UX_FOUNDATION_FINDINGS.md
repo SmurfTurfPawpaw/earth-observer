@@ -1,5 +1,10 @@
 # Published foundation UX verification
 
+Latest root acceptance is version 36 at 02:20 UTC on October 12, 2026. The release-27
+agent record below is historical, not the latest browser status. See the dated
+version-36 gate in FOUNDATION_PROGRESS.md for actual asset adoption, mobile reading,
+Back/focus, retained PDF bytes, and the limits of synthetic agent API journeys.
+
 12 October 2026. Release 27. Browser journey verification is **pending**, not a
 passing result. This agent's CUA entry returned `Browser is not available: iab`;
 the subsequent inventory returned no apps or browsers. No QA tab or screenshot

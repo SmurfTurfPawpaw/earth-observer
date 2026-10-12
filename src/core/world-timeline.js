@@ -50,7 +50,8 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   controls.append(back, date, forward, sunlight, reload);
   const lensBar = node('div', 'timeline-lens-bar'), lensLabel = node('label', '', 'Evidence'); lensLabel.htmlFor = 'timeline-lens';
   const lens = node('select', 'timeline-lens'); lens.id = 'timeline-lens'; lens.setAttribute('aria-label', 'Historical evidence mode');
-  for (const [value, label] of [['reconstruction', 'Reconstruction'], ['known-then', 'Known then']]) { const option = node('option', '', label); option.value = value; lens.append(option); }
+  lens.title = 'Reconstruction includes later retained source corrections. Platform knew then uses only evidence available on this site by the selected UTC.';
+  for (const [value, label] of [['reconstruction', 'Reconstruction'], ['known-then', 'Platform knew then']]) { const option = node('option', '', label); option.value = value; lens.append(option); }
   lens.value = 'reconstruction';
   lensBar.append(lensLabel, lens, node('span', 'timeline-scope', 'USGS earthquakes · M4.5+ · preceding 7 days'));
   const slider = node('input', 'timeline-range'); slider.type = 'range'; slider.min = '0'; slider.max = '0'; slider.step = '1'; slider.value = '0'; slider.disabled = true; slider.setAttribute('aria-label', 'Choose historical UTC time');
@@ -174,12 +175,12 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     }
     coverage.textContent = available ? `Retained dates: ${utc(available.from).slice(0, 10)} — ${utc(available.to).slice(0, 10)}. ` + (loadedRange ? `Coverage checked: ${utc(loadedRange.from).slice(0, 10)} — ${utc(loadedRange.to).slice(0, 10)}; other dates load on selection.` : 'Coverage is not yet checked for this archive edition; dates remain selectable.') : state.metadata ? 'No historical catalog interval has been imported yet.' : 'Open the calendar or press Play to check historical coverage.';
     note.textContent = 'History currently covers USGS earthquakes of magnitude 4.5 or greater in the preceding seven days. ' + (state.lens === 'known-then' ?
-      'Known then uses only evidence published by this platform by the selected UTC. Sunlight follows that UTC; base map imagery is not historical.' :
-      'Reconstruction uses retained source corrections for events in the selected period. Sunlight follows selected UTC; base map imagery is not historical.');
+      'Platform knew then shows only evidence available on this site by the selected UTC. A gap may mean the evidence was imported later. Sunlight follows that UTC; base map imagery is not historical.' :
+      'Reconstruction uses retained source reports and later corrections for events in the selected period. Sunlight follows selected UTC; base map imagery is not historical.');
     const scene = state.selection, n = members(scene).length;
     const hasWindowCoverage = scene?.coverage.segments.some((segment) => segment.from <= scene.at && Date.parse(segment.to) > Date.parse(scene.at) - 7 * 86400000);
     const message = state.loading ? 'Loading stored historical data…' : state.error || (!scene ? sceneTime.getState().mode === 'history' ? 'No stored scene is available at the selected UTC.' : 'Current UTC · live layers use their own source update times.' :
-      scene.coverage.status === 'unavailable-at-cutoff' ? 'No complete archive evidence was available at this knowledge cutoff.' :
+      scene.coverage.status === 'unavailable-at-cutoff' ? 'No evidence for this period was available on this platform at the selected UTC. Switch to Reconstruction for later imports.' :
       scene.coverage.gaps.some((gap) => gap.status === 'not-evaluated') ? `${n} reported earthquakes · coverage for part of this seven-day period has not been checked.` :
       !hasWindowCoverage ? 'This period has not been imported; no current data substitutes for it.' :
       scene.truncated ? `${n} reported earthquakes shown · bounded result is incomplete.` :

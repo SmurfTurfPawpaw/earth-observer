@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createEarthquakesLayer } from './index.js';
 import { createUsgsEarthquakeSource } from './source.js';
+import * as Cesium from 'cesium';
+import { depthColor } from './model.js';
 function harness(source) {
   const sources = [];
   const events = [];
@@ -72,6 +74,26 @@ test('two displays own separate data sources and destruction', async () => {
   assert.equal(a.sources.length, 0);
   assert.equal(b.sources.length, 1);
   b.layer.destroy();
+});
+test('pixel markers retain reported positions, selectable entity identity and source properties without geographic disks or depth overrides', async () => {
+  const rows = [row, { ...row, stableId: 'deep-large', usgsId: 'deep-large', mag: 10, depthKm: 400 }];
+  const h = harness({ getSnapshot: async () => rows }); await h.layer.update(h.viewer);
+  const at = Cesium.JulianDate.now(), entities = h.sources[0].entities;
+  for (const source of rows) {
+    const entity = entities.getById(`earthquake:${source.stableId}`);
+    assert.ok(entity instanceof Cesium.Entity, 'the renderer keeps the source entity available to Cesium picking');
+    assert.equal(entity.ellipse, undefined);
+    assert.ok(entity.point instanceof Cesium.PointGraphics);
+    assert.equal(entity.point.pixelSize.getValue(at), 11, 'magnitude does not create a geographic footprint or unbounded screen marker');
+    assert.equal(entity.point.outlineWidth.getValue(at), 2);
+    assert.equal(entity.point.color.getValue(at).equals(depthColor(source.depthKm)), true);
+    assert.equal(entity.point.heightReference.getValue(at), Cesium.HeightReference.CLAMP_TO_GROUND);
+    assert.equal(entity.point.disableDepthTestDistance, undefined, 'normal globe/surface occlusion remains available');
+    assert.equal(entity.position.getValue(at).equals(Cesium.Cartesian3.fromDegrees(source.lon, source.lat)), true);
+    assert.deepEqual(entity.properties.getValue(at), { usgsId: source.usgsId, mag: source.mag, place: source.place, time: source.time, depth: source.depthKm });
+  }
+  assert.equal(h.events.length, 1); assert.deepEqual(h.events[0][1].map(entry => entry.id).sort(), rows.map(source => source.stableId).sort());
+  assert.equal(h.events[0][2].moving, false); h.layer.destroy();
 });
 test('USGS body completion honors cancellation even with an uncooperative transport', async () => {
   const abort = new AbortController();

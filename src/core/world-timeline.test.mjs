@@ -204,13 +204,15 @@ test('pause cannot repaint a stale capped selection when the frozen UTC has no a
   }
 });
 
-test('an incomplete capped point buffer cannot start an automatic reload loop disguised as playback', async () => {
+test('an incomplete capped point buffer cannot start an automatic reload loop disguised as playback', async t => {
   const f = fixture(), at = '2025-06-01T12:00:00.000Z', p = await point('partial', at); let requests = 0;
   const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url) => {
     requests++; const query = new URL(url, 'https://example.test').searchParams;
     return query.has('metadata') ? response() : response(query.get('at'), [p], baseRange, { membershipComplete: false, truncated: true, complete: false, counts: { returned: 1, eligible: null, omitted: null } });
   } });
+  t.after(()=>{timeline.destroy();f.sceneClock.destroy();});
   await timeline.seek(at); const play = elements(f.container.parentElement).find((element) => element.id === 'timeline-play'); play.trigger('click'); await settle();
+  await waitFor(()=>!timeline.getState().loading&&timeline.getState().selection?.truncated,'the settled incomplete scene');
   assert.equal(f.sceneClock.getState().playing, false); const count = requests; f.timing.advance(10000); await settle(); assert.equal(requests, count);
   assert.match(elements(f.container).find((element) => element.className === 'timeline-status').textContent, /incomplete/);
   timeline.destroy(); f.sceneClock.destroy();
@@ -226,10 +228,18 @@ test('a gap owns the selected UTC and clears past/live substitutes; Known then d
     return response(query.get('at'), [p]);
   } });
   await timeline.seek(at); assert.equal(f.entities.size, 1); const lens = elements(f.container).find((element) => element.id === 'timeline-lens');
+  assert.equal(lens.children.find(option=>option.value==='known-then').textContent,'Platform knew then');
+  assert.match(lens.title,/later retained source corrections.*available on this site/);
   lens.value = 'known-then'; lens.trigger('change'); await settle();
   assert.equal(f.entities.size, 0); assert.equal(f.sceneClock.getState().at, at); assert.equal(transitions.at(-1).lens, 'known-then');
   assert.ok(calls.some((query) => query.get('knownMode') === 'scene' && !query.has('points')));
-  assert.match(elements(f.container).find((element) => element.className === 'timeline-status').textContent, /knowledge cutoff/);
+  const status=elements(f.container).find((element)=>element.className==='timeline-status');
+  assert.match(status.textContent,/No evidence.*on this platform.*selected UTC.*Reconstruction/);
+  assert.doesNotMatch(status.textContent,/No qualifying earthquakes/,'missing platform knowledge is not reported as event absence');
+  assert.match(elements(f.container).find(element=>element.className==='timeline-note').textContent,/evidence was imported later/);
+  lens.value='reconstruction';lens.trigger('change');await settle();
+  assert.equal(f.sceneClock.getState().at,at);assert.equal(f.entities.size,1,'following the recovery wording restores later-imported evidence without changing UTC');
+  assert.match(elements(f.container).find(element=>element.className==='timeline-note').textContent,/retained source reports and later corrections/);
   timeline.live(); assert.equal(f.sceneClock.getState().mode, 'live'); timeline.destroy(); f.sceneClock.destroy();
 });
 

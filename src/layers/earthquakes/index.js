@@ -50,8 +50,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
 
     enable(viewer) {
       _enabled = true;
-      // No continuous-render hold: the discs are static geometry now, so the
-      // layer has no per-frame animator to keep the render loop alive for.
+      // Fixed pixel markers need no per-frame animation or render hold.
       if (_dataSource) _dataSource.show = true;
       overlayHost.setVisible(EARTHQUAKE_OVERLAY_SOURCE_ID, true);
     },
@@ -91,28 +90,18 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
         } of rows) {
           if (!inLocalArea(lat, lon, localArea)) continue;
           count++;
-          const baseRadius = Math.pow(2, mag) * 1000;
           const color = depthColor(depthKm || 0);
-          const isSignificant = mag >= 5.0;
-          const fillAlpha = isSignificant ? 0.4 : 0.3;
-          const outlineAlpha = isSignificant ? 1.0 : 0.8;
 
           const position = Cesium.Cartesian3.fromDegrees(lon, lat);
           nextEntities.push(
             new Cesium.Entity({
               id: `earthquake:${stableId}`,
               position,
-              ellipse: {
-                // Static axes — see the module header. A CallbackProperty here
-                // re-tessellates the clamped ground geometry every frame.
-                semiMajorAxis: baseRadius,
-                semiMinorAxis: baseRadius,
-                material: new Cesium.ColorMaterialProperty(
-                  color.withAlpha(fillAlpha),
-                ),
-                outline: true,
-                outlineColor: color.withAlpha(outlineAlpha),
-                outlineWidth: isSignificant ? 3 : 2,
+              point: {
+                pixelSize: 11,
+                color,
+                outlineColor: Cesium.Color.fromCssColorString('#17212c'),
+                outlineWidth: 2,
                 heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
               },
               properties: {

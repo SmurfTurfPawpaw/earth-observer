@@ -204,3 +204,23 @@ foundation slice passes. Keep the full intended platform scope in the completion
 report the actual remaining work, and leave goal completion unset while required work
 remains. Do not expand into paid hosting, unconnected accounts or unrelated
 website changes. The user's return or pause steers this goal immediately.
+
+## 02:20 UTC dependency reassessment
+
+Actual source tracing found that the visitor's live earthquake layer still acquires
+the M2.5+ 24-hour feed directly; the centrally retained M4.5+ weekly feed is a distinct
+scope. After the focused v37 design package, centrally retain and serve that exact
+live layer scope before expanding source count or claiming browser-independent
+collection. Reuse source/receipt, acquisition budget and stored-only public serving
+contracts. Preserve the existing historical archive and its M4.5+ scope. Do not replace
+one feed with another just because they share a publisher. A permanent minute trigger
+remains a separate unresolved deployment dependency; the supervised laptop bridge
+ends at the review boundary and cannot be presented as indefinite hosted collection.
+
+Historical compact-point page sizing can improve delivery independently if cursor,
+edition, total-point, response-byte and request-count gates pass. Defer compatibility
+changes to legacy GKG cadence metadata because they do not improve current acquisition
+speed or user experience. The agent browser surfaces were unavailable; use their
+actual stored API evidence and root-driven UI captures, and keep synthetic observations
+out of real demand. These findings re-examine later phases rather than shrinking the
+intended platform into a news list or declaring the complete goal achieved.

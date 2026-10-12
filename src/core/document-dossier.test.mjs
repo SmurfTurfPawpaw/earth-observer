@@ -75,6 +75,7 @@ test('retained newer failed body remains visible as prior attributed analysis wi
   const prior = await read(f.env, {}, { now: f.now }); assert.equal(prior.latestBodyMatches, false);
   const calls = [], u = ui(async url => { calls.push(url); return Response.json(prior); }); await u.controller.open({ item: payload.content.basis.item });
   assert.match(visibleText(u.container), /newer PDF body was retained/);
+  assert.match(visibleText(u.container), /Source statements · not independently corroborated\./);
   assert.equal(elements(u.container).filter(el => el.className === 'document-statement').length, 4);
   assert.doesNotMatch(visibleText(u.container), /SHA-256|Analysis receipt/);
   const retainedUrl = `${DOCUMENT_DOSSIER_URL}/original?receipt=${encodeURIComponent(payload.content.rawReceipt.id)}`;
@@ -90,7 +91,10 @@ test('retained newer failed body remains visible as prior attributed analysis wi
   assert.equal(elements(u.container).find(el => el.tagName === 'a' && el.textContent === 'Download retained original').href, retainedUrl);
   assert.equal(elements(u.container).find(el => el.tagName === 'a' && el.textContent === 'Publisher PDF').href, prior.content.source.downloadUrl);
   assert.deepEqual(calls, [DOCUMENT_DOSSIER_URL], 'rendering links never downloads a retained or publisher PDF');
-  assert.equal(u.container.querySelector('.plugin-evidence').open, false); u.controller.destroy();
+  const evidence = u.container.querySelector('.plugin-evidence'); assert.equal(evidence.open, false);
+  assert.doesNotMatch(visibleText(u.container), /Source dates remain independent of globe time/);
+  evidence.open = true; assert.match(visibleText(evidence), /Source dates remain independent of globe time/);
+  assert.match(visibleText(evidence), /Original PDF first retained/); assert.match(visibleText(evidence), /Analysis published/); u.controller.destroy();
 });
 
 test('fixed source, receipt binding, text hashes and exact whole-sentence offsets fail closed even with rehashed content', async t => {
