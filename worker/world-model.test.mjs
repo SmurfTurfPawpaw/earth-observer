@@ -5,7 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { appendHistorySnapshot } from './history.js';
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { worldRevision, WORLD_MODEL_LIMITS } from '../src/core/world-model.js';
-import { projectWorldCollection, readWorldEvents, createWorldModelHandler } from './world-model.js';
+import { projectWorldCollection, readWorldEvents, readWorldSourceItems, createWorldModelHandler } from './world-model.js';
+import { normalizeGdacsSourceItems, GDACS_SOURCE_ITEM_LIMITS } from '../src/core/gdacs-source-items.js';
 
 const CLOCK = Date.parse('2026-10-11T12:00:00.000Z'), stamp = (offset = 0) => new Date(CLOCK + offset).toISOString();
 const quake = (id = 'TEST_ONLY_USGS_001', changes = {}) => canonicalDiscoveryRecord({ id, sourceId: 'usgs', source: 'USGS',
@@ -13,6 +14,11 @@ const quake = (id = 'TEST_ONLY_USGS_001', changes = {}) => canonicalDiscoveryRec
   eventType: 'EQ', lat: 50, lon: 4, magnitude: 5.1, observedAt: stamp(-300000), updatedAt: stamp(-60000), retrievedAt: stamp(),
   verification: 'Original source report; not independently verified.', ...changes });
 const request = (query = '', options) => new Request(`https://owned.example/api/world/events${query}`, options);
+const notice = (id = 'gdacs:FL:1001:1', changes = {}) => canonicalDiscoveryRecord({ id, sourceId: 'gdacs', source: 'GDACS',
+  category: 'disasters', kind: 'hazard-report', title: 'TEST ONLY flood notice', url: 'https://www.gdacs.org/report.aspx?eventid=' + id.split(':')[2] + '&eventtype=' + id.split(':')[1] + '&episodeid=' + id.split(':')[3],
+  eventType: id.split(':')[1], lat: 50, lon: 4, observedAt: stamp(-86400000), eventEndAt: stamp(86400000),
+  updatedAt: stamp(-60000), retrievedAt: stamp(), alertLevel: 'Orange', verification: 'Modeled notice; not observed impacts.', ...changes });
+const sourceRequest = (query = '?source=gdacs', options) => new Request(`https://owned.example/api/world/source-items${query}`, options);
 
 function bucket() {
   const records = new Map(); let serial = 0;
@@ -76,6 +82,152 @@ async function fixture(t, migrated = true) {
     count(table) { return env.EARTH_DB.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count; },
   };
 }
+
+test('GDACS current source items cite one verified cohort while original revision knowledge stays separately qualified', async (t) => {
+  const f = await fixture(t); f.setClock(1000);
+  const first = await f.capture(0, [notice()], 'gdacs'); await projectWorldCollection(f.env, first, { now: f.now });
+  f.setClock(61000);
+  const current = await f.capture(60000, [notice(undefined, { retrievedAt: stamp(60000) }),
+    notice('gdacs:FL:1001:2', { lat: undefined, lon: undefined, retrievedAt: stamp(60000) })], 'gdacs');
+  await projectWorldCollection(f.env, current, { now: f.now });
+  const originKey = `history/snapshots/gdacs/${first.snapshots[0].id}.json`;
+  const origin = JSON.parse(f.env.EARTH_STORE.records.get(originKey).body); origin.records[0].lat = 80;
+  f.env.EARTH_STORE.records.get(originKey).body = JSON.stringify(origin);
+  const gets = f.env.EARTH_STORE.gets, puts = f.env.EARTH_STORE.puts;
+  const value = await readWorldSourceItems(f.env, { source: 'gdacs' }, { now: f.now });
+  assert.equal(value.available, true); await normalizeGdacsSourceItems(value);
+  assert.equal(f.env.EARTH_STORE.gets - gets, 1, 'No per-item origin object read occurs in the map cohort');
+  assert.equal(f.env.EARTH_STORE.puts, puts, 'Public source-item delivery performs no writes');
+  assert.deepEqual(value.counts, { returned: 2, mapped: 1, unmapped: 1 });
+  assert.equal(value.cohort.capturedAt, stamp(60000)); assert.equal(value.cohort.publishedAt, stamp(61000));
+  const retained = value.items.find(item => item.record.id === 'gdacs:FL:1001:1');
+  assert.equal(retained.record.retrievedAt, stamp(60000), 'The cited current body keeps its literal retrieval date');
+  assert.equal(retained.evidence.snapshotId, current.snapshots[0].id);
+  assert.equal(retained.origin.snapshotId, first.snapshots[0].id);
+  assert.equal(retained.origin.firstRecordedAt, stamp(1000)); assert.equal(retained.origin.bodyValidated, false);
+  assert.equal(value.operational.checkedAt, null); assert.equal(value.history.replay, false);
+  assert.equal(f.count('earth_world_revisions'), 2); assert.equal((await readWorldEvents(f.env, {}, { now: f.now })).events.length, 0);
+});
+
+test('GDACS fixed public route rejects foreign/date/arbitrary inputs and has no provider or write fallback', async (t) => {
+  const f = await fixture(t); f.setClock(1000); await projectWorldCollection(f.env, await f.capture(0, [notice()], 'gdacs'), { now: f.now });
+  const handle = createWorldModelHandler({ env: f.env, now: f.now }), puts = f.env.EARTH_STORE.puts;
+  let providerCalls = 0; const previousFetch = globalThis.fetch;
+  globalThis.fetch = () => { providerCalls++; throw new Error('TEST ONLY forbidden provider acquisition'); };
+  t.after(() => { globalThis.fetch = previousFetch; });
+  assert.equal((await handle(sourceRequest())).status, 200);
+  for (const query of ['', '?source=', '?source=usgs', '?source=gdacs&source=gdacs', '?source=gdacs&knownAt=' + stamp(),
+    '?source=gdacs&limit=1', '?source=gdacs&url=https://www.gdacs.org/', '?source=gdacs&at=' + stamp()])
+    assert.equal((await handle(sourceRequest(query))).status, 400, query);
+  assert.equal((await handle(sourceRequest('?source=gdacs', { method: 'POST' }))).status, 405);
+  const missing = await fixture(t, false);
+  assert.equal((await createWorldModelHandler({ env: missing.env, now: missing.now })(sourceRequest())).status, 503);
+  assert.equal(providerCalls, 0); assert.equal(f.env.EARTH_STORE.puts, puts);
+});
+
+test('GDACS changed current cohort retries exactly once and never combines notices from different completed receipts', async (t) => {
+  for (const changes of [1, 2]) {
+    const f = await fixture(t); f.setClock(1000); await projectWorldCollection(f.env, await f.capture(0, [notice()], 'gdacs'), { now: f.now });
+    const originalGet = f.env.EARTH_STORE.get.bind(f.env.EARTH_STORE); let inWriter = false, bodyReads = 0;
+    f.env.EARTH_STORE.get = async (key) => {
+      if (!inWriter && key.startsWith('history/snapshots/gdacs/')) {
+        bodyReads++;
+        if (bodyReads <= changes) {
+          inWriter = true; const offset = bodyReads * 60000; f.setClock(offset + 1000);
+          await projectWorldCollection(f.env, await f.capture(offset, [notice(undefined,
+            { lat: 50 + bodyReads, retrievedAt: stamp(offset), updatedAt: stamp(offset - 1000) })], 'gdacs'), { now: f.now });
+          inWriter = false;
+        }
+      }
+      return originalGet(key);
+    };
+    const value = await readWorldSourceItems(f.env, { source: 'gdacs' }, { now: f.now });
+    assert.equal(bodyReads, 2, 'The current edition can restart only one whole cohort read');
+    if (changes === 1) {
+      assert.equal(value.available, true); assert.equal(value.items[0].record.lat, 51); assert.equal(value.cohort.capturedAt, stamp(60000));
+    } else {
+      assert.equal(value.available, false); assert.equal(value.errorCode, 'gdacs-cohort-changed'); assert.deepEqual(value.items, []);
+    }
+  }
+});
+
+test('GDACS receipt versions distinguish same publication-clock heads and preserve a small authoritative database clock lead', async (t) => {
+  const f = await fixture(t); f.setClock(1000); f.setDatabaseClock(1002);
+  await projectWorldCollection(f.env, await f.capture(0, [notice()], 'gdacs'), { now: f.now });
+  const first = await readWorldSourceItems(f.env, {}, { now: f.now }); assert.equal(first.available, true);
+  assert.equal(first.cohort.publishedAt, stamp(1002)); assert.equal(first.readAt, stamp(1000), 'Read wall time does not backdate authoritative publication');
+  f.setClock(61000); f.setDatabaseClock(1002);
+  await projectWorldCollection(f.env, await f.capture(60000, [notice(undefined, { lat: 51, retrievedAt: stamp(60000) })], 'gdacs'), { now: f.now });
+  const second = await readWorldSourceItems(f.env, {}, { now: f.now }); assert.equal(second.available, true);
+  assert.equal(second.cohort.publishedAt, first.cohort.publishedAt); assert.notEqual(second.version, first.version);
+  assert.equal(second.items[0].itemId, first.items[0].itemId); assert.notEqual(second.items[0].revision, first.items[0].revision);
+});
+
+test('GDACS incomplete membership, corrupted body and future origin knowledge fail closed rather than becoming an empty valid map', async (t) => {
+  const f = await fixture(t); f.setClock(1000); const capture = await f.capture(0, [notice()], 'gdacs');
+  await projectWorldCollection(f.env, capture, { now: f.now });
+  f.env.EARTH_DB.sqlite.prepare('UPDATE earth_world_revisions SET first_recorded_at=?').run(stamp(2000));
+  assert.equal((await readWorldSourceItems(f.env, {}, { now: f.now })).available, false);
+  f.env.EARTH_DB.sqlite.prepare('UPDATE earth_world_revisions SET first_recorded_at=?').run(stamp(1000));
+  const key = `history/snapshots/gdacs/${capture.snapshots[0].id}.json`, original = f.env.EARTH_STORE.records.get(key).body;
+  const changed = JSON.parse(original); changed.records[0].lat = -50;
+  f.env.EARTH_STORE.records.get(key).body = JSON.stringify(changed);
+  const corrupt = await readWorldSourceItems(f.env, {}, { now: f.now }); assert.equal(corrupt.available, false); assert.deepEqual(corrupt.items, []);
+  f.env.EARTH_STORE.records.get(key).body = original;
+  f.env.EARTH_DB.sqlite.prepare('UPDATE earth_world_captures SET snapshot_id=?').run('a'.repeat(64));
+  assert.equal((await readWorldSourceItems(f.env, {}, { now: f.now })).available, false);
+});
+
+test('GDACS record and exact byte delivery budgets never silently truncate the retained cohort', async (t) => {
+  for (const scenario of ['records', 'bytes']) {
+    const f = await fixture(t); f.setClock(1000);
+    const notices = Array.from({ length: scenario === 'records' ? 101 : 100 }, (_, i) => notice(`gdacs:FL:${1001 + i}:1`, scenario === 'bytes' ? {
+      url: 'https://www.gdacs.org/report.aspx?context=' + 'x'.repeat(1850), source: 's'.repeat(250), title: 't'.repeat(300), verification: 'v'.repeat(400), country: 'c'.repeat(100),
+    } : {}));
+    assert.equal((await projectWorldCollection(f.env, await f.capture(0, notices, 'gdacs'), { now: f.now })).stored, true);
+    const value = await readWorldSourceItems(f.env, {}, { now: f.now });
+    assert.equal(value.available, false); assert.deepEqual(value.items, []);
+    if (scenario === 'bytes') assert.equal(value.errorCode, 'gdacs-cohort-byte-budget');
+  }
+});
+
+test('GDACS a bounded source read deadline cancels further work, while a genuinely empty retained cohort remains qualified', async (t) => {
+  const f = await fixture(t); f.setClock(1000); await projectWorldCollection(f.env, await f.capture(0, [notice()], 'gdacs'), { now: f.now });
+  let reads = 0; f.env.EARTH_STORE.get = () => { reads++; return new Promise(() => {}); };
+  const began = performance.now(), value = await readWorldSourceItems(f.env, {}, { now: f.now, deadlineMs: 15 });
+  assert.equal(value.errorCode, 'gdacs-source-read-timeout'); assert.equal(value.available, false); assert.equal(reads, 1);
+  assert.ok(performance.now() - began < 500, 'No storage timeout or second read outlives the request budget');
+  const empty = await fixture(t); empty.setClock(1000); await projectWorldCollection(empty.env, await empty.capture(0, [], 'gdacs'), { now: empty.now });
+  const cohort = await readWorldSourceItems(empty.env, {}, { now: empty.now }); assert.equal(cohort.available, true);
+  assert.deepEqual(cohort.counts, { returned: 0, mapped: 0, unmapped: 0 }); assert.equal(cohort.coverage.completeProviderArchive, false);
+  assert.ok(new TextEncoder().encode(JSON.stringify(cohort)).byteLength < GDACS_SOURCE_ITEM_LIMITS.bytes);
+});
+
+test('GDACS pre-aborted public requests open no session or storage work and preserve the caller cancellation', async (t) => {
+  const f = await fixture(t), owner = new AbortController();
+  const reason = new DOMException('TEST ONLY cancelled before stored read', 'AbortError'); owner.abort(reason);
+  const before = { ...f.env.EARTH_DB.counters }, gets = f.env.EARTH_STORE.gets, puts = f.env.EARTH_STORE.puts;
+  const handle = createWorldModelHandler({ env: f.env, now: f.now });
+  await assert.rejects(handle(sourceRequest('?source=gdacs', { signal: owner.signal })), error => error === reason);
+  assert.deepEqual(f.env.EARTH_DB.counters, before, 'No primary session, schema batch or SQL query is dispatched');
+  assert.equal(f.env.EARTH_STORE.gets, gets); assert.equal(f.env.EARTH_STORE.puts, puts);
+});
+
+test('GDACS caller cancellation during a body read prevents downstream revision work or an edition retry', async (t) => {
+  const f = await fixture(t); f.setClock(1000);
+  await projectWorldCollection(f.env, await f.capture(0, [notice()], 'gdacs'), { now: f.now });
+  const owner = new AbortController(), began = Promise.withResolvers(), late = Promise.withResolvers(); let reads = 0;
+  f.env.EARTH_STORE.get = async () => { reads++; began.resolve(); return late.promise; };
+  const before = f.env.EARTH_DB.counters.statements, puts = f.env.EARTH_STORE.puts;
+  const handle = createWorldModelHandler({ env: f.env, now: f.now });
+  const pending = handle(sourceRequest('?source=gdacs', { signal: owner.signal })); await began.promise;
+  const reason = new DOMException('TEST ONLY cancelled pending body', 'AbortError'); owner.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+  assert.equal(reads, 1); assert.equal(f.env.EARTH_DB.counters.statements - before, 1, 'Only the admitted current pointer lookup precedes the aborted body');
+  late.resolve(null); await Promise.resolve(); await Promise.resolve();
+  assert.equal(reads, 1); assert.equal(f.env.EARTH_DB.counters.statements - before, 1);
+  assert.equal(f.env.EARTH_STORE.puts, puts, 'Cancellation never writes or admits further work');
+});
 
 test('generated D1 migration and retained R2 evidence produce a bounded provisional event without new R2 writes', async (t) => {
   const f = await fixture(t); f.setClock(1000); const accepted = await f.capture(0, [quake()]), puts = f.env.EARTH_STORE.puts;

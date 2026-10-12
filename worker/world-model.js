@@ -1,6 +1,7 @@
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { WORLD_MODEL_LIMITS, WORLD_MODEL_NOTE, WORLD_HISTORY_NOTE, WORLD_SOURCE_IDS, worldTime, isWorldDigest,
   worldHash, worldRevision, createWorldSourceItem, provisionalWorldEvent } from '../src/core/world-model.js';
+import { GDACS_SOURCE_ITEM_LIMITS, GDACS_SOURCE_ITEM_NOTE, mappedGdacsRecord, normalizeGdacsSourceItems } from '../src/core/gdacs-source-items.js';
 
 const SOURCES = new Set(WORLD_SOURCE_IDS), IO_TIMEOUT_MS = 2500, ready = new WeakSet(), ROOT_DB = Symbol('world-schema-binding');
 const PUBLICATION_FUTURE_MS = WORLD_MODEL_LIMITS.collectionFutureMs + WORLD_MODEL_LIMITS.publicationClockSkewMs;
@@ -12,18 +13,21 @@ const primaryEnv = (env) => env?.EARTH_DB?.withSession ? { ...env, [ROOT_DB]: en
   EARTH_DB: env.EARTH_DB.withSession('first-primary') } : env;
 function retainedTime(value) { try { return worldTime(value); } catch { throw new Error('Invalid retained world timestamp'); } }
 
-async function io(task) {
-  let timer;
+async function io(task, signal) {
+  let timer, abort;
   try { return await Promise.race([Promise.resolve().then(task), new Promise((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error('World evidence storage deadline exceeded')), IO_TIMEOUT_MS);
-  })]); } finally { clearTimeout(timer); }
+    if (signal) { abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort(); }
+  })]); } finally { clearTimeout(timer); if (abort) signal.removeEventListener('abort', abort); }
 }
-async function rows(db, sql, values = []) {
-  const result = await io(() => db.prepare(sql).bind(...values).all());
+async function rows(db, sql, values = [], signal) {
+  signal?.throwIfAborted();
+  const result = await io(() => db.prepare(sql).bind(...values).all(), signal); signal?.throwIfAborted();
   if (!Array.isArray(result?.results)) throw new Error('Invalid world evidence index response');
   return result.results;
 }
-async function ensureSchema(env) {
+async function ensureSchema(env, signal) {
+  signal?.throwIfAborted();
   if (!configured(env)) return false;
   const schemaBinding = env[ROOT_DB] || env.EARTH_DB;
   if (ready.has(schemaBinding)) return true;
@@ -35,19 +39,20 @@ async function ensureSchema(env) {
       env.EARTH_DB.prepare('SELECT source_id, snapshot_id, captured_at, recorded_at FROM earth_world_sources LIMIT 0'),
       env.EARTH_DB.prepare(`SELECT source_id, captured_at, snapshot_id, recorded_at FROM earth_world_captures
         INDEXED BY earth_world_captures_source_recorded_capture LIMIT 0`),
-    ]));
+    ]), signal); signal?.throwIfAborted();
     if (!Array.isArray(results) || results.length !== 4 || results.some((result) => result?.success === false || !Array.isArray(result?.results))) return false;
     ready.add(schemaBinding); return true;
   } catch { return false; }
 }
 
 /** Existing R2 source snapshots are the body authority. No world-model R2 writes. */
-async function snapshot(env, source, id) {
+async function snapshot(env, source, id, signal) {
+  signal?.throwIfAborted();
   if (!SOURCES.has(source) || !isWorldDigest(id)) throw new TypeError('Invalid immutable evidence reference');
-  const object = await io(() => env.EARTH_STORE.get(`history/snapshots/${source}/${id}.json`));
+  const object = await io(() => env.EARTH_STORE.get(`history/snapshots/${source}/${id}.json`), signal); signal?.throwIfAborted();
   if (!object) throw new Error('Retained source evidence is missing');
   if (Number.isFinite(object.size) && object.size > WORLD_MODEL_LIMITS.snapshotBytes) { await object.body?.cancel?.(); throw new Error('Source evidence exceeds its byte limit'); }
-  const value = await io(() => object.json());
+  const value = await io(() => object.json(), signal); signal?.throwIfAborted();
   if (encodedBytes(value) > WORLD_MODEL_LIMITS.snapshotBytes || value?.schemaVersion !== 1 || value.source !== source ||
       !Array.isArray(value.records) || value.records.length > WORLD_MODEL_LIMITS.records || !Array.isArray(value.coordinates) || value.coordinates.length > 100)
     throw new Error('Invalid retained source evidence');
@@ -320,13 +325,110 @@ export async function readWorldEvents(env, { knownAt, limit = 50, id } = {}, { n
   }
 }
 
+async function currentGdacsCapture(env, signal) {
+  const current = await rows(env.EARTH_DB, `SELECT s.snapshot_id AS head_snapshot_id,s.captured_at AS head_captured_at,
+    s.recorded_at AS head_recorded_at,c.source_id,c.snapshot_id,c.captured_at,c.recorded_at,
+    h.snapshot_id AS history_snapshot_id,h.record_count FROM earth_world_sources s
+    LEFT JOIN earth_world_captures c ON c.source_id=s.source_id AND c.captured_at=s.captured_at
+      AND c.snapshot_id=s.snapshot_id AND c.recorded_at=s.recorded_at
+    LEFT JOIN earth_observations h ON h.source=s.source_id AND h.at=s.captured_at
+    WHERE s.source_id=?`, ['gdacs'], signal);
+  if (current.length > 1) throw new Error('GDACS source pointer is not unique');
+  const capture = current[0]; if (!capture) return null;
+  if (capture.source_id !== 'gdacs' || !isWorldDigest(capture.snapshot_id) || capture.history_snapshot_id !== capture.snapshot_id ||
+      !Number.isInteger(capture.record_count) || capture.record_count < 0 || capture.record_count > GDACS_SOURCE_ITEM_LIMITS.records ||
+      Date.parse(retainedTime(capture.captured_at)) > Date.parse(retainedTime(capture.recorded_at)) + PUBLICATION_FUTURE_MS)
+    throw new Error('GDACS source pointer lacks its exact completed bounded capture');
+  return capture;
+}
+const sameGdacsCapture = (left, right) => Boolean(left && right && left.snapshot_id === right.snapshot_id &&
+  left.captured_at === right.captured_at && left.recorded_at === right.recorded_at && left.record_count === right.record_count);
+
+/** Read one completed normalized GDACS cohort, not raw provider originals or replay. */
+export async function readWorldSourceItems(env, value = {}, { now = Date.now, deadlineMs = GDACS_SOURCE_ITEM_LIMITS.deadlineMs, signal: callerSignal } = {}) {
+  if (!value || Object.keys(value).some(key => key !== 'source') || value.source !== undefined && value.source !== 'gdacs')
+    throw new TypeError('Only the fixed current GDACS source cohort is admitted');
+  if (!Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > GDACS_SOURCE_ITEM_LIMITS.deadlineMs)
+    throw new TypeError('Use the bounded source-item read deadline');
+  callerSignal?.throwIfAborted();
+  env = primaryEnv(env);
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(new Error('GDACS source-item read deadline exceeded')), deadlineMs);
+  const signal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
+  try {
+    const schemaReady = await ensureSchema(env, signal); signal.throwIfAborted();
+    if (!schemaReady) return { ...unavailable(), schemaVersion: 1, items: [] };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const capture = await currentGdacsCapture(env, signal);
+      if (!capture) return { schemaVersion: 1, configured: true, available: false, items: [], reason: 'No completed GDACS source cohort has been retained' };
+      const body = await snapshot(env, 'gdacs', capture.snapshot_id, signal);
+      if (body.records.length !== capture.record_count) throw new Error('GDACS retained cohort count differs from its completed capture');
+      const selected = await Promise.all(body.records.map(record => worldRevision(record))); signal.throwIfAborted();
+      const retained = selected.length ? await rows(env.EARTH_DB, `SELECT r.* FROM json_each(?) i JOIN earth_world_revisions r
+        ON r.item_id=json_extract(i.value,'$.itemId') AND r.revision=json_extract(i.value,'$.revision')`, [references(selected)], signal) : [];
+      const index = new Map(retained.map(item => [`${item.item_id}/${item.revision}`, item]));
+      if (index.size !== selected.length) throw new Error('GDACS completed cohort lacks retained source revisions');
+      const items = await Promise.all(selected.map(async ({ record, itemId, revision }) => {
+        const original = index.get(`${itemId}/${revision}`);
+        if (!original || original.source_id !== 'gdacs' || original.source_record_id !== record.id || !isWorldDigest(original.snapshot_id) ||
+            original.event_id !== null || original.event_at !== null || original.projection_json !== null)
+          throw new Error('GDACS notice revision conflicts with the source-item index');
+        const item = await createWorldSourceItem(record, { snapshotId: capture.snapshot_id,
+          capturedAt: retainedTime(capture.captured_at), recordedAt: retainedTime(capture.recorded_at) });
+        return { ...item, origin: { snapshotId: original.snapshot_id, firstCapturedAt: retainedTime(original.first_captured_at),
+          firstRecordedAt: retainedTime(original.first_recorded_at), validation: 'retained-revision-index-only', bodyValidated: false } };
+      }));
+      signal.throwIfAborted();
+      const mapped = body.records.filter(mappedGdacsRecord).length;
+      const cohort = { sourceId: 'gdacs', snapshotId: capture.snapshot_id, bodySha256: await worldHash(body),
+        capturedAt: retainedTime(capture.captured_at), publishedAt: retainedTime(capture.recorded_at), recordCount: body.records.length,
+        meaning: 'Current whole-cohort membership capture and database publication, not source event dates or a fresh provider acquisition.' };
+      const result = { schemaVersion: 1, kind: 'source-item-cohort', configured: true, available: true, mode: 'current-retained-cohort',
+        source: { id: 'gdacs', name: 'Global Disaster Alert and Coordination System, GDACS', url: 'https://www.gdacs.org/',
+          attribution: 'Global Disaster Alert and Coordination System, GDACS' },
+        version: await worldHash({ sourceId: 'gdacs', snapshotId: cohort.snapshotId, capturedAt: cohort.capturedAt, publishedAt: cohort.publishedAt }),
+        readAt: new Date(now()).toISOString(), cohort, items, counts: { returned: items.length, mapped, unmapped: items.length - mapped },
+        coverage: { mode: 'retained-seven-day-notice-sample', windowDays: 7, maxRecords: GDACS_SOURCE_ITEM_LIMITS.records,
+          completeRetainedCohort: true, completeProviderArchive: false,
+          geometryMeaning: 'Source-reported indicative notice locations, not observed impacts or affected-area boundaries.',
+          absenceMeaning: 'Absent from the current bounded cohort does not establish withdrawal or event completion.' },
+        operational: { status: 'unknown', checkedAt: null, meaning: 'Operational source checks are not bound to this completed receipt; per-record retained retrieval dates remain literal.' },
+        history: { replay: false, future: false }, note: GDACS_SOURCE_ITEM_NOTE };
+      const overBudget = encodedBytes(result) > GDACS_SOURCE_ITEM_LIMITS.bytes;
+      if (!overBudget) await normalizeGdacsSourceItems(result);
+      signal.throwIfAborted();
+      const finalCapture = await currentGdacsCapture(env, signal);
+      if (!sameGdacsCapture(capture, finalCapture)) {
+        if (!attempt) continue;
+        return { schemaVersion: 1, configured: true, available: false, items: [], errorCode: 'gdacs-cohort-changed',
+          reason: 'The completed GDACS cohort changed during both bounded reads; no mixed edition is returned' };
+      }
+      if (overBudget) return { schemaVersion: 1, configured: true, available: false,
+        items: [], errorCode: 'gdacs-cohort-byte-budget', reason: 'The complete GDACS source cohort exceeds its delivery bound; no partial valid cohort is substituted' };
+      signal.throwIfAborted(); return result;
+    }
+  } catch (error) {
+    callerSignal?.throwIfAborted();
+    return { schemaVersion: 1, configured: true, available: false, items: [],
+      errorCode: signal.aborted ? 'gdacs-source-read-timeout' : 'gdacs-cohort-unavailable',
+      reason: 'Retained GDACS source items are unavailable or failed their bounded evidence checks' };
+  } finally { clearTimeout(timer); }
+}
+
 /** Stored-data-only public reader. Input cannot choose upstream URLs or object keys. */
 export function createWorldModelHandler({ env = {}, now = Date.now } = {}) {
   return async (request) => {
     const url = new URL(request.url), detail = /^\/api\/world\/events\/(event:usgs:[a-f0-9]{64})$/.exec(url.pathname);
-    if (url.pathname !== '/api/world/events' && !detail) return url.pathname.startsWith('/api/world/') ? json({ error: 'World route not found' }, 404) : null;
+    const sourceItems = url.pathname === '/api/world/source-items';
+    if (url.pathname !== '/api/world/events' && !detail && !sourceItems) return url.pathname.startsWith('/api/world/') ? json({ error: 'World route not found' }, 404) : null;
     if (request.method !== 'GET') return json({ error: 'Method Not Allowed' }, 405);
     try {
+      if (sourceItems) {
+        if (url.search.length > 128 || [...url.searchParams.keys()].some(key => key !== 'source') ||
+            url.searchParams.getAll('source').length !== 1 || url.searchParams.get('source') !== 'gdacs')
+          throw new TypeError('Only the fixed current GDACS source cohort is admitted');
+        const payload = await readWorldSourceItems(env, { source: 'gdacs' }, { now, signal: request.signal });
+        return json(payload, payload.available ? 200 : 503);
+      }
       for (const key of url.searchParams.keys()) if (!['knownAt', 'limit'].includes(key) || url.searchParams.getAll(key).length !== 1) throw new TypeError('Unknown or repeated world query');
       const rawLimit = url.searchParams.get('limit');
       if (rawLimit !== null && (!/^[1-9]\d{0,2}$/.test(rawLimit) || detail)) throw new TypeError('Invalid world query limit');
@@ -336,6 +438,7 @@ export function createWorldModelHandler({ env = {}, now = Date.now } = {}) {
       if (detail && !payload.events.length) return json({ ...payload, error: 'Event not present in the selected retained source snapshot; this does not establish it ended' }, 404);
       return json(detail ? { ...payload, event: payload.events[0] } : payload);
     } catch (error) {
+      if (sourceItems) request.signal.throwIfAborted();
       return error instanceof TypeError ? json({ error: 'Invalid bounded world query' }, 400) :
         json({ configured: true, available: false, error: 'Retained world evidence is unavailable or failed integrity validation' }, 503);
     }

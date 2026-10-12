@@ -5,6 +5,7 @@ const CODE_LOADERS = {
   wind: () => Promise.all([import('../layers/wind/index.js'), import('../layers/wind/source.js')]),
   cyclones: () => Promise.all([import('../layers/cyclones/index.js'), import('../layers/cyclones/source.js')]),
   earthquakes: () => Promise.all([import('../layers/earthquakes/index.js'), import('../layers/earthquakes/source.js')]),
+  gdacs: () => Promise.all([import('../layers/gdacs/index.js'), import('../layers/gdacs/source.js')]),
   perimeters: () => Promise.all([import('../app/layers/perimeters.js'), import('../layers/perimeters/source.js')]),
   imagery: () => Promise.all([import('../app/layers/recentImagery.js'), import('../layers/recentImagery/source.js')]),
   satellites: () => Promise.all([import('../app/layers/satellites.js'), import('../layers/satellites/source.js')]),
@@ -20,6 +21,7 @@ const CODE_LOADERS = {
 const GROUPS = {
   flights: 'aircraft', military: 'aircraft', 'weather-radar': 'weather', 'weather-satellite': 'weather',
   'weather-lightning': 'weather', wind: 'wind', 'weather-cyclones': 'cyclones', earthquakes: 'earthquakes',
+  'gdacs-notices': 'gdacs',
   'fire-perimeters': 'perimeters', 'recent-imagery': 'imagery', satellites: 'satellites',
   'rocket-launches': 'launches', bikeshare: 'bikeshare', transit: 'transit', cctv: 'cctv',
   'military-installations': 'installations', 'alpr-cameras': 'alpr', 'local-firms': 'firms',
@@ -170,6 +172,10 @@ export async function createLayer(id, { services = {}, fetchImpl, getLocalArea, 
   if (id === 'earthquakes') {
     const [engine, source] = modules;
     return engine.createEarthquakesLayer({ overlayHost, source: source.createUsgsEarthquakeSource({ fetchImpl }) });
+  }
+  if (id === 'gdacs-notices') {
+    const [engine, source] = modules;
+    return engine.createGdacsNoticesLayer({ source: source.createGdacsNoticeSource({ fetchImpl }) });
   }
   if (id === 'fire-perimeters') {
     const [adapter, source] = modules;

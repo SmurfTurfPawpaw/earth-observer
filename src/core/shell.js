@@ -9,6 +9,7 @@ import { commandCatalog, editableTarget } from './commands.js';
 import { createCommandPalette } from './commands-ui.js';
 import { chatGPTSignInPath } from './community-policy.js';
 import { createWorldDossier } from './world-dossier.js';
+import { gdacsNoticeSelection, updateGdacsNoticeDossier } from './gdacs-dossier.js';
 import { createWorkspaceFocus } from './workspace-focus.js';
 
 const el = (tag, className, text) => {
@@ -377,7 +378,7 @@ export function createShell(viewer, manager) {
       const refreshTime = entry.refreshedAt || entry.lastUpdate;
       const refreshLabel = refreshTime && !cached.label ? `Retrieved ${new Date(refreshTime).toLocaleString()}` : '';
       const observedTime = entry.observedAt || entry.observedAtMs;
-      const observedLabel = observedTime ? `Observed ${new Date(observedTime).toLocaleString()}` : '';
+      const observedLabel = entry.sourceGeneratedAt ? `Source generated ${new Date(entry.sourceGeneratedAt).toLocaleString()}` : observedTime ? `Observed ${new Date(observedTime).toLocaleString()}` : '';
       const archived = entry.snapshot === true || (layer.id === 'local-firms' && entry.observationDate && entry.stale);
       const freshness = archived ? `Archived${entry.observationDate ? ` · ${entry.observationDate}` : ''}` : entry.stale ? 'Older feed' : '';
       const ageMs = entry.sourceAgeMs ?? entry.ageMs;
@@ -419,8 +420,10 @@ export function createShell(viewer, manager) {
     const details = document.getElementById('selection-details'); details.replaceChildren(detailFields);
     const repaint = () => {
       const live = liveEarthquakeSelection(entity, viewer.clock.currentTime);
-      document.getElementById('selection-title').textContent = live?.title || entity.name || String(entity.id || 'Selected feature');
-      const eyebrow = document.querySelector('#selection .panel-eyebrow'); if (eyebrow) eyebrow.textContent = live?.kind || 'Feature';
+      const notice = gdacsNoticeSelection(entity, viewer.clock.currentTime);
+      document.getElementById('selection-title').textContent = notice?.title || live?.title || entity.name || String(entity.id || 'Selected feature');
+      const eyebrow = document.querySelector('#selection .panel-eyebrow'); if (eyebrow) eyebrow.textContent = notice ? 'Disaster notice' : live?.kind || 'Feature';
+      if (notice) { updateGdacsNoticeDossier(detailFields, notice); return; }
       const dossier = createWorldDossier(entity, viewer.clock.currentTime);
       if (dossier) { detailFields.replaceChildren(dossier); return; }
       if (live) { detailFields.replaceChildren(createLiveEarthquakeDossier(live)); return; }

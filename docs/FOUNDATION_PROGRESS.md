@@ -1151,3 +1151,58 @@ cancellation behavior remain unchanged. Hosted multi-lifetime evidence is pendin
 Primary references: [D1 sessions](https://developers.cloudflare.com/d1/worker-api/d1-database/),
 [D1 implementation](https://github.com/cloudflare/workerd/blob/main/src/cloudflare/internal/d1-api.ts),
 and [Worker isolate limits](https://developers.cloudflare.com/workers/platform/limits/).
+
+## 03:55 UTC: v40 memory gate passed in the deployed sample
+
+App 98bec0bd5533e583557508e594de1e0041ccc327 and combined source
+0ac8761f6072cb02f3590fe2db5ab866bc2b3ed9 produced the exact tested artifact:
+55,986,141 bytes, gzip 40,715,646. Local archive SHA256
+11385a05a1bbae8ae554259235081f832dd1ed346a19cbb8448b857c881749d4.
+Saved Site version 40 deployed successfully as appgdep_6acc58e32bd0819180e84a38ba468e28
+at 03:51:08.611Z, environment revision 7; public audience revision 2 unchanged.
+
+The prepared bounded probe ran 03:51:28.812–03:52:49.893Z: two concurrent
+clients, each two complete rotations. All four returned positive availability,
+complete collection/scientific heads, two keepalives, normal EOF, 2,213 bytes
+each, and 40,209–40,791 ms request lifetimes. It rejects unavailable status,
+unexpected framed/unframed output, early EOF and incomplete source heads.
+Proof is retained in ignored .qa/v40-stream-memory-proof.json.
+
+Matching host invocations report ok under script version
+6b4afecc-6ffa-45e4-8323-0ce0b4a3224b, with 40,088–40,616 ms wall time and
+6–35 ms CPU. The sample includes seven normal new-version streams and one
+intentional browser-reload cancellation, with no new-version exceededMemory
+outcome. The previous script still shows its 03:50:30.099Z memory-limit failure.
+Log times align with probe completion; that is observed correlation, not a
+general log-schema guarantee. The sanitized evidence is
+.qa/v40-hosted-memory-log-proof.json. No scale or permanent-cause claim is made.
+
+The original user in-app tab was found on a built-in crash page. Its automation
+interface blocks that data URL; the ordinary Sites browser panel operation
+reopened the same allowed HTTPS view. Fresh title, accessibility and actual
+rendered screenshot prove recovery, not the crash's cause. The verified screenshot
+qa-artifacts/published-foundation-v40-recovered-original-view.png was embedded
+in commentary. The current view and continuous UTC clock render correctly.
+Future rollout can resume with continuing host observation and independent
+permanent-collector/retention dependencies still explicit.
+
+## 03:57 UTC: GDACS package passed its focused foundation gate
+
+The optional retained GDACS notice layer, current-only stored reader and source
+dossier passed 64 combined focused checks. These cover actual generated SQLite
+admission, complete coherent cohort receipts, current capture/body/index identity,
+fixed official event/episode links, unknown geometry, distinct source/capture/index
+dates, bounded bytes/work/deadlines, cached-first ownership, corrections preserving
+selection, source unavailable behavior and selective imports without provider calls.
+The same invocation checks current earthquake labels/metadata and source-type picks.
+
+Independent review caught and corrected two seams before publication: original
+index references are labelled first knowledge of this revision rather than first
+ever knowledge of the notice; pre-aborted GDACS requests perform no storage work,
+and mid-body cancellation prevents later SQL or an edition retry. Source checks,
+synthetic cache/index clocks and retained notice interval ends do not become new
+confirmed incidents, current acquisition proof or assertions that disasters ended.
+
+The exact build, production source/body proof and actual keyboard/selected-notice
+journey remain required. The separate four-file owner retention package remains
+local and is excluded from this release's source commit.

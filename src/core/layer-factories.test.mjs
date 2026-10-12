@@ -9,7 +9,7 @@ test('real selective module imports make no dataset or API requests and share en
   globalThis.fetch = () => { requests++; throw new Error('Warm-up cannot fetch data'); };
   try {
     assert.equal(preloadLayer('flights'), preloadLayer('military'));
-    await Promise.all([preloadLayer('flights'), preloadLayer('weather-radar'), preloadLayer('local-firms'), preloadLayer('local-datacenters')]);
+    await Promise.all([preloadLayer('flights'), preloadLayer('weather-radar'), preloadLayer('local-firms'), preloadLayer('local-datacenters'), preloadLayer('gdacs-notices')]);
     assert.equal(requests, 0);
     assert.deepEqual(layerServiceRequirements('flights'), ['render']);
     assert.deepEqual(layerServiceRequirements('military'), ['render']);
@@ -18,6 +18,7 @@ test('real selective module imports make no dataset or API requests and share en
     assert.deepEqual(layerServiceRequirements('local-firms'), []);
     assert.deepEqual(layerServiceRequirements('local-datacenters'), []);
     assert.deepEqual(layerServiceRequirements('local-dams'), []);
+    assert.deepEqual(layerServiceRequirements('gdacs-notices'), []);
   } finally { globalThis.fetch = originalFetch; }
 });
 

@@ -235,6 +235,13 @@ export async function start() {
     });
     disposers.push(() => timeline.destroy());
     disposers.push(updates.subscribe((event) => {
+      if (event.type === 'collection') {
+        // A global collection revision wakes a fresh stored GDACS read. It is
+        // not a source-specific edition fence or an event occurrence clock.
+        manager.getLayer('gdacs-notices')?.invalidatePreparedSnapshot?.();
+        manager.requestRefresh('gdacs-notices');
+        return;
+      }
       if (event.type === 'plugin' && event.pluginId === 'usgs-live-day-m2-5-v1') {
         manager.requestRefresh('earthquakes', event);
         return;

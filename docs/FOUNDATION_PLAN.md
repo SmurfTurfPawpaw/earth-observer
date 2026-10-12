@@ -285,3 +285,21 @@ do not reuse a first-primary session and silently relax read freshness.
 Keep stream cancellation, bounded admission, buffering and retention intact.
 Do not shorten the stream lifetime and call the underlying memory problem solved.
 Gate subsequent GDACS and private retention activation on deployed evidence.
+
+## 03:55 UTC gate reassessment
+
+The v40 deployed bounded memory gate passed: four complete streams across two
+simultaneous clients and reconnects, correlated with normal new-script worker
+outcomes. Retain this as a small real operating sample; do not infer scale,
+unlimited literal-memory headroom or permanent cause isolation from it.
+Resume the prepared stored-only GDACS slice and the live cohort presentation
+correction, then review bounded private retention accounting independently.
+Keep checking new-script errors after real UI delivery before broadening feeds.
+
+The user in-app tab was separately recovered from a built-in crash page. Its
+cause remains unknown. Current rendering is verified; a future blank/crashed
+browser tab must be assessed independently from server stream outcomes.
+Existing Sites documentation provides no verified generic Worker-plus-static
+binding. The long-term asset alternative is reviewed immutable R2 content with
+streamed GET/ranges and a bounded owner publication path, especially narration;
+do not invent an ASSETS binding or remove embedded assets before stored readback.

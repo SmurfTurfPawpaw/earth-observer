@@ -85,10 +85,13 @@ prove a complete receipt and at least two unattended due checks independently of
 visitors. Only then publish a separately reviewed client fetch cutover and its
 mounted `/earth/` routing/cache invalidation. Backend-first v38 is deployed and its
 first receipt plus two unattended due checks passed at 02:55–02:57 UTC on October 12.
-The separate v39 browser cutover is under review; do not assume it is deployed until
-the exact release and actual browser acceptance are recorded.
+The separate v39 browser cutover deployed at 03:15 UTC. Mounted stored source and
+stream coherence passed at 03:19 UTC; the actual browser used the stored endpoint,
+with selected source identity preserved through subsequent refreshes. Exact release
+identities and evidence are recorded in FOUNDATION_PROGRESS.md. A current-feed
+"Archived" display seam is corrected locally for the next package.
 The current supervised minute bridge ends at 06:39 UTC. The automatic GitHub wake
-is being removed in v39 after observed schedule gaps and a product-use terms review;
+was removed in v39 after observed schedule gaps and a product-use terms review;
 manual bounded deployment acceptance remains separate. A permanent independent
 minute runner still needs provisioning and verification.
 

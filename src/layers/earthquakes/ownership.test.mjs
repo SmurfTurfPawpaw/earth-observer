@@ -152,6 +152,9 @@ test('stored check clocks and scientific metadata survive cached-first reconcili
   assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties, bag); assert.equal(bag.hasProperty('_worldEvent'), true);
   assert.equal(bag.eventType.getValue(time), 'quarry blast'); assert.equal(bag.sourceUrl.getValue(time), storedRow.sourceUrl);
   const stats = h.layer.getStats(); assert.equal(stats.lastUpdate, Date.parse(retained)); assert.equal(stats.checkedAt, checked);
+  assert.equal(stats.snapshot, false, 'a checked current cohort is not a historical snapshot');
+  assert.equal(stats.observedAt, null, 'a provider feed generation time is not an event observation');
+  assert.equal(typeof stats.coverage, 'string'); assert.equal(stats.cohortCoverage.complete, true);
   assert.equal(stats.sourceGeneratedAt, checked); assert.equal(stats.retainedSourceGeneratedAt, retained); assert.equal(stats.receipt.recordedAt, retained);
   assert.ok(stats.sourceAgeMs >= 10000 && stats.sourceAgeMs < 120000); assert.equal(stats.stale, false); assert.equal(notifications, 4);
   rows = [{ ...storedRow, updatedAt: at, reviewStatus: 'automatic', eventType: null, sourceTitle: 'Corrected scientific type unknown' }];
