@@ -64,6 +64,13 @@
       "when": 1791762195002,
       "tag": "0008_plugin_heads",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791766922967,
+      "tag": "0009_archive_maintenance",
+      "breakpoints": true
     }
   ]
 }

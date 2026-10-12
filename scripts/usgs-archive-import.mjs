@@ -2,16 +2,13 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, open, unlink, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { normalizeUsgs } from '../server/hosted/intelligence-sources.js';
-import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
-import { createWorldArchiveCandidate } from '../worker/world-archive.js';
+import { acquireUsgsCatalogInterval, splitUsgsCatalogInterval, restoreUsgsCatalogCandidate } from '../server/hosted/usgs-catalog-interval.js';
 
 export const USGS_ARCHIVE_SCOPE = 'usgs-catalog-m4.5-v1';
 export const USGS_ARCHIVE_IMPORT_URL = 'https://giovannicallebaut.com/earth/api/world/archive/import';
 export const USGS_ARCHIVE_LIMITS = Object.freeze({ records: 500, pageTarget: 250, rawBytes: 1024 * 1024,
   responseBytes: 16 * 1024, upstreamTimeoutMs: 20_000, importTimeoutMs: 35_000,
   rangeDays: 32, totalDays: 735, intervalsPerRun: 8, requestsPerRun: 40, recordsPerRun: 2000, journalBytes: 1024 * 1024 });
-const CATALOG = 'https://earthquake.usgs.gov/fdsnws/event/1/';
 const keyPattern = /^[A-Za-z0-9_-]{43,128}$/;
 const date = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 function interval(range, maxDays = USGS_ARCHIVE_LIMITS.rangeDays) {
@@ -19,13 +16,6 @@ function interval(range, maxDays = USGS_ARCHIVE_LIMITS.rangeDays) {
       Date.parse(range.from) >= Date.parse(range.to) || Date.parse(range.to) - Date.parse(range.from) > maxDays * 86400000)
     throw new TypeError('Use a bounded UTC archive interval');
   return { from: range.from, to: range.to };
-}
-function catalogUrl(method, range) {
-  const url = new URL(method, CATALOG);
-  for (const [key, value] of Object.entries({ starttime: range.from, endtime: range.to, minmagnitude: '4.5', eventtype: 'earthquake' }))
-    url.searchParams.set(key, value);
-  if (method === 'query') { url.searchParams.set('format', 'geojson'); url.searchParams.set('orderby', 'time-asc'); url.searchParams.set('limit', '501'); }
-  return url;
 }
 async function boundedText(response, maxBytes, signal) {
   const declared = response.headers.get('content-length');
@@ -52,67 +42,10 @@ async function boundedText(response, maxBytes, signal) {
   } catch (error) { cancel(); throw error; }
   finally { signal.removeEventListener('abort', cancel); reader.releaseLock(); }
 }
-async function upstream(fetchImpl, url, maxBytes) {
-  const signal = AbortSignal.timeout(USGS_ARCHIVE_LIMITS.upstreamTimeoutMs);
-  const response = await fetchImpl(url.href, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
-    headers: { accept: url.pathname.endsWith('/count') ? 'text/plain' : 'application/json',
-      'user-agent': 'earth-observer-archive/1.0 (+https://github.com/SmurfTurfPawpaw/earth-observer)' } });
-  if (!response.ok) { void response.body?.cancel().catch(() => {}); throw Object.assign(new Error('USGS acquisition unavailable'), { httpStatus: response.status }); }
-  const body = await boundedText(response, maxBytes, signal);
-  return { response, body };
-}
-export function splitUsgsInterval(range) {
-  const valid = interval(range), start = Date.parse(valid.from), end = Date.parse(valid.to);
-  if (end - start <= 2000) throw new Error('Dense catalog interval cannot be subdivided within the time budget');
-  const midpoint = new Date(Math.floor((start + end) / 2)).toISOString();
-  // USGS endpoints are inclusive. Deliberate overlap is deduplicated by source identity/revision.
-  return [{ from: valid.from, to: midpoint }, { from: midpoint, to: valid.to }];
-}
-
-/** Count, then fetch one unsliced fixed-source response. No hosted write or bulk crawl. */
-export async function acquireUsgsInterval({ range, fetchImpl = fetch, now = Date.now,
-  pageTarget = USGS_ARCHIVE_LIMITS.pageTarget } = {}) {
-  range = interval(range);
-  if (!Number.isInteger(pageTarget) || pageTarget < 1 || pageTarget > USGS_ARCHIVE_LIMITS.records)
-    throw new TypeError('Use a bounded catalog page target');
-  const counted = await upstream(fetchImpl, catalogUrl('count', range), 1024);
-  if (!/^\d+\s*$/.test(counted.body) || !Number.isSafeInteger(Number(counted.body))) throw new Error('Invalid USGS catalog count');
-  const expectedCount = Number(counted.body);
-  if (expectedCount > pageTarget) return { status: 'split-required', range, expectedCount, requests: 1, parts: splitUsgsInterval(range) };
-  let queried;
-  try { queried = await upstream(fetchImpl, catalogUrl('query', range), USGS_ARCHIVE_LIMITS.rawBytes); }
-  catch (error) {
-    if (error.message === 'Response exceeds its acquisition budget') return { status: 'split-required', range, expectedCount, requests: 2, parts: splitUsgsInterval(range) };
-    throw error;
-  }
-  // An empty HTTP body is a gap, not invented original GeoJSON or certified empty coverage.
-  if (!queried.body) return { status: 'gap', range, expectedCount, requests: 2, reason: 'Source did not supply an original GeoJSON body' };
-  if (!/^application\/(?:json|geo\+json)(?:\s*;|$)/i.test(queried.response.headers.get('content-type') || '')) throw new Error('USGS catalog format changed');
-  const raw = JSON.parse(queried.body);
-  if (raw?.type !== 'FeatureCollection' || !Array.isArray(raw.features) ||
-      raw.metadata?.count != null && (!Number.isInteger(raw.metadata.count) || raw.metadata.count !== raw.features.length) ||
-      raw.features.length > USGS_ARCHIVE_LIMITS.records)
-    throw new Error('USGS catalog record count or format is invalid');
-  if (raw.features.length !== expectedCount) return { status: 'changed-catalog', range, expectedCount,
-    actualCount: raw.features.length, requests: 2, reason: 'Catalog changed between count and acquisition; no complete interval admitted' };
-  const ids = new Set();
-  for (const feature of raw.features) {
-    const p = feature?.properties, c = feature?.geometry?.coordinates;
-    if (feature?.type !== 'Feature' || typeof feature.id !== 'string' || !feature.id || ids.has(feature.id) ||
-        p?.type !== 'earthquake' || !Number.isFinite(p.mag) || p.mag < 4.5 || !Number.isFinite(p.time) ||
-        p.time < Date.parse(range.from) || p.time > Date.parse(range.to) || feature.geometry?.type !== 'Point' ||
-        !Array.isArray(c) || !Number.isFinite(c[0]) || Math.abs(c[0]) > 180 || !Number.isFinite(c[1]) || Math.abs(c[1]) > 90)
-      throw new Error('Catalog feature falls outside the reviewed archive policy');
-    ids.add(feature.id);
-  }
-  const acquired = { status: 'acquired', requests: 2, schemaVersion: 1, scopeId: USGS_ARCHIVE_SCOPE, kind: 'interval', range,
-    expectedCount, capturedAt: new Date(now()).toISOString(), body: queried.body,
-    rawSha256: createHash('sha256').update(queried.body).digest('hex'), sourceBytes: Buffer.byteLength(queried.body) };
-  const records = [];
-  for (let start = 0; start < raw.features.length; start += 100)
-    records.push(...normalizeUsgs({ features: raw.features.slice(start, start + 100) }, acquired.capturedAt).map(canonicalDiscoveryRecord));
-  const candidate = await createWorldArchiveCandidate({ ...acquired, records }, { now });
-  return { ...acquired, chunkId: candidate.chunkId, snapshotId: candidate.snapshotId };
+export const splitUsgsInterval = splitUsgsCatalogInterval;
+export async function acquireUsgsInterval(options = {}) {
+  const { records: _records, rawBytes: _rawBytes, ...value } = await acquireUsgsCatalogInterval(options);
+  return value; // Preserve the bounded existing CLI journal/transport surface.
 }
 export function signArchiveImport(key, body, { now = Date.now(), nonce = randomBytes(16).toString('hex') } = {}) {
   if (typeof key !== 'string' || !keyPattern.test(key) || typeof body !== 'string' || !Number.isFinite(now) || !/^[a-f0-9]{32}$/.test(nonce))
@@ -139,6 +72,21 @@ export async function publishUsgsInterval(acquired, { key, fetchImpl = fetch, no
       readStatusBeforeRetry: value.readStatusBeforeRetry === true };
     return { status: response.ok && safe.stored && safe.complete && safe.chunkId === acquired.chunkId && safe.recordCount === acquired.expectedCount ? 'stored' : 'not-stored', ...safe };
   } catch { return { status: 'uncertain', stored: null, complete: false, chunkId: acquired.chunkId, readStatusBeforeRetry: true }; }
+}
+export async function bootstrapUsgsArchive({ key, fetchImpl = fetch, now = Date.now, limit = 16 } = {}) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 16) throw new TypeError('Use a bounded stored-receipt bootstrap');
+  const body = JSON.stringify({ schemaVersion: 1, scopeId: USGS_ARCHIVE_SCOPE, operation: 'bootstrap', limit });
+  const signal = AbortSignal.timeout(USGS_ARCHIVE_LIMITS.importTimeoutMs);
+  const response = await fetchImpl(USGS_ARCHIVE_IMPORT_URL, { method: 'POST', signal, credentials: 'omit', redirect: 'error', cache: 'no-store',
+    headers: signArchiveImport(key, body, { now: now() }), body });
+  if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) throw new Error('Invalid archive bootstrap response');
+  const result = JSON.parse(await boundedText(response, USGS_ARCHIVE_LIMITS.responseBytes, signal));
+  return { httpStatus: response.status, configured: result.configured === true, stored: result.stored === true, complete: result.complete === true,
+    status: ['ready', 'pending', 'busy', 'migration-required'].includes(result.status) ? result.status : 'unavailable',
+    processed: Number.isInteger(result.processed) && result.processed >= 0 && result.processed <= limit ? result.processed : null,
+    materializedOrder: Number.isSafeInteger(result.materializedOrder) && result.materializedOrder >= 0 ? result.materializedOrder : null,
+    currentOrder: Number.isSafeInteger(result.currentOrder) && result.currentOrder >= 0 ? result.currentOrder : null,
+    frontierSeeded: result.frontier?.seeded === true, frontierReady: result.frontier?.ready === true };
 }
 export async function readUsgsArchiveReceipt(chunkId, { fetchImpl = fetch } = {}) {
   if (!/^[a-f0-9]{64}$/.test(chunkId || '')) throw new TypeError('Use an exact archive receipt');
@@ -201,14 +149,8 @@ async function restoreCandidate(saved, current, directory, now) {
   const body = await readFile(filename, 'utf8');
   if (Buffer.byteLength(body) !== saved.sourceBytes || Buffer.byteLength(body) > USGS_ARCHIVE_LIMITS.rawBytes ||
       createHash('sha256').update(body).digest('hex') !== saved.rawSha256) throw new Error('Cached original evidence is not intact');
-  const raw = JSON.parse(body), records = [];
-  if (raw?.type !== 'FeatureCollection' || !Array.isArray(raw.features) || raw.features.length !== saved.expectedCount)
-    throw new Error('Cached catalog evidence has invalid membership');
-  for (let start = 0; start < raw.features.length; start += 100)
-    records.push(...normalizeUsgs({ features: raw.features.slice(start, start + 100) }, saved.capturedAt).map(canonicalDiscoveryRecord));
-  const candidate = await createWorldArchiveCandidate({ ...saved, records }, { now });
-  if (candidate.chunkId !== saved.chunkId || candidate.snapshotId !== saved.snapshotId) throw new Error('Cached candidate identity is not intact');
-  return { ...saved, body };
+  const { records: _records, rawBytes: _rawBytes, ...restored } = await restoreUsgsCatalogCandidate({ body, metadata: saved, now });
+  return { ...restored, ...saved, body };
 }
 
 /** Local checkpoints complement hosted completion receipts; the browser never performs imports. */
@@ -285,8 +227,10 @@ export async function runUsgsArchiveImport({ range, key, journalFile, fetchImpl 
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const [mode, from, to] = process.argv.slice(2), range = { from, to };
-  if (process.argv.length !== 5 || !['--prepare', '--import'].includes(mode)) {
-    console.error('Use --prepare|--import <from UTC ISO> <to UTC ISO>'); process.exitCode = 2;
+  if (mode === '--bootstrap' && process.argv.length === 3) {
+    console.log(JSON.stringify(await bootstrapUsgsArchive({ key: process.env.EARTH_ARCHIVE_IMPORT_KEY })));
+  } else if (process.argv.length !== 5 || !['--prepare', '--import'].includes(mode)) {
+    console.error('Use --prepare|--import <from UTC ISO> <to UTC ISO>, or --bootstrap'); process.exitCode = 2;
   } else if (mode === '--prepare') {
     const result = await acquireUsgsInterval({ range });
     const { body, ...metadata } = result;

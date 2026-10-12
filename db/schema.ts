@@ -4,6 +4,7 @@ export { archiveChunks, archiveMembership, archiveCoverage, archiveHeads } from 
 export { investigationJobs, investigationHeads, investigationAttempts } from './investigation-schema';
 export { investigationAdmissions } from './investigation-admission-schema';
 export { pluginState, pluginCaptures, pluginRevisions, pluginMembership, pluginHeads } from './plugin-schema';
+export { archiveMaintenance, archiveCoverageDays, archiveDayState } from './archive-maintenance-schema';
 
 // Immutable source observations index private R2 content-addressed snapshots.
 export const observations = sqliteTable('earth_observations', {

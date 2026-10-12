@@ -16,6 +16,7 @@ export const archiveChunks = sqliteTable('earth_archive_chunks', {
 }, (table) => [
   uniqueIndex('earth_archive_chunks_scope_chunk').on(table.scopeId, table.chunkId),
   index('earth_archive_chunks_scope_publication').on(table.scopeId, table.publishedAt, table.id),
+  index('earth_archive_chunks_scope_order').on(table.scopeId, table.id),
 ]);
 
 export const archiveMembership = sqliteTable('earth_archive_membership', {

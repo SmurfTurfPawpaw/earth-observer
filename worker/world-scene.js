@@ -1,6 +1,7 @@
 import { worldTime, worldHash, isWorldDigest, createWorldSourceItem, provisionalWorldEvent } from '../src/core/world-model.js';
 import { ARCHIVE_SCOPE, ARCHIVE_LIMITS, archivePrimary, ensureArchiveSchema, archiveRows, archiveJson,
   loadArchiveSnapshot, loadArchiveRaw } from './world-archive.js';
+import { archiveDayReadiness, readArchiveDayCoverage, ensureArchiveDaySchema, ARCHIVE_DAY_LIMITS } from './archive-day-coverage.js';
 
 const WEEK = 7 * 86400000;
 const json = (value,status=200) => Response.json(value,{status,headers:{'cache-control':'no-store','x-content-type-options':'nosniff'}});
@@ -21,6 +22,15 @@ function options(value, now) {
   if (mode === 'scene' && !at || mode === 'none' && value.knownAt !== undefined || mode === 'fixed' && value.knownAt === undefined)
     throw new TypeError('Invalid scene knowledge mode');
   const knownAt = mode === 'scene' ? at : mode === 'fixed' ? worldTime(value.knownAt) : null;
+  let calendarRange = null;
+  if (value.calendarFrom !== undefined || value.calendarTo !== undefined) {
+    if (!metadata || value.calendarFrom === undefined || value.calendarTo === undefined) throw new TypeError('Calendar bounds require metadata and both endpoints');
+    const from = worldTime(value.calendarFrom), to = worldTime(value.calendarTo);
+    if (from !== value.calendarFrom || to !== value.calendarTo || from > to || Date.parse(to) > now() ||
+        Math.floor(Date.parse(to) / 86400000) - Math.floor(Date.parse(from) / 86400000) + 1 > ARCHIVE_DAY_LIMITS.days)
+      throw new TypeError('Use a bounded completed canonical calendar window');
+    calendarRange = { from, to };
+  }
   if (mode === 'scene' && value.knownAt !== undefined && worldTime(value.knownAt) !== at ||
       knownAt && Date.parse(knownAt)>now()+300000 || at && Date.parse(at)>now()+300000) throw new TypeError('Invalid future scene cutoff');
   const points=value.points===true;
@@ -39,9 +49,28 @@ function options(value, now) {
     bbox=numbers;
   }
   return {at,knownAt,knownMode:mode,mode:mode==='none'?'reconstruction':'as-known',scope:ARCHIVE_SCOPE.id,window:'7d',metadata,limit,bbox,
-    id:value.id,cursor:value.cursor,points,span:points?'7d':null,nowMs:now(),revision:value.revision};
+    id:value.id,cursor:value.cursor,points,span:points?'7d':null,nowMs:now(),revision:value.revision,calendarRange};
 }
 async function scopeState(db, query) {
+  if (await ensureArchiveDaySchema({ EARTH_DB: db })) {
+    try { return (await archiveRows(db, `WITH current AS (
+      SELECT id,published_at FROM earth_archive_chunks INDEXED BY earth_archive_chunks_scope_order WHERE scope_id=? ORDER BY id DESC LIMIT 1),
+      first AS (SELECT published_at FROM earth_archive_chunks INDEXED BY earth_archive_chunks_scope_publication WHERE scope_id=? ORDER BY published_at LIMIT 1)
+      SELECT (SELECT id FROM current) AS current_version,
+        CASE WHEN ? IS NULL OR (SELECT published_at FROM current)<=? THEN (SELECT id FROM current)
+          WHEN (SELECT published_at FROM first)>? THEN NULL
+          ELSE (SELECT MAX(id) FROM earth_archive_chunks INDEXED BY earth_archive_chunks_scope_publication WHERE scope_id=? AND published_at<=?) END AS selected_version,
+        CASE WHEN ? IS NULL THEN (SELECT published_at FROM earth_archive_chunks INDEXED BY earth_archive_chunks_scope_publication
+          WHERE scope_id=? ORDER BY published_at DESC LIMIT 1)
+          ELSE (SELECT published_at FROM earth_archive_chunks INDEXED BY earth_archive_chunks_scope_publication
+            WHERE scope_id=? AND published_at<=? ORDER BY published_at DESC LIMIT 1) END AS previous_publication_at,
+        (SELECT published_at FROM earth_archive_chunks INDEXED BY earth_archive_chunks_scope_publication
+          WHERE scope_id=? AND published_at>? ORDER BY published_at LIMIT 1) AS next_publication_at,
+        (SELECT published_at FROM first) AS first_publication_at`, [ARCHIVE_SCOPE.id, ARCHIVE_SCOPE.id,
+      query.knownAt, query.knownAt, query.knownAt, ARCHIVE_SCOPE.id, query.knownAt, query.knownAt, ARCHIVE_SCOPE.id, ARCHIVE_SCOPE.id, query.knownAt, ARCHIVE_SCOPE.id, query.knownAt]))[0]; }
+    catch (error) { if (!/no such index: earth_archive_chunks_scope_order/.test(error?.message || '')) throw error; }
+  }
+  // Explicit pre-migration fallback preserves deployed legacy calendars/versions.
   return (await archiveRows(db, `SELECT MAX(id) AS current_version,
     MAX(CASE WHEN ? IS NULL OR published_at<=? THEN id END) AS selected_version,
     MAX(CASE WHEN ? IS NULL OR published_at<=? THEN published_at END) AS previous_publication_at,
@@ -59,7 +88,7 @@ function unionSegments(rows) {
   }
   return result;
 }
-async function coverage(db, query, state) {
+async function legacyCoverage(db, query, state) {
   const bounds=(await archiveRows(db,`SELECT MIN(v.range_from) AS range_from,MAX(v.range_to) AS range_to
     FROM earth_archive_coverage v JOIN earth_archive_chunks c ON c.scope_id=v.scope_id AND c.chunk_id=v.chunk_id WHERE v.scope_id=?`,[ARCHIVE_SCOPE.id]))[0];
   const rows=await archiveRows(db,`SELECT v.range_from,v.range_to,c.published_at FROM earth_archive_coverage v
@@ -72,7 +101,7 @@ async function coverage(db, query, state) {
   const bufferEnd=query.points?Math.min(Date.parse(query.at)+WEEK,query.nowMs,availableRange?Date.parse(availableRange.to):Date.parse(query.at),
     query.requestedBufferTo?Date.parse(query.requestedBufferTo):Infinity):null;
   query.bufferTo=query.points&&bufferEnd>Date.parse(query.at)?iso(bufferEnd):null;
-  const target=query.at?{from:iso(Date.parse(query.at)-WEEK+1),to:query.bufferTo||query.at}:availableRange;
+  const target=query.calendarRange||(query.at?{from:iso(Date.parse(query.at)-WEEK+1),to:query.bufferTo||query.at}:availableRange);
   const gaps=[];
   const addGap=(from,to)=>{
     if(truncated){gaps.push({from:iso(from),to:iso(to),status:'not-evaluated'});return;}
@@ -100,6 +129,19 @@ async function coverage(db, query, state) {
   return {availableRange,requestedRange:target,segments,gaps,complete,truncated,status:complete?'complete':unavailableAtCutoff?'unavailable-at-cutoff':
       truncated||segments.length||gaps.some((gap)=>gap.status==='unavailable-at-cutoff')?'partial':'not-imported',
     pending:[],failed:[],meaning:'Completed count-matched catalog origin intervals; not proof that every earthquake was detected. Import jobs are not yet tracked here.'};
+}
+async function coverage(db, query, state) {
+  const env = { EARTH_DB: db }, readiness = await archiveDayReadiness(env, state.current_version || 0);
+  if (!readiness.ready) return { ...await legacyCoverage(db, query, state), storageMode: 'legacy-receipt-index', readiness: readiness.status,
+    migrationNote: 'Original retained coverage stays active until owner bootstrap proves the complete day index.' };
+  const bounds = (await archiveRows(db, 'SELECT MIN(range_from) AS from_at,MAX(range_to) AS to_at FROM earth_archive_coverage_days WHERE scope_id=?', [ARCHIVE_SCOPE.id]))[0];
+  const availableRange = bounds?.from_at ? { from: bounds.from_at, to: bounds.to_at } : null;
+  const end = query.points ? Math.min(Date.parse(query.at) + WEEK, query.nowMs, availableRange ? Date.parse(availableRange.to) : Date.parse(query.at),
+    query.requestedBufferTo ? Date.parse(query.requestedBufferTo) : Infinity) : null;
+  query.bufferTo = query.points && end > Date.parse(query.at) ? iso(end) : null;
+  const range = query.calendarRange || (query.at ? { from: iso(Date.parse(query.at) - WEEK + 1), to: query.bufferTo || query.at } : undefined);
+  const result = await readArchiveDayCoverage(env, { range, knownAt: query.knownAt });
+  return { ...result, storageMode: 'day-proof-index', readiness: 'ready', pending: [], failed: [] };
 }
 
 // Time-indexed candidates come first; provider revision selection happens BEFORE
@@ -240,8 +282,16 @@ export async function readWorldScene(env,value={}, {now=Date.now}={}) {
   const base={schemaVersion:1,configured:true,available:true,mode:query.mode,scope:ARCHIVE_SCOPE,at:query.at,window:query.window,
     knownAt:query.knownAt,knownMode:query.knownMode,version,currentVersion:`archive:${state.current_version||0}`,coverage:availableCoverage,
     note:'Stored scientific reconstruction and hosted-knowledge replay differ. Missing catalog records are not deletion; equal-date source conflicts remain traceable.'};
-  if(query.metadata) return {...base,events:[],counts:{returned:0,eligible:null,omitted:null},complete:availableCoverage.complete,truncated:availableCoverage.truncated,cursor:null,
-    validFrom:null,validTo:null,nextSceneChangeAt:null};
+  if (availableCoverage.available === false) return { ...base, available: false, events: [], errorCode: availableCoverage.errorCode,
+    explanation: availableCoverage.explanation, counts: { returned: 0, eligible: null, omitted: null }, complete: false,
+    membershipComplete: false, truncated: true, cursor: null, validFrom: null, validTo: null, nextSceneChangeAt: null };
+  if(query.metadata) {
+    const final = await scopeState(env.EARTH_DB, query);
+    if (final.current_version !== state.current_version || final.selected_version !== state.selected_version)
+      throw new WorldSceneVersionConflict(`archive:${state.current_version || 0}`, `archive:${final.current_version || 0}`);
+    return {...base,events:[],counts:{returned:0,eligible:null,omitted:null},complete:availableCoverage.complete,truncated:availableCoverage.truncated,cursor:null,
+      validFrom:null,validTo:null,nextSceneChangeAt:null};
+  }
   const identity={scope:query.scope,at:query.at,window:query.window,knownAt:query.knownAt,knownMode:query.knownMode,bbox:query.bbox,
     points:query.points,span:query.span,bufferTo:query.bufferTo};
   const queryId=await worldHash(identity);
@@ -289,7 +339,7 @@ export function createWorldSceneHandler({env={},now=Date.now}={}) {
     if(url.pathname!=='/api/world/scene'&&!detail) return null;
     if(request.method!=='GET') return json({error:'Method Not Allowed'},405);
     try {
-      for(const key of url.searchParams.keys()) if(!['at','window','scope','knownAt','knownMode','limit','bbox','cursor','metadata','points','span','revision'].includes(key)||url.searchParams.getAll(key).length!==1)
+      for(const key of url.searchParams.keys()) if(!['at','window','scope','knownAt','knownMode','limit','bbox','cursor','metadata','points','span','revision','calendarFrom','calendarTo'].includes(key)||url.searchParams.getAll(key).length!==1)
         throw new TypeError('Unknown or repeated scene query');
       const params=Object.fromEntries(url.searchParams);
       if(params.limit!==undefined&&!/^[1-9]\d{0,2}$/.test(params.limit)||params.metadata!==undefined&&params.metadata!=='1'||params.points!==undefined&&params.points!=='1'||

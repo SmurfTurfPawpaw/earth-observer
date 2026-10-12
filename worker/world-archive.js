@@ -2,6 +2,8 @@ import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { normalizeUsgs } from '../server/hosted/intelligence-sources.js';
 import { WORLD_MODEL_LIMITS, worldTime, worldHash, isWorldDigest, worldRevision, createWorldSourceItem,
   provisionalWorldEvent } from '../src/core/world-model.js';
+import { ensureArchiveDaySchema, prepareArchiveDayCoverage, archiveDayGenerationGate, archiveDayCompletionStatements,
+  archiveDayAdvanceStatement, prepareManualArchiveDayAdmission, ArchiveDayCoverageConflict } from './archive-day-coverage.js';
 
 export const ARCHIVE_SCOPE = Object.freeze({ id: 'usgs-catalog-m4.5-v1', sourceId: 'usgs', minimumMagnitude: 4.5,
   normalization: 'canonical-usgs-v1', selectionPolicy: 'greatest-provider-update; equal-date conflicts retain first publication' });
@@ -188,16 +190,34 @@ export async function createWorldArchiveCandidate(value, { now = Date.now } = {}
 }
 
 /** A complete small catalog response; does not fetch providers or modify live state. */
-export async function publishWorldArchiveChunk(env, value, { now = Date.now } = {}) {
+async function publishArchiveAttempt(env, value, { now = Date.now, maintenanceCommit = null } = {}) {
   const input = inputValue(value, now); env = archivePrimary(env);
   if (!await ensureArchiveSchema(env)) return unavailable();
   await verifyRawRecords(await loadArchiveRaw(env, input.rawSha256), input);
   const candidate=await createWorldArchiveCandidate(value,{now}),retainedCanonical = await retainCanonical(env, input),snapshotId=retainedCanonical.snapshotId;
   if(snapshotId!==candidate.snapshotId) throw new Error('Archive candidate facts changed during retention');
   const {chunkId,policyJson}=candidate,db = env.EARTH_DB;
+  if (maintenanceCommit && (maintenanceCommit.scopeId !== ARCHIVE_SCOPE.id || maintenanceCommit.chunkId !== chunkId ||
+      input.kind !== 'interval' || !maintenanceCommit.admissionStatement || !maintenanceCommit.completionStatement))
+    throw new TypeError('Maintenance admission must match the exact archive candidate');
+  const daily = await ensureArchiveDaySchema(env);
+  if (maintenanceCommit && !daily) return unavailable();
   const existing = (await archiveRows(db, 'SELECT * FROM earth_archive_chunks WHERE scope_id = ? AND chunk_id = ?', [ARCHIVE_SCOPE.id, chunkId]))[0];
+  const dayUpdates = maintenanceCommit?.dayUpdates || (daily && input.range ? await prepareArchiveDayCoverage(env, {
+    scopeId: ARCHIVE_SCOPE.id, kind: 'interval', chunkId, range: input.range, expectedCount: input.expectedCount,
+    recordCount: input.records.length, publishedAt: existing?.published_at ?? null }) : []);
+  const dayGate = archiveDayGenerationGate(dayUpdates);
+  const admission = maintenanceCommit || (daily ? prepareManualArchiveDayAdmission(db, dayUpdates, chunkId) : null);
+  const admissionSql = admission?.admittedSql, admissionValues = admission?.admittedValues;
   if (existing) {
     if (existing.snapshot_id !== snapshotId || existing.raw_sha256 !== input.rawSha256 || existing.policy_json !== policyJson) throw new Error('Conflicting archive receipt');
+    if (daily) {
+      const statements = [admission.admissionStatement,
+        ...archiveDayCompletionStatements(db, dayUpdates, { chunkId, admittedSql: admissionSql, admittedValues: admissionValues }),
+        archiveDayAdvanceStatement(db, { chunkId, admittedSql: admissionSql, admittedValues: admissionValues }), admission.completionStatement];
+      const completed = await archiveIO(() => db.batch(statements));
+      if (completed.at(-1)?.meta?.changes !== 1) await requireDayAdmission(db, dayGate, maintenanceCommit);
+    }
     return { configured: true, available: true, stored: true, reused: true, scopeId: ARCHIVE_SCOPE.id, chunkId, snapshotId,
       publicationOrder: existing.id, publishedAt: existing.published_at, recordCount: existing.record_count, complete: input.kind === 'interval' };
   }
@@ -243,29 +263,54 @@ export async function publishWorldArchiveChunk(env, value, { now = Date.now } = 
   const receipt = db.prepare(`INSERT INTO earth_archive_chunks
     (scope_id,chunk_id,snapshot_id,raw_sha256,captured_at,published_at,kind,record_count,policy_json)
     SELECT ?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?,?,?
-    WHERE ? <= strftime('%Y-%m-%dT%H:%M:%fZ','now','+305 seconds')
-    ON CONFLICT(scope_id,chunk_id) DO NOTHING`).bind(ARCHIVE_SCOPE.id,chunkId,snapshotId,input.rawSha256,input.capturedAt,input.kind,items.length,policyJson,input.capturedAt);
-  const statements = [receipt];
+    WHERE ? <= strftime('%Y-%m-%dT%H:%M:%fZ','now','+305 seconds') ${daily ? `AND ${admissionSql}` : ''}
+    ON CONFLICT(scope_id,chunk_id) DO NOTHING`).bind(ARCHIVE_SCOPE.id,chunkId,snapshotId,input.rawSha256,input.capturedAt,input.kind,items.length,policyJson,input.capturedAt,
+    ...(daily ? admissionValues : []));
+  const statements = [...(admission ? [admission.admissionStatement] : []), receipt];
   if (input.range) statements.push(db.prepare(`INSERT INTO earth_archive_coverage(scope_id,chunk_id,range_from,range_to,expected_count)
-    SELECT scope_id,chunk_id,?,?,? FROM earth_archive_chunks WHERE scope_id=? AND chunk_id=?
-    ON CONFLICT(scope_id,chunk_id) DO NOTHING`).bind(input.range.from,input.range.to,input.expectedCount,ARCHIVE_SCOPE.id,chunkId));
+    SELECT scope_id,chunk_id,?,?,? FROM earth_archive_chunks WHERE scope_id=? AND chunk_id=? ${daily ? `AND ${admissionSql}` : ''}
+    ON CONFLICT(scope_id,chunk_id) DO NOTHING`).bind(input.range.from,input.range.to,input.expectedCount,ARCHIVE_SCOPE.id,chunkId,
+    ...(daily ? admissionValues : [])));
   statements.push(db.prepare(`INSERT INTO earth_archive_heads
     (scope_id,item_id,revision,event_id,event_at,source_updated_at,lat,lon,magnitude,chunk_id,publication_order)
     SELECT m.scope_id,m.item_id,m.revision,m.event_id,m.event_at,m.source_updated_at,m.lat,m.lon,m.magnitude,m.chunk_id,c.id
     FROM earth_archive_membership m JOIN earth_archive_chunks c ON c.scope_id=m.scope_id AND c.chunk_id=m.chunk_id
-    WHERE m.scope_id=? AND m.chunk_id=?
+    WHERE m.scope_id=? AND m.chunk_id=? ${daily ? `AND ${admissionSql}` : ''}
     ON CONFLICT(scope_id,item_id) DO UPDATE SET revision=excluded.revision,event_id=excluded.event_id,event_at=excluded.event_at,
       source_updated_at=excluded.source_updated_at,lat=excluded.lat,lon=excluded.lon,magnitude=excluded.magnitude,
       chunk_id=excluded.chunk_id,publication_order=excluded.publication_order
     WHERE (excluded.source_updated_at IS NOT NULL AND (earth_archive_heads.source_updated_at IS NULL OR excluded.source_updated_at>earth_archive_heads.source_updated_at))
       OR (excluded.source_updated_at IS earth_archive_heads.source_updated_at AND excluded.publication_order<earth_archive_heads.publication_order)`)
-    .bind(ARCHIVE_SCOPE.id,chunkId));
+    .bind(ARCHIVE_SCOPE.id,chunkId,...(daily ? admissionValues : [])));
+  if (daily) statements.push(...(maintenanceCommit?.dayStatements || archiveDayCompletionStatements(db, dayUpdates, {
+    chunkId, admittedSql: admissionSql, admittedValues: admissionValues })), archiveDayAdvanceStatement(db, { chunkId,
+    admittedSql: admissionSql, admittedValues: admissionValues }), admission.completionStatement);
   const completed = await archiveIO(() => db.batch(statements));
   if (completed.some((value) => value?.success === false)) throw new Error('Archive publication failed');
   const saved = (await archiveRows(db,'SELECT * FROM earth_archive_chunks WHERE scope_id=? AND chunk_id=?',[ARCHIVE_SCOPE.id,chunkId]))[0];
+  if (daily && (!saved || completed.at(-1)?.meta?.changes !== 1)) await requireDayAdmission(db, dayGate, maintenanceCommit);
   if (!saved || saved.snapshot_id !== snapshotId || saved.record_count !== items.length) throw new Error('Archive publication has no complete receipt');
-  return { configured:true,available:true,stored:true,reused:completed[0]?.meta?.changes===0,scopeId:ARCHIVE_SCOPE.id,chunkId,snapshotId,
+  return { configured:true,available:true,stored:true,reused:completed[daily ? 1 : 0]?.meta?.changes===0,scopeId:ARCHIVE_SCOPE.id,chunkId,snapshotId,
     publicationOrder:saved.id,publishedAt:saved.published_at,recordCount:items.length,complete:input.kind==='interval' };
+}
+
+async function requireDayAdmission(db, gate, maintenance) {
+  if (maintenance) {
+    const active = (await archiveRows(db, `SELECT ${maintenance.ownedSql} AS active`, maintenance.ownedValues))[0];
+    if (!active?.active) throw new Error('Archive maintenance ownership is no longer active');
+  }
+  const unchanged = (await archiveRows(db, `SELECT ${gate.sql} AS unchanged`, gate.values))[0];
+  if (!unchanged?.unchanged) throw new ArchiveDayCoverageConflict();
+  throw new Error('Archive atomic admission did not complete');
+}
+
+/** One bounded fresh materialization read after an ordinary writer generation
+ * conflict. Maintenance owns its own one-retry loop and frozen original body. */
+export async function publishWorldArchiveChunk(env, value, options = {}) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return await publishArchiveAttempt(env, value, options); }
+    catch (error) { if (!(error instanceof ArchiveDayCoverageConflict) || options.maintenanceCommit || attempt) throw error; }
+  }
 }
 
 /** Exact completed receipt only. Does not expose private evidence bodies. */

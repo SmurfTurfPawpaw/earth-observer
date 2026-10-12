@@ -1,0 +1,71 @@
+# Archive maintenance: integration and owner activation
+
+The modules are locally integrated with the existing signed archive owner API and authenticated collector wake. They have **not been deployed, externally migrated, bootstrapped, or used for provider collection by this agent**. The actual Drizzle CLI generated `0009_archive_maintenance.sql`; owner activation remains root's responsibility. Root's separate bounded source verification is recorded below.
+
+## Frozen files and focused verification
+
+- `server/hosted/usgs-catalog-interval.js` and `.test.mjs`: one portable fixed-source count/query/split/acquire/restore implementation for eventual shared CLI and hosted use.
+- `worker/archive-day-coverage.js` and `.test.mjs`: first coverage proof by UTC day, generation checks, receipt-clock SQL projection, bounded stored-only delivery.
+- `worker/archive-maintenance.js` and `.test.mjs`: due/fence claim, bounded tail/overlap queues, frozen original candidate, explicit atomic publisher seam, exact receipt resume.
+- `db/archive-maintenance-schema.ts`: scope state, daily coverage and fenced materialization readiness tables. `db/world-archive-schema.ts` adds the scope/order index.
+- `worker/archive-maintenance-fixture.mjs`: test helper, generating SQL in memory from the actual staged Drizzle schema and exercising native SQLite. It creates no migration files.
+
+19 focused checks pass with:
+
+```powershell
+& 'C:/Program Files/nodejs/node.exe' --experimental-strip-types --test server/hosted/usgs-catalog-interval.test.mjs worker/archive-day-coverage.test.mjs worker/archive-maintenance.test.mjs
+```
+
+The flag supports the current local Node 22 test environment's schema import. These are source-contract and native SQLite proofs, not deployed collector, browser, GPU, or provider availability proofs. A further ten checks in `worker/archive-integration.test.mjs` exercise the actual generated `0009` migration, real publisher, owner API and collector runtime: resumable bootstrap with interleaved manual/correction writes; replaced and mid-transaction expired leases; atomic rollback and same-body generation retry; strict date windows and cutoff; authenticated collection despite unrelated packet failure; a 2,100-receipt bootstrap/query-plan fixture; explicit whole-calendar budget failure with bounded-window/recent-tail delivery; and a true wake deadline with rejected late unadmitted settlement.
+
+The final integrated run passed **79/79** component, archive, API, collection and Worker runtime checks in 9.60 seconds. The native 2,100-receipt query plan uses `earth_archive_chunks_scope_order (scope_id=?)` for the latest journal order and covering `earth_archive_chunks_scope_publication` searches for the first/previous/next publication timestamps. An explicit nonmonotonic timestamp fixture retains exact maximum-eligible-ID knowledge versions; journal IDs never substitute for time. The middle-cutoff maximum-eligible-ID selection may still traverse its eligible indexed subset, so this is not a constant-work claim for every historical cutoff.
+
+Checks cover original UTF-8/body identity, exact independent counts, genuine empty versus absent GeoJSON, count drift, inclusive split seams, malformed input/abort, receipt-clock partial-day knowledge, closed midnight endpoints, 2,100 immutable receipts with two compact day-index reads, bounded delivery before JSON loading, concurrent claims, expired-owner rejection, atomic rollback, frozen-candidate retry, fair correction scheduling, one typed generation retry, expiry during admitted transaction completion, and exact prior-receipt resume without acquisition.
+
+## Time and scope semantics
+
+Source and existing publisher coverage ranges are **closed UTC millisecond intervals `[from,to]`**. The existing publisher allows equal endpoints and checks record origins inclusively. Splits share the midpoint. UTC day materialization clips through the day's last millisecond; an inclusive midnight source end remains a one-millisecond proof in the next day.
+
+Scene membership is `(at-7d,at]`. Buffered point acquisition includes its upper origin bound, while frontend cache reuse is `[bufferFrom,bufferTo)`. None of these contracts are silently substituted for source coverage.
+
+Coverage means an independently count-matched unsliced USGS M4.5+ catalog response **at acquisition**. It does not assert final completeness of all physical earthquakes, withdrawals, every old scientific correction, or history for other sources. Known time is the exact hosted archive receipt publication clock, distinct from earthquake origin, provider revision and source retrieval.
+
+## Exact integration seams
+
+1. **Schema and migration:** the schema root and actual generated `0009_archive_maintenance.sql` are included. Apply/review that migration and verify actual bindings before activation. The daily table stores scalar `range_from/range_to` for compact indexed extrema, plus disjoint first-proof JSON and exact full-day-known-at. Maintenance has separate tail/overlap due times, a bounded combined queue, separate candidate references per lane, and an initial admission marker.
+2. **Existing publisher, one atomic final batch:** accept the internal plan returned by `prepareArchiveMaintenanceCommit`. Execute its `admissionStatement` first. Restrict receipt, coverage and head changes to `plan.admittedSql` with `plan.admittedValues`; append `dayStatements` and `completionStatement` in that same D1 transaction. Do not run the gate and later publication in separate batches. The gate checks active database-clock lease/fence, exact frozen state and expected day generations once; later writes depend on the admission rather than rechecking expiry mid-transaction. Source/canonical retention and existing scientific revision selection remain the current publisher's responsibility.
+3. **Generation races:** an integration may throw `ArchiveMaintenanceCoverageConflict` only for a verified day-generation conflict. The runner permits one fresh generation read and publication attempt under the still-active owned lease; it performs no new count/query acquisition. All other failures retain the candidate or gap and follow explicit retry policy.
+4. **Original receipt resume:** `acknowledgeArchiveMaintenanceReceipt` verifies exact scope, raw/canonical digests, identity, range, counts and receipt clocks. It projects missing day proofs and completes the current frontier under a fresh admission, without changing original receipt dates or republishing source evidence.
+5. **Manual imports:** non-maintenance imports now use their own same-transaction admission marker, the daily generation gate and receipt-dependent projection. This also covers an exact existing receipt; stale generation cannot bypass the gate by finding a previously committed row. Manual imports do not advance the maintenance frontier by assumption.
+6. **Bootstrap:** visit committed receipts in **receipt journal order (`c.id`)**, retaining their original `published_at`; journal IDs are not assumed to imply monotonic timestamps. First-proof materialization chooses the earliest admitted knowledge timestamp for each covered portion independently of traversal order. Correction receipts advance the journal cursor without creating interval coverage. Then `seedArchiveMaintenance` verifies an actually continuous supplied range with the stored daily reader. It never initializes from `MAX(range_to)` across gaps. Do this before enabling scheduled wakes; an unseeded runner acquires nothing.
+7. **World scene:** `readArchiveDayCoverage` is used only after the materialized scope order equals the current archive edition. Until then, coverage explicitly reports its legacy receipt mode and migration/bootstrap readiness; existing scenes stay usable. Metadata uses the bounded compact daily calendar; an exact scene/buffer requests only intersecting days. The advertised origin range, source-qualified gaps, and independent knowledge cutoff remain. Metadata also rechecks the outer archive edition. Current and pre-first-knowledge version lookups use scope/order and publication indexes instead of whole-journal CASE aggregates; a middle historical cutoff still resolves its exact maximum eligible receipt order.
+8. **CLI:** acquisition, splitting and candidate restoration delegate to the portable module while retaining the existing journal, signed transport, uncertain-write readback and per-run budgets. Raw bytes/normalized records are stripped from journal metadata; source bodies stay in their original separate file. No second importer is retained.
+9. **Authenticated collector wake:** the existing fixed collect action starts a host-retained bounded background operation using the real fenced publisher. Public scene/plugin/MCP/status reads cannot start it. The original packet's failure does not starve archive work, and unsupported background hosts acquire nothing. Code availability is not proof that an external scheduler is running.
+
+## Owner activation and public acceptance
+
+After publishing the package and applying `0009`, use the existing authorized archive credential environment, without a provider download:
+
+```powershell
+node scripts/usgs-archive-import.mjs --bootstrap
+```
+
+This sends a signed POST to the existing `/earth/api/world/archive/import` endpoint, body `{schemaVersion:1,scopeId:'usgs-catalog-m4.5-v1',operation:'bootstrap',limit:16}`. Repeat the command until the returned `complete` is true, `status` is `ready`, and `materializedOrder` equals `currentOrder`. Each call processes at most 16 stored receipts and resumes its durable cursor; it cannot acquire or register a provider. `frontierReady` reports whether a valid maintenance frontier exists; `frontierSeeded` only reports whether this call created it, so it is false on a healthy repeated bootstrap.
+
+Before completion, ordinary scene metadata should retain `coverage.storageMode='legacy-receipt-index'` with explicit readiness. After completion it should show `day-proof-index` and preserve the original advertised range, Reconstruction counts and Known then gaps. Compare one exact stored event/revision and its retained detail clocks before/after. Use the already authorized independent collect trigger to obtain the first actual archive extension proof; verify new source count/query requests, immutable receipt publication, a contiguous frontier increase and unchanged Live packet pointers. Then observe another due wake without a visitor. These external acceptance actions were not run by this agent.
+
+For an explicitly bounded historical calendar window, the same stored-only metadata endpoint admits both canonical UTC `calendarFrom` and `calendarTo`, only with `metadata=1`, at most 736 intersecting UTC days and no future upper endpoint. `availableRange` continues to advertise all retained origins; gaps/completion concern `requestedRange`. A knowledge cutoff remains independent of that date window. The default full calendar keeps its pilot cap and fails explicitly beyond it; this package does not add UI paging or silently discard older evidence.
+
+## Bounded policies and remaining activation gates
+
+Due checks and leases use the database clock: ten-minute normal tail checks, closed target DB-now minus five minutes, one acquired/published piece per wake, at most two upstream requests, 27-second wake deadline, 60-second lease, 32 combined pending pieces. Tail pieces are at most one day. A separately due six-hour recheck covers the latest retained 24 hours; when both lanes are due they alternate, so an unresolved frozen tail does not indefinitely starve corrections. Failures back off within six hours. This is a polling policy, not a provider delivery promise.
+
+The deadline bounds waiting for publication as well as provider work. The collector retains real publisher settlement separately. After a deadline the lease is released and the candidate remains exact; late unadmitted storage cannot create a receipt. An already admitted atomic transaction may complete and is resolved through its actual durable receipt, never an invented success or a new source download.
+
+Each day caps first-proof pieces at 512 and JSON at 64 KiB. Delivery caps at 736 day rows and 256 KiB including partial-day proofs. Complete reconstruction days do not load proof arrays; earlier cutoffs preserve the known portions of a not-yet-complete day. Budget failure is explicit and does not assert complete coverage. The current approximately two-year scope fits; **calendar paging is required as the retained date span grows beyond 736 days**, without deleting immutable history.
+
+A count of zero plus an empty HTTP body remains a gap and preserves its exact pending interval. Fixed-window retries alone cannot certify quiet coverage. **Root separately verified the genuine-empty source gate** with two bounded official reads for 2026-10-11T23:00:00.000Z through 23:01:00.000Z, fixed M4.5+ earthquake scope: count returned HTTP 200, text `0`, 1 byte; query returned HTTP 200, `application/json`, 371 bytes, an original FeatureCollection with `metadata.status=200` and `features=[]`. The exact query mirrored `usgsCatalogUrl`; no parameter was added. Thus this reviewed quiet interval can be admitted through the current original-body contract without fabrication. These root source reads are separate from the 19 local component checks and the historical researcher's 15 platform-only requests. This is one observed source response, not a guarantee that every future request succeeds.
+
+Root also checked the official service's `nodata` values: 204 or 404, not 200. Do not add an invented `nodata=200` parameter. Unexpected empty HTTP bodies, source failures and count drift continue to remain explicit gaps/retries.
+
+The overlap interval can find later qualifying source revisions. Below-threshold revisions, aliases and explicit deletion/withdrawal semantics require the reviewed existing correction path; absence from the rechecked catalog is not a deletion. Live source pointers and prepared visitor packets remain separate from archive publication.

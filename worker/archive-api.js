@@ -2,6 +2,7 @@ import { normalizeUsgs } from '../server/hosted/intelligence-sources.js';
 import { canonicalDiscoveryRecord } from '../src/core/discovery-index.js';
 import { ARCHIVE_SCOPE, ARCHIVE_LIMITS, retainWorldArchiveRaw, publishWorldArchiveChunk,
   readWorldArchiveChunk, createWorldArchiveCandidate } from './world-archive.js';
+import { bootstrapArchiveDays } from './archive-bootstrap.js';
 
 export const ARCHIVE_IMPORT_PATH = '/api/world/archive/import';
 export const ARCHIVE_API_LIMITS = Object.freeze({ bodyBytes: 2 * 1024 * 1024, deadlineMs: 25_000,
@@ -68,6 +69,7 @@ function importInput(text, nowMs) {
 /** Narrow archive import capability: authenticated acquisition stays outside visitor reads. */
 export function createArchiveApiHandler({ now = Date.now, retain = retainWorldArchiveRaw,
   publish = publishWorldArchiveChunk, read = readWorldArchiveChunk,
+  bootstrap = bootstrapArchiveDays,
   deadlineMs = ARCHIVE_API_LIMITS.deadlineMs } = {}) {
   if (!Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > ARCHIVE_API_LIMITS.deadlineMs)
     throw new TypeError('Use a bounded archive deadline');
@@ -118,11 +120,16 @@ export function createArchiveApiHandler({ now = Date.now, retain = retainWorldAr
       const text = await boundedText(request, controller.signal);
       if (await digest(text) !== bodyDigest || Math.abs(now() - Number(timestamp) * 1000) > ARCHIVE_API_LIMITS.clockSkewMs)
         return json({ status: 'denied', stored: false }, 401);
-      const value = importInput(text, now());
-      candidate = await createWorldArchiveCandidate({ ...value, rawSha256: await digest(value.body) }, { now });
+      const parsed = JSON.parse(text), bootstrapping = parsed?.operation === 'bootstrap';
+      if (bootstrapping && (Object.keys(parsed).sort().join(',') !== 'limit,operation,schemaVersion,scopeId' || parsed.schemaVersion !== 1 ||
+          parsed.scopeId !== ARCHIVE_SCOPE.id || !Number.isInteger(parsed.limit) || parsed.limit < 1 || parsed.limit > 16))
+        throw new TypeError('Unsupported bounded archive bootstrap');
+      const value = bootstrapping ? parsed : importInput(text, now());
+      if (!bootstrapping) candidate = await createWorldArchiveCandidate({ ...value, rawSha256: await digest(value.body) }, { now });
       controller.signal.throwIfAborted();
       startedStorage = true;
       operation = (async () => {
+        if (bootstrapping) return bootstrap(env, { limit: value.limit });
         const raw = await retain(env, { body: value.body });
         if (raw.stored !== true) return raw;
         return publish(env, { schemaVersion: 1, scopeId: value.scopeId, capturedAt: value.capturedAt, kind: value.kind,

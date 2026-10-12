@@ -11,6 +11,7 @@ import { collectionFactsDigest } from '../src/core/collection-facts.js';
 import { collectionSemantics, matchesCollectionBaseline, checkCollectionOperational, fitsCollectionOperationalSources } from './collection-check.js';
 import { readCollectionCompletion } from './collection-completion.js';
 import { publishCollectionRevision } from './collection-updates.js';
+import { startArchiveMaintenance } from './archive-maintenance-runner.js';
 
 export const COLLECTOR_PLUGINS = Object.freeze([
   Object.freeze({ id: 'usgs', name: 'USGS earthquakes', endpoint: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_week.geojson',
@@ -154,6 +155,7 @@ export async function persistHostedCollection(env, input, { now = Date.now } = {
 
 /** Fixed adapters run independently of all visitor map/layer toggles. Trigger provisioning belongs to the host. */
 export function collectEarthSources(env = {}, _ctx = {}, { now = Date.now, fetchImpl = fetch, snapshotReader } = {}) {
+  const archiveMaintenance = startArchiveMaintenance(env, _ctx, { now, fetchImpl });
   const owner = env.EARTH_STORE || env;
   if (pending.has(owner)) return pending.get(owner);
   const work = (async () => {
@@ -163,7 +165,7 @@ export function collectEarthSources(env = {}, _ctx = {}, { now = Date.now, fetch
     const payload = await response.json();
     const packet = collectionPacket({ schemaVersion: 1, collectedAt: new Date(now()).toISOString(), payload }, now);
     const publication = await persistHostedCollection(env, packet, { now });
-    return { ...publication, ...(!publication.configured ? { packet } : {}), plugins: COLLECTOR_PLUGINS.map((plugin) => plugin.id) };
+    return { ...publication, ...(!publication.configured ? { packet } : {}), archiveMaintenance, plugins: COLLECTOR_PLUGINS.map((plugin) => plugin.id) };
   })().finally(() => { if (pending.get(owner) === work) pending.delete(owner); });
   pending.set(owner, work); return work;
 }
