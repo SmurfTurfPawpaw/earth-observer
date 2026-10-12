@@ -158,7 +158,7 @@ function shellDocument() {
   return doc;
 }
 
-async function mountedShell(t) {
+async function mountedShell(t, shellOptions = {}) {
   const doc = shellDocument(), html = await readFile(new URL('../../index.html', import.meta.url), 'utf8');
   for (const [, tag, id] of html.matchAll(/<([a-z][a-z0-9-]*)\b[^>]*\bid="([^"]+)"[^>]*>/gi)) {
     const node = doc.createElement(tag); node.id = id; doc.body.append(node);
@@ -198,7 +198,7 @@ async function mountedShell(t) {
   manager = createLayerManager(viewer, () => {}, { document: doc, storage: local, createServices: () => ({}), layerServiceRequirements: () => [],
     setInterval: () => 1, clearInterval() {}, createLayer: async id => { assert.equal(id, 'gdacs-notices'); return layer = createGdacsNoticesLayer({ documentRef: doc,
       source: { getSnapshot: async () => { reads++; return snapshot; } } }); } });
-  shell = createShell(viewer, manager); await manager.setEnabled('gdacs-notices', true);
+  shell = createShell(viewer, manager, shellOptions); await manager.setEnabled('gdacs-notices', true);
   const row = get('layers').querySelector('[data-layer-id="gdacs-notices"]'), options = row.querySelector('details');
   options.open = true; options.dispatchEvent({ type: 'toggle' }); shell.openSidebar();
   const button = row.querySelector('button[data-control-key]'); assert(button, 'the real manager mounts its admitted notice row');
@@ -279,4 +279,29 @@ test('explicit inspection focus completion refuses later navigation, editing, Hi
   assert.equal(f.doc.activeElement, f.doc.body);
   f.viewer.selectedEntity = undefined; assert.equal(f.shell.focusSelection(newer), false);
   f.shell.destroy(); assert.equal(f.shell.focusSelection(newer), false);
+});
+
+test('source-context handoff hides conflicting shell surfaces but preserves pinned evidence and drafts, then verified selection owns focus', async t => {
+  let external, externalCloses = 0;
+  const f = await mountedShell(t, { closeExternalWorkspace() { if (external && !external.hidden) { externalCloses++; external.hidden = true; } } });
+  f.button.click(1); const selected = f.viewer.selectedEntity, proof = selected.properties;
+  const draft = f.doc.createElement('textarea'); draft.value = 'Unsubmitted investigation'; f.get('notebook-panel').append(draft);
+  f.shell.openNotebook(); draft.focus();
+  const calendar = f.get('earth-timeline'); calendar.open = true;
+  external = f.doc.createElement('section'); const row = f.doc.createElement('button'); external.append(row); f.doc.body.append(external);
+  f.shell.focusSourceContext(); row.focus();
+  assert.equal(calendar.open, false); assert.equal(f.get('selection').hidden, true); assert.equal(f.get('notebook-panel').hidden, true);
+  assert.equal(f.viewer.selectedEntity, selected); assert.equal(selected.properties, proof); assert.equal(draft.value, 'Unsubmitted investigation');
+  assert.equal(externalCloses, 0); f.shell.update(); assert.equal(externalCloses, 0, 'Background layer state cannot close the pinned source list');
+  const admitted = new Cesium.Entity({ id: 'source:TEST_ONLY-admitted', name: 'TEST ONLY exact retained report', properties: { sourceRevision: 'retained-test-revision' } });
+  f.shell.selectEntity(admitted);
+  assert.equal(external.hidden, true); assert.equal(f.get('selection').hidden, false); assert.equal(f.viewer.selectedEntity, admitted);
+  assert.equal(f.shell.focusSelection(admitted), true); assert.equal(f.doc.activeElement, f.get('clear-selection'));
+  assert.equal(admitted.properties.sourceRevision.getValue(at), 'retained-test-revision'); assert.equal(draft.value, 'Unsubmitted investigation');
+  external.hidden = false; f.shell.focusSourceContext(); calendar.open = true; calendar.dispatchEvent({ type: 'toggle' });
+  assert.equal(external.hidden, true); assert.equal(calendar.open, true); assert.equal(f.viewer.selectedEntity, admitted);
+  external.hidden = false; f.shell.focusSourceContext(); f.shell.openSidebar();
+  assert.equal(external.hidden, true); assert.equal(f.get('sidebar').inert, false); assert.equal(f.viewer.selectedEntity, admitted);
+  f.shell.destroy(); const closes = externalCloses; external.hidden = false; f.shell.focusSourceContext();
+  assert.equal(externalCloses, closes, 'Terminal focus ownership performs no later handoff');
 });

@@ -22,6 +22,15 @@ const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
 const detailMatches = (sourceKey, compact, feature, source) => focusFeatureMatches(sourceKey, compact, feature) &&
   (sourceKey !== 'gdacs' || feature.provenance?.capturedAt === source.capturedAt && feature.provenance.recordedAt === source.publishedAt &&
     feature.provenance.evidence?.schemaVersion === 1 && feature.provenance.evidence.snapshotId === source.snapshotId);
+function inspectionRetention(value) {
+  if (value == null) return null; // Earlier server versions make no retained-lane availability promise.
+  if (!keys(value, ['policyId', 'retainedAt', 'availableUntil', 'graceMs', 'currentPreparedEdition', 'meaning']) || Object.keys(value).length !== 6 ||
+      value.policyId !== 'prepared-inspection-retention-v1' || value.graceMs !== 21600000 || !utc(value.retainedAt) ||
+      typeof value.currentPreparedEdition !== 'boolean' || (value.availableUntil === null) !== value.currentPreparedEdition ||
+      value.availableUntil !== null && (!utc(value.availableUntil) || value.availableUntil < value.retainedAt) ||
+      value.meaning !== 'Inspection availability, not a source observation or knowledge clock') invalid();
+  return freeze(value);
+}
 
 export function regionalSelection(demand) {
   if (demand?.schemaVersion === 2) return focusSceneSelection(demand);
@@ -258,17 +267,34 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
     } finally { clearTimeout(timer); if (stop) signal.removeEventListener('abort', stop); auxiliary.delete(request); }
   }
   return {
-    select(demand) { const key = regionalSelectionKey(demand); if (key === selectedKey) return false; cancel(); selectedKey = key; return true; },
+    select(demand) { const key = regionalSelectionKey(demand); if (key === selectedKey) return false; cancelView(); selectedKey = key; return true; },
     invalidate(revision) {
-      if (sourceKey === 'gdacs') { if (revision !== undefined) return false; dirty = true; cancel(); return true; }
+      if (sourceKey === 'gdacs') { if (revision !== undefined) return false; dirty = true; cancelView(); return true; }
       if (revision !== undefined) {
         const value = pluginRevision(revision);
         if (value?.pluginId !== USGS_LIVE_DAY.pluginId || expected && value.fence <= expected.fence) return false;
         expected = { fence: value.fence, receiptId: value.receiptId, factsDigest: value.factsDigest };
       }
-      dirty = true; cancel(); return true;
+      dirty = true; cancelView(); return true;
     },
-    cancel,
+    cancel, cancelDisplay: cancelView,
+    async loadInspectionView(demand, { signal, source } = {}) {
+      if (!sourceKey || destroyed) throw abort(); const selection = regionalSelection(demand);
+      if (selection.schemaVersion !== 2) invalid();
+      if (source) preparedSceneSource(sourceKey, source, { now });
+      const params = paramsFor(selection); params.set('source', sourceKey);
+      if (expected) params.set('fence', String(expected.fence));
+      let value;
+      try { value = await pinnedGet('api/layers/focus-scenes', params, { signal, maximum: FOCUS_SCENE_LIMITS.deliveryBytes }); }
+      catch (failure) { if (failure?.code === 'edition-not-retained') throw Object.assign(new Error('Latest stored source is not ready'),
+        { code: 'latest-source-not-ready', refreshRequired: true }); throw failure; }
+      const result = normalizePreparedSceneDelivery(value, selection, { sourceKey, now });
+      const order = source ? compare(result.source, source) : 0, knownOrder = knownSource ? compare(result.source, knownSource) : 0;
+      if (order === null || order < 0 || knownOrder === null || knownOrder < 0 || !compatible(result.source, expected)) invalid(); signal?.throwIfAborted();
+      // Inspection refresh has its own fixed-area lifetime; it never changes the
+      // displayed demand or borrows a previously displayed current-health claim.
+      return result;
+    },
     async getFeature(compact, source, { signal } = {}) {
       if (destroyed) throw abort();
       if (!sourceKey) invalid(); validateFocusFeature(sourceKey, compact); preparedSceneSource(sourceKey, source, { now }); signal?.throwIfAborted();
@@ -276,14 +302,18 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
       if (saved && now() - saved.savedAt <= REGIONAL_SCENE_LIMITS.cacheAgeMs && same(saved.view.source, source) &&
           detailMatches(sourceKey, compact, saved.view.feature, source)) { cache.delete(key); cache.set(key, saved);
         // Cached evidence retains its exact source edition, not a new current-health assertion.
-        return freeze({ ...saved.view, current: false, check: null, stale: null, sourceGenerationAgeMs: null, browserCache: true }); }
+        return freeze({ ...saved.view, current: false, check: null, stale: null, sourceGenerationAgeMs: null, retention: null, browserCache: true }); }
       const value = await pinnedGet('api/layers/scenes', new URLSearchParams({ source: sourceKey, feature: compact.id,
         revision: compact.revision, sourceVersion: version }), { signal });
       if (value?.schemaVersion !== 1 || value.kind !== 'prepared-scene-feature-delivery' || value.sourceKey !== sourceKey || value.configured !== true ||
           value.available !== true || value.pending !== false || typeof value.current !== 'boolean' || !same(value.source, source) ||
           !detailMatches(sourceKey, compact, value.feature, source) || !value.current &&
             (value.check !== null || value.stale !== null || value.sourceGenerationAgeMs !== null)) invalid();
-      preparedSceneFeature(sourceKey, value.feature); signal?.throwIfAborted(); put(key, freeze(value)); return value;
+      preparedSceneFeature(sourceKey, value.feature); const admitted = freeze({ ...value, retention: inspectionRetention(value.retention) });
+      signal?.throwIfAborted(); put(key, admitted);
+      const sourceOrder = knownSource ? compare(value.source, knownSource) : 0;
+      return value.current && (sourceOrder === null || sourceOrder < 0 || !compatible(value.source, expected)) ?
+        freeze({ ...admitted, current: false, check: null, stale: null, sourceGenerationAgeMs: null, retention: null }) : admitted;
     },
     async getMembers(view, cluster, cursor = null, { signal } = {}) {
       if (!sourceKey || view?.scene?.schemaVersion !== 2) invalid();
@@ -304,7 +334,7 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
             focusLeafKey(focusCellAt(member.geometry, cluster.leaf[0])) !== focusLeafKey(cluster.leaf) ||
             scene.features.some(feature => feature.id === member.id) || seen.has(member.id)) invalid(); seen.add(member.id); }
       return freeze({ members: value.members, count: value.count, nextCursor: value.nextCursor, source: value.source,
-        clusterId: value.clusterId, viewVersion: value.viewVersion });
+        clusterId: value.clusterId, viewVersion: value.viewVersion, asOf: value.asOf, retention: inspectionRetention(value.retention) });
     },
     async load(demand, { signal: external, onCached = () => {} } = {}) {
       if (destroyed) throw abort();

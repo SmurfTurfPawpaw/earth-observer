@@ -251,3 +251,44 @@ test('lazy detail and residual pages reject mismatched source provenance, displa
   const signal = await started.promise; delayed.cancel(); assert.equal(signal.aborted, true); await rejected;
   gate.resolve(json(payload)); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(delayed.getState().cacheEntries, 0); delayed.destroy();
 });
+
+test('pinned source reads survive background invalidation and demand selection; independent latest inspection never mutates display ownership', async () => {
+  const a = await gdacsFixture(), b = await gdacsFixture(2000, false), scene = await selectFocusScene(a.prepared, focusDemand, { now: () => NOW }),
+    compact = scene.features[0], started = Promise.withResolvers(), gate = Promise.withResolvers();
+  const latest = createFocusScenesApiHandler({ now: () => NOW, read: async () => b }); let requestSignal;
+  const client = createRegionalSceneClient({ sourceKey: 'gdacs', now: () => NOW, fetchImpl: async (url, options) => {
+    if (url.includes('/scenes?')) { requestSignal = options.signal; started.resolve(); return gate.promise; }
+    return latest(new Request(`https://example.test${url}`, options), {});
+  } });
+  client.select(focusDemand); const pending = client.getFeature(compact, a.source); await started.promise;
+  client.invalidate(); const other = { ...focusDemand, leaves: [[0, 0, 0]], focus: [0, 0, 0] }; client.select(other);
+  assert.equal(requestSignal.aborted, false);
+  gate.resolve(json({ schemaVersion: 1, kind: 'prepared-scene-feature-delivery', sourceKey: 'gdacs', configured: true, available: true,
+    pending: false, current: false, source: a.source, check: null, stale: null, sourceGenerationAgeMs: null,
+    feature: a.prepared.content.features.find(feature => feature.id === compact.id) }));
+  const proof = await pending; assert.equal(proof.source.version, a.source.version); assert.equal(proof.current, false);
+  const demandOwner = client.getState().demandKey, result = await client.loadInspectionView(focusDemand, { source: a.source });
+  assert.equal(result.source.version, b.source.version); assert.equal(client.getState().demandKey, demandOwner);
+  assert.equal(client.getState().expected, undefined, 'an inspection read does not acquire displayed stream-head ownership');
+  await assert.rejects(client.loadInspectionView(focusDemand, { source: { ...b.source, capturedAt: new Date(NOW + 60000).toISOString(),
+    publishedAt: new Date(NOW + 61000).toISOString() } }), TypeError, 'latest refresh cannot silently regress to an older source'); client.destroy();
+});
+
+test('inspection retention is a versioned availability contract separate from source clocks, with explicit older-server compatibility', async () => {
+  const stored = await gdacsFixture(), scene = await selectFocusScene(stored.prepared, focusDemand, { now: () => NOW }), compact = scene.features[0],
+    retention = { policyId: 'prepared-inspection-retention-v1', retainedAt: new Date(NOW + 2000).toISOString(),
+      availableUntil: new Date(NOW + 21600000).toISOString(), graceMs: 21600000, currentPreparedEdition: false,
+      meaning: 'Inspection availability, not a source observation or knowledge clock' };
+  const body = { schemaVersion: 1, kind: 'prepared-scene-feature-delivery', sourceKey: 'gdacs', configured: true, available: true, pending: false,
+    current: false, source: stored.source, check: null, stale: null, sourceGenerationAgeMs: null,
+    feature: stored.prepared.content.features.find(feature => feature.id === compact.id) };
+  for (const metadata of [undefined, retention, { ...retention, policyId: 'other' }, { ...retention, graceMs: 3600000 },
+    { ...retention, currentPreparedEdition: true }, { ...retention, retainedAt: '2026-10-12T09:00:02Z' }]) {
+    const client = createRegionalSceneClient({ sourceKey: 'gdacs', now: () => NOW, fetchImpl: async () => json({ ...body, ...(metadata ? { retention: metadata } : {}) }) });
+    if (metadata && metadata !== retention) await assert.rejects(client.getFeature(compact, stored.source), TypeError);
+    else { const proof = await client.getFeature(compact, stored.source); assert.deepEqual(proof.retention, metadata || null);
+      assert.equal(proof.source.publishedAt, stored.source.publishedAt); assert.notEqual(proof.retention?.retainedAt, proof.source.publishedAt);
+      const cached = await client.getFeature(compact, stored.source); assert.equal(cached.retention, null, 'cached bytes do not claim current server availability'); }
+    client.destroy();
+  }
+});

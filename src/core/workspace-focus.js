@@ -2,16 +2,19 @@ import { HOME_VIEW, setCameraView } from './navigation.js';
 
 /** Coordinate visibility through the shell's existing lifecycle. Scene time,
  * selected features, requests and form values remain owned by their components. */
-export function createWorkspaceFocus({ calendar, subscribePanels, closeExpandedWorkspace } = {}) {
-  if (!calendar?.addEventListener || typeof subscribePanels !== 'function' || typeof closeExpandedWorkspace !== 'function')
+export function createWorkspaceFocus({ calendar, subscribePanels, closeExpandedWorkspace, closeExternalWorkspace = () => {} } = {}) {
+  if (!calendar?.addEventListener || typeof subscribePanels !== 'function' || typeof closeExpandedWorkspace !== 'function' || typeof closeExternalWorkspace !== 'function')
     throw new TypeError('Workspace focus needs a calendar and shell lifecycle');
   let destroyed = false;
-  const focusWorkspace = () => { if (!destroyed && calendar.open) calendar.open = false; };
-  const calendarToggle = () => { if (!destroyed && calendar.open) closeExpandedWorkspace(); };
+  const collapseCalendar = () => { if (calendar.open) calendar.open = false; };
+  const focusWorkspace = () => { if (!destroyed) { closeExternalWorkspace(); collapseCalendar(); } };
+  const focusExternalWorkspace = () => { if (!destroyed) { collapseCalendar(); closeExpandedWorkspace(); } };
+  const calendarToggle = () => { if (!destroyed && calendar.open) { closeExternalWorkspace(); closeExpandedWorkspace(); } };
   const unsubscribe = subscribePanels(({ open }) => { if (open) focusWorkspace(); });
   calendar.addEventListener('toggle', calendarToggle);
-  if (calendar.open) closeExpandedWorkspace();
-  return { focusWorkspace, destroy() { if (destroyed) return; destroyed = true; unsubscribe?.(); calendar.removeEventListener('toggle', calendarToggle); } };
+  if (calendar.open) { closeExternalWorkspace(); closeExpandedWorkspace(); }
+  return { focusWorkspace, focusExternalWorkspace,
+    destroy() { if (destroyed) return; destroyed = true; unsubscribe?.(); calendar.removeEventListener('toggle', calendarToggle); } };
 }
 
 /** Ordinary place navigation does not activate a layer preset or ask location

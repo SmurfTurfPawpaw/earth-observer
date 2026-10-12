@@ -189,7 +189,7 @@ async function inspectCluster(context) {
   sceneMembersLoading ||= import('./core/scene-members-panel.js');
   const { createSceneMembersPanel } = await sceneMembersLoading;
   if (destroyed || document.hidden || currentWorkspaceTime().mode !== 'live' || context.isCurrent?.() === false) return;
-  sceneMembers ||= createSceneMembersPanel({ onOpen: () => { shell.closeNews(); shell.closeNotebook(); shell.closeSidebar(); } });
+  sceneMembers ||= createSceneMembersPanel({ onOpen: () => shell.focusSourceContext() });
   sceneMembers.open(context);
 }
 
@@ -218,7 +218,8 @@ export async function start({ earlySearchIntent } = {}) {
       isLive: () => !destroyed && currentWorkspaceTime().mode === 'live' && !contextRecovery?.isLost() &&
         ['earthquakes', 'gdacs-notices'].some(id => manager.getState()[id]?.enabled) });
     disposers.push(() => coverageDemand.destroy());
-    shell = createShell(viewer, manager, { getTemporal: currentWorkspaceTime, canShare: () => !destroyed && (!workspaceRestore || workspaceRestore.canCheckpoint()) });
+    shell = createShell(viewer, manager, { getTemporal: currentWorkspaceTime, canShare: () => !destroyed && (!workspaceRestore || workspaceRestore.canCheckpoint()),
+      closeExternalWorkspace: () => sceneMembers?.close() });
     const stopSceneSelection = viewer.selectedEntityChanged?.addEventListener?.(entity => {
       if (entity) queueMicrotask(() => { if (!destroyed && viewer?.selectedEntity === entity) sceneMembers?.close(); });
     });

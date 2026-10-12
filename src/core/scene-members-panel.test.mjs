@@ -78,3 +78,60 @@ test('a shared area beacon lets users choose a category before fetching, retirin
   f.get('scene-member-row').dispatchEvent(new Event('click')); assert.equal(chosen, 'flood'); assert.equal(f.panel.isOpen(), false);
   f.panel.destroy();
 });
+
+test('newer reports offer explicit refresh while the opened edition and its rows stay pinned', async () => {
+  const f = fixture(); let latest, unsubscribed = 0;
+  const c = context('old', async () => page(c, [{ title: 'Original edition' }]));
+  Object.assign(c, { isLatest: () => true, refresh: async () => true,
+    subscribeLatest: listener => { latest = listener; return () => { unsubscribed++; }; } });
+  f.panel.open(c); await flush(); assert.equal(f.get('icon-button scene-members-refresh').hidden, true);
+  latest(false); assert.equal(f.get('icon-button scene-members-refresh').hidden, false);
+  assert.equal(f.get('scene-member-title').textContent, 'Original edition');
+  f.panel.close(); assert.equal(unsubscribed, 1);
+  latest(false); assert.equal(f.panel.isOpen(), false); f.panel.destroy();
+});
+
+test('an expired edition keeps a real recovery action even when its facts still match the head', async () => {
+  const f = fixture(); let latest;
+  const c = context('old', async () => { throw Object.assign(new Error('Expired'), { refreshRequired: true }); });
+  Object.assign(c, { isLatest: () => true, refresh: async () => { throw Object.assign(new Error('Not ready'), { refreshRequired: true }); },
+    subscribeLatest: listener => { latest = listener; return () => {}; } });
+  f.panel.open(c); await flush(); latest(true);
+  assert.equal(f.get('icon-button scene-members-refresh').hidden, false);
+  assert.equal(f.get('scene-members-more').hidden, true);
+  assert.match(f.get('scene-members-status').textContent, /expired/);
+  f.get('icon-button scene-members-refresh').dispatchEvent(new Event('click')); await flush(); latest(true);
+  assert.equal(f.get('icon-button scene-members-refresh').hidden, false);
+  assert.equal(f.get('icon-button scene-members-refresh').disabled, false);
+  assert.match(f.get('scene-members-status').textContent, /not ready/); f.panel.destroy();
+});
+
+test('explicit refresh promotes a new verified context and late old work cannot overwrite it', async () => {
+  const f = fixture(), refreshResult = Promise.withResolvers(); let refreshSignal;
+  const newer = context('new', async () => page(newer, [{ title: 'Updated edition' }]));
+  const old = context('old', async () => page(old, [{ title: 'Original edition' }]));
+  Object.assign(old, { isLatest: () => false, refresh: ({ signal }) => { refreshSignal = signal; return refreshResult.promise; } });
+  f.panel.open(old); await flush(); f.get('icon-button scene-members-refresh').dispatchEvent(new Event('click'));
+  f.panel.open(newer); await flush(); refreshResult.resolve(true); await flush();
+  assert.equal(refreshSignal.aborted, true); assert.equal(f.get('scene-member-title').textContent, 'Updated edition');
+  assert.match(f.get('scene-members-status').textContent, /^1 of 2 reports/); f.panel.destroy();
+});
+
+test('cancelled source inspection preserves the prior status without inventing expiry', async () => {
+  const f = fixture(); const c = context('a', async () => page(c, [{ title: 'Report' }]), async () => false);
+  f.panel.open(c); await flush(); const before = f.get('scene-members-status').textContent;
+  f.get('scene-member-row').dispatchEvent(new Event('click')); await flush();
+  assert.equal(f.panel.isOpen(), true); assert.equal(f.get('scene-members-status').textContent, before);
+  assert.equal(f.get('scene-member-row').disabled, false); f.panel.destroy();
+});
+
+test('ready empty and individually displayed latest areas are distinct from unavailable data', async () => {
+  for (const [code, expected] of [['latest-group-individuals', /shows these reports individually/], ['latest-area-empty', /No reports appear in the latest view/]]) {
+    const f = fixture(); const c = context('old', async () => page(c, [{ title: 'Retained report' }]));
+    Object.assign(c, { isLatest: () => false, refresh: async () => { throw Object.assign(new Error(code), { code, refreshRequired: true }); } });
+    f.panel.open(c); await flush(); f.get('icon-button scene-members-refresh').dispatchEvent(new Event('click')); await flush();
+    assert.match(f.get('scene-members-status').textContent, expected);
+    assert.equal(f.get('scene-member-title').textContent, 'Retained report');
+    assert.equal(f.get('icon-button scene-members-refresh').disabled, false); f.panel.destroy();
+  }
+});

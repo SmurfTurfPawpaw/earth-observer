@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 // owners are observable fixtures; their existing suites cover their disposal.
 const modules = {
   './core/viewer.js': 'export function createGlobeViewer(){if(globalThis.fixture.startupError)throw globalThis.fixture.startupError;return globalThis.fixture.viewer;}',
-  './core/layer-manager.js': 'export const STORAGE_KEY="layers"; export function createLayerManager(){return globalThis.fixture.manager;}',
+  './core/layer-manager.js': 'export const STORAGE_KEY="layers"; export function createLayerManager(viewer,onChange,options){globalThis.fixture.layerManagerOptions=options;return globalThis.fixture.manager;}',
   './core/catalog.js': 'export const LAYERS=[{id:"earthquakes"},{id:"flights"}];',
   './core/shell.js': 'export function createShell(viewer,manager,options){globalThis.fixture.shellOptions=options;return globalThis.fixture.shell;}',
   './core/navigation.js': `export function setCameraView(viewer,view){globalThis.fixture.cameraWrites.push(view);globalThis.fixture.onCamera?.();}
@@ -40,6 +40,10 @@ const modules = {
   './core/plugin-dossier.js': 'export function createPluginDossierPanel(){throw new Error("Unused optional fixture");}',
   './core/intelligence.js': 'export function createIntelligencePanel(){throw new Error("Unused optional fixture");}',
   './core/report-dossier.js': 'export function createReportDossierController(){throw new Error("Unused optional fixture");}',
+  './core/scene-members-panel.js': `export function createSceneMembersPanel(options){return globalThis.fixture.members={
+    open(context){globalThis.fixture.memberContext=context;globalThis.fixture.memberOpen=true;options.onOpen();},
+    close(){globalThis.fixture.memberOpen=false;globalThis.fixture.memberCloses++;},
+    destroy(){this.close();}};}`,
   './core/evidence.js': 'export function createEvidenceNotebook(){throw new Error("Unused optional fixture");}',
   cesium: 'export const Cartographic={fromCartesian(){}}; export const Math={toDegrees(x){return x;}}; export class Cartesian2{} export const Ellipsoid={WGS84:{}};',
 };
@@ -63,7 +67,7 @@ async function fixture({ automatic = false, permission = Promise.resolve({ state
   const f = { calls: [], cameraWrites: [], layerRestores: [], sessionSaves: 0, preferenceRemovals: 0, geoCalls: 0,
     geo: Promise.withResolvers(), initial: { view: { lat: 50, lon: 4, alt: 90000 }, temporal, area: null, layers: ['earthquakes'], requestLocation: automatic },
     timers: new Map(), nextTimer: 0, streamActive: false, rafActive: true, clockActive: true, viewerDestroyed: false, logs: [], startupError,
-    temporal: { mode: 'live' }, serialized: [], savedTemporal: [], restoreModes: [], timelineRestores: [], initialError, replaced: [] };
+    temporal: { mode: 'live' }, serialized: [], savedTemporal: [], restoreModes: [], timelineRestores: [], initialError, replaced: [], memberCloses: 0 };
   const nodes = new Map(), createdElements = [];
   const element = (tag = 'div') => {
     const result = new EventTarget(), attributes = new Map();
@@ -111,7 +115,7 @@ async function fixture({ automatic = false, permission = Promise.resolve({ state
     async setTimelineMode(mode) { f.calls.push(`mode:${mode}`); if (f.calls.filter(call => call.startsWith('mode:')).length === 1 && modeGate) await modeGate.promise; },
     destroy() { f.calls.push('manager:destroy'); f.timers.clear(); return closeGate?.promise ?? Promise.resolve(); } };
   f.shell = { setLocalStatus(text) { f.localStatus = text; }, notify(text) { f.calls.push(`notice:${text}`); },
-    subscribePanels: () => () => {}, closeSidebar() {}, closeNews() {}, destroy() { f.calls.push('shell:stop'); } };
+    subscribePanels: () => () => {}, closeSidebar() {}, closeNews() {}, focusSourceContext() { f.calls.push('shell:source-context'); }, destroy() { f.calls.push('shell:stop'); } };
   const location = { href: 'https://example.com/earth/#layers=earthquakes', hash: '#layers=earthquakes', reload() { f.calls.push('reload'); } };
   const context = { fixture: f, document, window, navigator: { permissions: { query: () => permission } }, location,
     history: { replaceState(_state, _title, url) { f.replaced.push(url); } }, performance: { mark() {} }, URL, URLSearchParams, Event, CustomEvent, AbortController, DOMException,
@@ -280,4 +284,19 @@ test('invalid temporal startup exposes explicit Live recovery without initializi
   assert.equal(u.f.replaced.length, 0); recover.dispatchEvent(new Event('click'));
   assert.equal(u.f.serialized.at(-1).temporal.mode, 'live'); assert.equal(u.f.replaced.length, 1); assert.equal(u.f.calls.at(-1), 'reload');
   assert.equal(u.f.preferenceRemovals, 0); recover.dispatchEvent(new Event('click')); assert.equal(u.f.replaced.length, 1);
+});
+
+test('actual main wires source lists through the shell handoff and closes only that external owner on explicit workspace or History', async () => {
+  const u = await fixture(); await u.starting;
+  const context = { isCurrent: () => true }, writes = u.f.cameraWrites.length;
+  u.f.layerManagerOptions.onClusterInspection(context); await u.flush();
+  assert.equal(u.f.memberOpen, true); assert.equal(u.f.memberContext, context);
+  assert.ok(u.f.calls.includes('shell:source-context')); assert.equal(u.f.cameraWrites.length, writes);
+  u.f.shellOptions.closeExternalWorkspace(); assert.equal(u.f.memberOpen, false); assert.equal(u.f.memberCloses, 1);
+  u.f.layerManagerOptions.onClusterInspection(context); await u.flush(); assert.equal(u.f.memberOpen, true);
+  const history = { mode: 'history', at: '2025-11-15T12:00:00.123Z' }; u.f.temporal = history;
+  await u.f.timeOptions.onTimeChange(history); assert.equal(u.f.memberOpen, false); assert.equal(u.f.memberCloses, 2);
+  const closures = u.f.memberCloses; await u.context.application.destroy();
+  assert.ok(u.f.memberCloses > closures); u.f.layerManagerOptions.onClusterInspection(context); await u.flush();
+  assert.equal(u.f.memberOpen, false, 'Disposed main cannot reopen a source surface');
 });

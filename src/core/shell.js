@@ -94,7 +94,8 @@ export function createLiveEarthquakeDossier(selection, { documentRef = globalThi
   report.append(facts); return report;
 }
 
-export function createShell(viewer, manager, { getTemporal = () => viewer.earthTime?.getState() || { mode: 'live' }, canShare = () => true } = {}) {
+export function createShell(viewer, manager, { getTemporal = () => viewer.earthTime?.getState() || { mode: 'live' }, canShare = () => true,
+  closeExternalWorkspace = () => {} } = {}) {
   const cleanup = [];
   const rows = new Map(), mounted = new Map(), creditItems = new Map(), groups = new Map();
   const panelListeners = new Set();
@@ -215,7 +216,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
     if (document.body.classList.contains('sidebar-open') && workspace === 'saved') setSidebar(false, { focus: true });
     else openSavedPlaces({ draft: false });
   });
-  bind('home', () => { openPanel(null); setSidebar(false); });
+  bind('home', () => { workspaceFocus?.focusWorkspace(); openPanel(null); setSidebar(false); });
   bind('close-sidebar', () => setSidebar(false, { focus: true }));
   bind('toggle-navbar', () => setNavbar(!uiState.navbarOpen));
   bind('toggle-news', () => activePanel === 'news' ? closePanel('news', { focus: true }) : openPanel('news', { focus: true }));
@@ -250,6 +251,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
   setSidebar(mobile.matches ? false : uiState.sidebarOpen, { persist: false });
   setNavbar(uiState.navbarOpen);
   workspaceFocus = createWorkspaceFocus({ calendar: document.getElementById('earth-timeline'),
+    closeExternalWorkspace,
     subscribePanels(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener); },
     closeExpandedWorkspace() { openPanel(null); setSidebar(false, { persist: false }); },
   });
@@ -543,7 +545,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
     async execute(action) {
       switch (action.type) {
         case 'show-layers': setWorkspace('data'); setSidebar(true, { focus: true }); break;
-        case 'home': setCameraView(viewer, HOME_VIEW, true); break;
+        case 'home': workspaceFocus.focusWorkspace(); openPanel(null); setSidebar(false); setCameraView(viewer, HOME_VIEW, true); break;
         case 'news': openPanel('news', { focus: true }); break;
         case 'notebook': openPanel('notebook', { focus: true }); break;
         case 'share': await shareView(); break;
@@ -571,6 +573,9 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
     openNotebook: () => openPanel('notebook'), closeNotebook: () => closePanel('notebook'),
     openSavedPlaces, goToSavedPlace,
     openCommands: () => commandPalette.open(), closeCommands: () => commandPalette.close(),
+    // Source lists join the same single-surface coordinator without changing
+    // selected evidence, scene time or the notebook's hidden form contents.
+    focusSourceContext: () => workspaceFocus.focusExternalWorkspace(),
     subscribePanels(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener); },
     selectEntity(entity) { if (viewer.selectedEntity === entity) select(entity); else viewer.selectedEntity = entity; },
     /** Called only by an admitted explicit inspection completion, never by the

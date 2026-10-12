@@ -3,14 +3,28 @@ import { createRegionalSceneClient, regionalSelectionKey } from './regional-scen
 import { extractCameraDemand } from './spatial-demand.js';
 import { sceneWorkFor } from './scene-work.js';
 import { pluginJson } from './plugin-evidence.js';
-import { FOCUS_SCENE_LIMITS, focusFeatureMatches } from './focus-scene-contract.js';
+import { FOCUS_SCENE_LIMITS, focusFeatureMatches, focusCellAt, focusLeafKey, validateFocusFeature } from './focus-scene-contract.js';
 import { BEACON_STYLE, beaconGeometry, beaconHeadOptions, beaconBaseOptions, beaconStemOptions, beaconTipAt, beaconAnimatorFor } from './map-beacons.js';
 import { MAP_SYMBOL_LABELS } from './map-symbols.js';
 import { editableTarget } from './commands.js';
+import { comparePreparedSceneSources } from './prepared-scene-contract.js';
 
 const isolate = (...operations) => { let errors = 0; for (const operation of operations) { try { operation(); } catch { ++errors; } } return errors; };
 const abort = () => new DOMException('Prepared seismic display superseded', 'AbortError');
 const clock = () => performance.now();
+const inspectionOwners = new WeakMap();
+const inspectionOwner = viewer => { let state = inspectionOwners.get(viewer); if (!state) { state = { revision: 0 }; inspectionOwners.set(viewer, state); } return state; };
+function cameraPose(camera) {
+  try {
+    const vectors = [camera?.positionWC || camera?.position, camera?.directionWC || camera?.direction, camera?.upWC || camera?.up];
+    if (vectors.every(vector => vector && [vector.x, vector.y, vector.z].every(Number.isFinite)))
+      return { kind: 'world-vectors', values: vectors.flatMap(vector => [vector.x, vector.y, vector.z]) };
+    const point = camera?.positionCartographic, values = [point?.longitude, point?.latitude, point?.height, camera?.heading, camera?.pitch, camera?.roll];
+    return values.every(Number.isFinite) ? { kind: 'cartographic', values } : null;
+  } catch { return null; }
+}
+const samePose = (left, right) => Boolean(left && right && left.kind === right.kind && left.values.every((value, index) =>
+  Math.abs(value - right.values[index]) <= (left.kind === 'world-vectors' && index < 3 || left.kind === 'cartographic' && index === 2 ? .01 : 1e-8)));
 
 /** Public Billboard.ready fences image/WebGL-resource admission, not GPU completion.
  * The collection must update, while each staged billboard remains invisible. */
@@ -56,7 +70,7 @@ export function createPreparedSceneLayer({ descriptor, client,
   let viewer, enabled = false, destroyed = false, request, current, view, selectionKey, desiredDemand, refresh = requestRefresh;
   let cameraTimer, cameraStops = [], actions = [], stateListener, demandListener, clusterListener, featureListener, inspection, members, error = null,
     sourceErrorCode = null, displayErrorCode = null, pending = false, unavailable = false, metrics = null;
-  let animator, displayEpoch = 0, cameraRevision = 0;
+  let animator, displayEpoch = 0, cameraRevision = 0, navigationRevision = 0, lastCameraPose, memberNotify;
   const ownEntities = new WeakMap(), entityProofs = new WeakMap(), zoomed = new Map();
   const interactive = () => enabled && !destroyed && !documentRef?.hidden && !viewer?.isDestroyed?.() &&
     viewer?.earthTime?.getState?.()?.mode !== 'history';
@@ -75,21 +89,29 @@ export function createPreparedSceneLayer({ descriptor, client,
   const clear = () => {
     clearSelection(); const old = current; current = null; view = null; metrics = null; dispose(old); viewer?.scene?.requestRender?.();
   };
-  const closeMembers = () => { members?.abort(abort()); members = null; };
+  const closeMembers = () => { const old = members; members = null; memberNotify = null; old?.abort(abort()); };
   const cancelInspection = () => { inspection?.abort(abort()); inspection = null; closeMembers(); };
-  const cancel = () => { request?.abort(abort()); request = null; ++cameraRevision; cancelInspection(); client.cancel?.(); clearTimeout(cameraTimer); cameraTimer = undefined; };
-  const notify = () => { isolate(() => stateListener?.(), () => viewer?.scene?.requestRender?.()); };
+  const cancelDisplay = () => { request?.abort(abort()); request = null; ++cameraRevision;
+    if (client.cancelDisplay) client.cancelDisplay(); else client.cancel?.(); clearTimeout(cameraTimer); cameraTimer = undefined; };
+  const cancel = () => { cancelDisplay(); cancelInspection(); client.cancel?.(); };
+  const observeNavigation = () => {
+    const next = cameraPose(viewer?.camera);
+    if (lastCameraPose && next && !samePose(lastCameraPose, next)) { ++navigationRevision; ++inspectionOwner(viewer).revision; cancelInspection(); }
+    lastCameraPose = next; return next;
+  };
+  const notify = () => { isolate(() => stateListener?.(), () => memberNotify?.(), () => viewer?.scene?.requestRender?.()); };
   const unavailableText = () => displayErrorCode ? 'Map symbols unavailable' : sourceErrorCode === 'scene-byte-budget' ? 'Dense area requires aggregation' : 'Stored source view unavailable';
   const selectDemand = demand => {
     const key = regionalSelectionKey(demand);
     if (key === selectionKey) { desiredDemand = demand; return false; }
-    cancel(); selectionKey = key; desiredDemand = demand; client.select?.(demand);
+    cancelDisplay(); selectionKey = key; desiredDemand = demand; client.select?.(demand);
     // Keep exact retained positions while the new viewport loads. Its requested
     // completeness is separate from the last complete displayed selection.
     pending = true; unavailable = false; error = null; sourceErrorCode = null; displayErrorCode = null; notify(); return true;
   };
   const changed = () => {
     if (!enabled || destroyed || !viewer) return;
+    observeNavigation();
     let demandChanged;
     try { demandChanged = selectDemand(getDemand(viewer)); }
     catch { cancel(); clear(); selectionKey = null; desiredDemand = null; pending = true; return; }
@@ -109,12 +131,15 @@ export function createPreparedSceneLayer({ descriptor, client,
     ownEntities.set(entity, feature.id); entityProofs.set(entity, { source: proofView.source, feature }); return entity;
   };
   const captureInspectionIntent = () => {
-    const origin = documentRef?.activeElement, cameraOwner = cameraRevision, demandOwner = selectionKey;
+    const origin = documentRef?.activeElement, pose = observeNavigation(), navigationOwner = navigationRevision,
+      selected = viewer.selectedEntity, tracked = viewer.trackedEntity;
     const workspaceOpen = id => { const element = documentRef?.getElementById?.(id); return element?.hidden === false && !element.inert; };
     const initialWorkspaces = new Map(['news-panel', 'notebook-panel'].map(id => [id, workspaceOpen(id)]));
     const initiallyEditing = editableTarget(origin) || documentRef?.getElementById?.('command-palette')?.open;
     return () => {
-      if (initiallyEditing || cameraOwner !== cameraRevision || demandOwner !== selectionKey ||
+      const currentPose = observeNavigation();
+      if (!pose || !samePose(pose, currentPose) || initiallyEditing || navigationOwner !== navigationRevision ||
+          viewer.selectedEntity !== selected || viewer.trackedEntity !== tracked ||
           documentRef?.getElementById?.('command-palette')?.open || editableTarget(documentRef?.activeElement) ||
           [...initialWorkspaces].some(([id, open]) => !open && workspaceOpen(id))) return false;
       const active = documentRef?.activeElement, body = documentRef?.body, root = documentRef?.documentElement;
@@ -125,9 +150,10 @@ export function createPreparedSceneLayer({ descriptor, client,
       return true;
     };
   };
-  const inspectFeature = (item, capturedView, tracked = false, extraCurrent = () => true, external) => {
+  const inspectFeature = (item, capturedView, tracked = false, extraCurrent = () => true, external, propagateError = false) => {
     if (!item || !interactive() || !capturedView) return false;
     const userIntent = captureInspectionIntent(); if (!userIntent()) return false;
+    const userOwner = ++inspectionOwner(viewer).revision;
     const apply = full => {
       const entity = materialize(full, capturedView), same = viewer.selectedEntity === entity;
       closeMembers(); isolate(() => { if (tracked) viewer.trackedEntity = entity; else viewer.selectedEntity = entity; },
@@ -139,33 +165,75 @@ export function createPreparedSceneLayer({ descriptor, client,
     inspection?.abort(abort()); const controller = new AbortController(); inspection = controller;
     const signal = external ? AbortSignal.any([controller.signal, external]) : controller.signal;
     const valid = () => inspection === controller && !signal.aborted && interactive() && extraCurrent() && userIntent() &&
-      view && pluginJson(view.source) === pluginJson(capturedView.source);
+      inspectionOwner(viewer).revision === userOwner;
     return (async () => {
       try { const result = await client.getFeature(item, capturedView.source, { signal });
         if (!valid() || !focusFeatureMatches(descriptor.sourceKey, item, result?.feature) ||
             pluginJson(result.source) !== pluginJson(capturedView.source)) return false;
         return apply(result.feature);
-      } catch { return false; } finally { if (inspection === controller) inspection = null; }
+      } catch (failure) { if (!valid() || failure?.name === 'AbortError') return false; if (propagateError) throw failure; return false; }
+      finally { if (inspection === controller) inspection = null; }
     })();
   };
-  const inspectMembers = cell => {
-    if (!current?.items.has(cell.id) || !interactive() || view?.scene.schemaVersion !== 2 ||
+  const inspectMembers = (cell, captured = view, detached = false) => {
+    if ((!detached && !current?.items.has(cell.id)) || !interactive() || captured?.scene.schemaVersion !== 2 ||
         typeof clusterListener !== 'function' || typeof client.getMembers !== 'function') return false;
+    const pose = observeNavigation(), navigationOwner = navigationRevision; if (!pose) return false;
+    ++inspectionOwner(viewer).revision;
     closeMembers(); const controller = new AbortController(); members = controller;
-    const captured = view, demandKey = selectionKey;
-    const valid = () => members === controller && !controller.signal.aborted && interactive() && selectionKey === demandKey &&
-      view?.scene.version === captured.scene.version && pluginJson(view.source) === pluginJson(captured.source);
+    const navigationCurrent = () => samePose(pose, observeNavigation()) && navigationOwner === navigationRevision;
+    const valid = () => members === controller && !controller.signal.aborted && interactive() && navigationCurrent();
+    const sameArea = item => pluginJson(item.bounds) === pluginJson(cell.bounds) && (cell.groups?.length > 1 || item.symbol === cell.symbol);
+    const partition = scene => pluginJson({ groups: scene.clusters.filter(sameArea).map(item => [item.id, item.count]).sort(),
+      shown: scene.features.filter(item => item.geometry && focusLeafKey(focusCellAt(item.geometry, cell.leaf[0])) === focusLeafKey(cell.leaf) &&
+        (cell.groups?.length > 1 || item.symbol === cell.symbol))
+        .map(item => [item.id, item.revision]).sort() });
+    const isLatest = () => {
+      if (!valid() || !view) return false;
+      const order = comparePreparedSceneSources(descriptor.sourceKey, view.source, captured.source);
+      if (order < 0) return true; // A reader can explicitly acquire a newer basis before the map paints it.
+      if (order === null) return false;
+      const sameFacts = descriptor.sourceKey === 'earthquakes' ? view.source.factsDigest === captured.source.factsDigest : view.source.snapshotId === captured.source.snapshotId;
+      if (!sameFacts) return false;
+      return regionalSelectionKey(view.scene.selection) !== regionalSelectionKey(captured.scene.selection) || partition(view.scene) === partition(captured.scene);
+    };
+    const listeners = new Set(); let latest = isLatest();
+    memberNotify = () => { if (!valid()) return; const next = isLatest(); if (next === latest) return; latest = next;
+      for (const listener of listeners) isolate(() => listener(next)); };
+    controller.signal.addEventListener('abort', () => listeners.clear(), { once: true });
     const context = Object.freeze({ sourceKey: descriptor.sourceKey, sourceLabel: descriptor.sourceLabel, cluster: cell,
-      source: captured.source, viewVersion: captured.scene.version, signal: controller.signal, isCurrent: valid,
+      source: captured.source, viewVersion: captured.scene.version, asOf: captured.scene.interest.evaluatedAt, signal: controller.signal, isCurrent: valid, isLatest,
+      subscribeLatest(listener) {
+        if (typeof listener !== 'function') throw new TypeError('Use a latest-evidence listener');
+        if (!valid()) return () => {}; if (listeners.size >= 8) throw new RangeError('Too many inspection listeners');
+        listeners.add(listener); isolate(() => listener(isLatest())); return () => listeners.delete(listener);
+      },
+      async refresh({ signal } = {}) {
+        if (!valid()) throw abort();
+        const refreshOwner = ++inspectionOwner(viewer).revision;
+        if (typeof client.loadInspectionView !== 'function') throw Object.assign(new Error('Latest stored area is unavailable'), { refreshRequired: true });
+        const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+        const next = await client.loadInspectionView(captured.scene.selection, { signal: combined, source: captured.source });
+        if (!valid() || combined.aborted || inspectionOwner(viewer).revision !== refreshOwner) throw abort();
+        const groups = next.scene.clusters.filter(sameArea);
+        if (!groups.length) {
+          const individuals = next.scene.features.some(item => item.geometry && focusLeafKey(focusCellAt(item.geometry, cell.leaf[0])) === focusLeafKey(cell.leaf) &&
+            (cell.groups?.length > 1 || item.symbol === cell.symbol));
+          throw Object.assign(new Error(individuals ? 'The latest display shows reports individually' : 'The latest retained edition has no reports in this area/category'),
+            { refreshRequired: true, code: individuals ? 'latest-group-individuals' : 'latest-area-empty' });
+        }
+        const matching = groups.length === 1 ? groups[0] : Object.freeze({ ...groups[0], id: cell.id, symbol: 'notice', category: 'notice',
+          count: groups.reduce((sum, group) => sum + group.count, 0), groups: Object.freeze(groups) });
+        return inspectMembers(matching, next, true);
+      },
       ...(cell.groups?.length > 1 ? {
         groups: Object.freeze(cell.groups.map(group => Object.freeze({ id: group.id,
           label: MAP_SYMBOL_LABELS[group.symbol] || MAP_SYMBOL_LABELS.notice, count: group.count }))),
         inspectGroup(id) {
-          // The parent chooser closes before this call. Bind to its displayed edition,
+          // The parent chooser closes before this call. Bind to its captured edition,
           // not its retired controller, then acquire a fresh single-category context.
-          if (!interactive() || selectionKey !== demandKey || view?.scene.version !== captured.scene.version ||
-              pluginJson(view.source) !== pluginJson(captured.source)) return false;
-          const group = cell.groups.find(item => item.id === id); return group ? inspectMembers(group) : false;
+          if (!interactive() || !navigationCurrent()) return false;
+          const group = cell.groups.find(item => item.id === id); return group ? inspectMembers(group, captured, true) : false;
         },
       } : {}),
       async loadPage(cursor = null, { signal } = {}) {
@@ -175,7 +243,11 @@ export function createPreparedSceneLayer({ descriptor, client,
         if (!valid() || combined.aborted) throw abort(); return page;
       },
       inspectMember(item, { signal } = {}) { const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-        return valid() ? Promise.resolve(inspectFeature(item, captured, false, valid, combined)) : Promise.resolve(false); },
+        try { validateFocusFeature(descriptor.sourceKey, item);
+          if (item.role !== 'member' || !item.geometry || item.symbol !== cell.symbol ||
+              focusLeafKey(focusCellAt(item.geometry, cell.leaf[0])) !== focusLeafKey(cell.leaf) || captured.scene.features.some(feature => feature.id === item.id)) return Promise.resolve(false);
+        } catch { return Promise.resolve(false); }
+        return valid() ? Promise.resolve(inspectFeature(item, captured, false, valid, combined, true)) : Promise.resolve(false); },
       onClose() { if (members === controller) closeMembers(); },
     });
     try { clusterListener(context); return true; } catch { closeMembers(); return false; }
@@ -194,37 +266,6 @@ export function createPreparedSceneLayer({ descriptor, client,
     const item = current?.items.get(id); if (!item || !interactive()) return false;
     if (item.bounds) return focusCluster(item);
     return inspectFeature(item, view);
-  };
-  const refreshSelection = (edition, previous, previousView) => {
-    const seen = new Set(); let errors = 0;
-    for (const property of ['selectedEntity', 'trackedEntity']) {
-      const entity = viewer[property]; if (!ownEntities.has(entity)) continue;
-      const feature = edition.items.get(ownEntities.get(entity));
-      if (!feature || feature.bounds) {
-        // Render membership can change while immutable source facts do not.
-        // A demoted/offscreen selection keeps its exact source proof; a new
-        // factual basis without that row cannot inherit it.
-        if (previousView && pluginJson(previousView.source) === pluginJson(view.source)) continue;
-        errors += isolate(() => { viewer[property] = undefined; }); continue;
-      }
-      if (seen.has(entity)) continue; seen.add(entity);
-      if (!feature.record) {
-        const proof = entityProofs.get(entity);
-        if (proof && pluginJson(proof.source) === pluginJson(view.source) && focusFeatureMatches(descriptor.sourceKey, feature, proof.feature)) continue;
-        errors += isolate(() => { if (viewer.selectedEntity === entity) viewer.selectedEntity = undefined; },
-          () => { if (viewer.trackedEntity === entity) viewer.trackedEntity = undefined; }); continue;
-      }
-      const oldFeature = previous?.items.get(ownEntities.get(entity));
-      if (oldFeature && !oldFeature.bounds && previousView && descriptor.title(oldFeature) === descriptor.title(feature) &&
-          pluginJson(descriptor.position(oldFeature)) === pluginJson(descriptor.position(feature)) &&
-          pluginJson(descriptor.entityProperties(oldFeature, previousView)) === pluginJson(descriptor.entityProperties(feature, view))) continue;
-      // Replacing the bag clears an old retained-proof attachment before corrected facts are observed.
-      errors += isolate(() => { entity.properties = descriptor.entityProperties(feature, view); },
-        () => { const point = descriptor.position(feature); entity.position = point ? Cesium.Cartesian3.fromDegrees(...point) : undefined; },
-        () => { entity.name = descriptor.title(feature); });
-      entityProofs.set(entity, { source: view.source, feature });
-    }
-    return errors;
   };
   async function retargetBeacons(edition, { signal, work, valid }) {
     const scope = work || sceneWorkFor(viewer).scope({ key: `prepared-${descriptor.sourceKey}-beacon-scale`, signal, isCurrent: valid });
@@ -293,14 +334,15 @@ export function createPreparedSceneLayer({ descriptor, client,
       scope.assertCurrent(); if (!valid()) throw abort();
       const commitAt = clock(); scope.publish(() => {
         if (!valid()) throw abort(); const old = current, previousView = view;
-        closeMembers(); if (previousView && pluginJson(previousView.source) !== pluginJson(nextView.source)) cancelInspection();
         if (previousView && pluginJson(previousView.source) !== pluginJson(nextView.source)) zoomed.clear();
         if (!previousView || regionalSelectionKey(previousView.scene.selection) !== regionalSelectionKey(nextView.scene.selection)) ++displayEpoch;
         view = nextView; current = edition; promoted = true; pending = false; unavailable = false; error = null; sourceErrorCode = null; displayErrorCode = null;
         observerErrors += isolate(() => { edition.billboards.show = edition.stems.show = enabled; },
           () => { if (old) old.billboards.show = old.stems.show = false; });
         for (const beacon of edition.beacons.values()) { beacon.head.show = beacon.base.show = true; }
-        observerErrors += refreshSelection(edition, old, previousView); dispose(old);
+        // Explicit selection is an immutable inspected source edition, not a
+        // live marker property bag. New background facts never rebind its proof.
+        dispose(old);
         for (const [id, beacon] of edition.beacons) if (animator) observerErrors += isolate(() => edition.animations.push(animator.play({
           key: `${descriptor.sourceKey}:${id}`, revision: beacon.item.bounds ? null : beacon.item.revision,
           isCurrent: () => !destroyed && current === edition && !edition.billboards.isDestroyed(),
@@ -325,6 +367,13 @@ export function createPreparedSceneLayer({ descriptor, client,
     invalidatePreparedSnapshot(revision) { const admitted = client.invalidate?.(revision) !== false; if (admitted) { request?.abort(abort()); pending = true; } return admitted; },
     init(value) {
       if (viewer || destroyed) throw new Error('Prepared seismic display already initialized'); viewer = value;
+      lastCameraPose = cameraPose(viewer.camera);
+      const inspectionVisibility = () => { if (documentRef?.hidden) { cancelInspection(); client.cancel?.(); } };
+      documentRef?.addEventListener?.('visibilitychange', inspectionVisibility);
+      cameraStops.push(() => documentRef?.removeEventListener?.('visibilitychange', inspectionVisibility));
+      if (viewer.earthTime?.subscribeClock) cameraStops.push(viewer.earthTime.subscribeClock(state => {
+        if (state.mode === 'history' || state.suspended) { cancelInspection(); client.cancel?.(); }
+      }));
       if (viewer.scene.preRender?.addEventListener) animator = beaconAnimatorFor(viewer, { documentRef }).acquire(`prepared-${descriptor.sourceKey}`);
       for (const event of [viewer.camera?.changed, viewer.camera?.moveEnd]) if (event?.addEventListener) cameraStops.push(event.addEventListener(changed));
       const handler = viewer.screenSpaceEventHandler;

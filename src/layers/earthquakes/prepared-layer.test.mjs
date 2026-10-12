@@ -31,7 +31,8 @@ function harness(client, initialDemand = featuresDemand) {
   let selected, tracked, picked, demand = initialDemand, refreshes = 0;
   actions.set(CLICK, () => native.push('native'));
   const viewer = { scene: { primitives: new Cesium.PrimitiveCollection(), requestRender() {}, pick: () => picked },
-    camera: { changed, moveEnd, flyTo: value => flights.push(value) }, isDestroyed: () => false,
+    camera: { changed, moveEnd, flyTo: value => flights.push(value), positionWC: new Cesium.Cartesian3(0, 0, 7000000),
+      directionWC: new Cesium.Cartesian3(0, 0, -1), upWC: new Cesium.Cartesian3(0, 1, 0) }, isDestroyed: () => false,
     selectedEntityChanged: new Cesium.Event(), trackedEntityChanged: new Cesium.Event(),
     screenSpaceEventHandler: { getInputAction: type => actions.get(type), setInputAction: (value, type) => actions.set(type, value), removeInputAction: type => actions.delete(type) } };
   Object.defineProperties(viewer, { selectedEntity: { get: () => selected, set(value) { if (selected !== value) { selected = value; viewer.selectedEntityChanged.raiseEvent(value); } } },
@@ -76,15 +77,18 @@ test('cluster beacons keep exact area anchors and accessible counts; activation 
   assert.match(h.layer.getRowControls().items[0].detail, /2 retained reports/);
 });
 
-test('unchanged editions retain selected identity/proof; corrected complete facts update it after the new receipt is committed', async t => {
+test('background corrections keep the inspected source proof fixed until an explicit new marker selection', async t => {
   let value = await viewFixture(); const h = harness({ load: async () => value }); t.after(() => h.layer.destroy()); await h.layer.update(h.viewer);
   h.pick(h.viewer.scene.primitives.get(0).get(0)); const selected = h.viewer.selectedEntity, bag = selected.properties;
   bag.addProperty('_worldEvent', { old: true }); value = { ...value, browserReadAt: NOW + 1000 };
   await h.layer.update(h.viewer); assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties, bag); assert.equal(bag.hasProperty('_worldEvent'), true);
   value = await viewFixture(featuresDemand, 4, 2); const receipts = [];
   const stop = selected.definitionChanged.addEventListener((_entity, field) => { if (field === 'properties') receipts.push(h.layer.getStats().receipt.id); }); t.after(stop);
-  await h.layer.update(h.viewer); assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties.mag.getValue(), 4);
-  assert.equal(selected.properties.hasProperty('_worldEvent'), false); assert.deepEqual(receipts, [value.source.receiptId]);
+  await h.layer.update(h.viewer); assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties.mag.getValue(), 3);
+  assert.equal(selected.properties.hasProperty('_worldEvent'), true); assert.deepEqual(receipts, []);
+  h.pick(h.viewer.scene.primitives.get(0).get(0)); assert.notEqual(h.viewer.selectedEntity, selected);
+  assert.equal(h.viewer.selectedEntity.properties.mag.getValue(), 4); assert.equal(h.viewer.selectedEntity.properties.sourceReceiptId.getValue(), value.source.receiptId);
+  assert.equal(h.viewer.selectedEntity.properties.hasProperty('_worldEvent'), false);
 });
 
 test('pending and uncertain refresh preserve same-scope complete symbols and clocks; initial preparation stays enabled without an error', async t => {
@@ -114,12 +118,14 @@ test('camera scope changes retain exact prior symbols with explicit incomplete d
   assert.equal(h.viewer.selectedEntity, selected, 'same-source offscreen selection retains its exact source dossier');
 });
 
-test('a removed report clears both selected and tracked ownership when they share the same lazy Entity', async t => {
+test('a removed display report preserves inspected selected/tracked evidence; explicit disable clears both', async t => {
   let value = await viewFixture(); const h = harness({ load: async () => value }); t.after(() => h.layer.destroy());
   await h.layer.update(h.viewer); const symbol = h.viewer.scene.primitives.get(0).get(0); h.pick(symbol); h.pick(symbol, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
   assert.equal(h.viewer.selectedEntity, h.viewer.trackedEntity);
   const demand = { ...featuresDemand, cells: [[0, 0]] }; h.setDemand(demand); value = await viewFixture(demand, 4, 2); await h.layer.update(h.viewer);
-  assert.equal(h.viewer.selectedEntity, undefined); assert.equal(h.viewer.trackedEntity, undefined);
+  assert.ok(h.viewer.selectedEntity); assert.equal(h.viewer.selectedEntity, h.viewer.trackedEntity);
+  assert.equal(h.viewer.selectedEntity.properties.sourceReceiptId.getValue(), `receipt:${'1'.padStart(64, '0')}`);
+  h.layer.disable(); assert.equal(h.viewer.selectedEntity, undefined); assert.equal(h.viewer.trackedEntity, undefined);
 });
 
 test('late source results and late native attachment cannot publish after disable/history cancellation or destroy', async () => {

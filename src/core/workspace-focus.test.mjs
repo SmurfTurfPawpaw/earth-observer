@@ -19,12 +19,15 @@ function workspace() {
     setTimeoutImpl(fn, delay) { timers.set(++id, { fn, at: mono + delay }); return id; }, clearTimeoutImpl(id) { timers.delete(id); } });
   clock.seek('2025-10-08T00:00:00.000Z'); clock.setRate(60); clock.play();
   const selectedEntity = { id: 'source-pin' }, pins = new Set([selectedEntity]), draft = { title: 'Unsubmitted observation', note: 'Keep this draft', attachment: new Uint8Array([1, 2]) };
-  let panel = null, sidebar = false;
+  let panel = null, sidebar = false, external = false, externalCloses = 0;
   const emit = (name, open) => { calls.push([name, open]); for (const listener of listeners) listener({ panel: name, open }); };
   const closeExpandedWorkspace = () => { if (panel) { const previous = panel; panel = null; emit(previous, false); } sidebar = false; };
-  const focus = createWorkspaceFocus({ calendar, subscribePanels(listener) { listeners.add(listener); return () => listeners.delete(listener); }, closeExpandedWorkspace });
+  const focus = createWorkspaceFocus({ calendar, subscribePanels(listener) { listeners.add(listener); return () => listeners.delete(listener); }, closeExpandedWorkspace,
+    closeExternalWorkspace() { if (external) externalCloses++; external = false; } });
   return { calendar, focus, clock, timers, selectedEntity, pins, draft, calls, listeners,
     getPanel: () => panel, getSidebar: () => sidebar,
+    getExternal: () => external, externalCloses: () => externalCloses,
+    openExternal() { external = true; focus.focusExternalWorkspace(); },
     openPanel(name) { if (panel) emit(panel, false); panel = name; emit(name, true); },
     openSidebar() { sidebar = true; focus.focusWorkspace(); },
     advance(ms) { mono += ms; for (const [key, timer] of [...timers]) if (timer.at <= mono && timers.delete(key)) timer.fn(); },
@@ -44,6 +47,21 @@ test('calendar and each existing dossier alternate visibility while historical p
   assert.equal(f.draft, draft); assert.equal(f.draft.attachment, attachment); assert.equal(f.draft.note, 'Keep this draft');
   assert.ok(f.calls.some(([panel, open]) => panel === 'notebook' && open === false), 'Existing close lifecycle runs instead of destroying the form');
   f.destroy(); assert.equal(f.timers.size, 0); assert.equal(f.listeners.size, 0);
+});
+
+test('external source context shares one surface with calendar and dossiers without changing historical time, pinned evidence or hidden drafts', async () => {
+  const f = workspace(), before = f.clock.getState(), draft = f.draft, selected = f.selectedEntity;
+  f.openPanel('selection'); f.calendar.open = true; await Promise.resolve(); f.openExternal(); await Promise.resolve();
+  assert.equal(f.getExternal(), true); assert.equal(f.getPanel(), null); assert.equal(f.calendar.open, false);
+  assert.equal(f.externalCloses(), 0, 'Claiming its own surface does not cancel the new source context');
+  assert.deepEqual(f.clock.getState(), before); assert.equal(f.pins.has(selected), true); assert.equal(f.draft, draft);
+  f.openPanel('selection'); assert.equal(f.getExternal(), false); assert.equal(f.getPanel(), 'selection'); assert.equal(f.externalCloses(), 1);
+  f.openExternal(); f.calendar.open = true; await Promise.resolve();
+  assert.equal(f.getExternal(), false); assert.equal(f.calendar.open, true); assert.equal(f.externalCloses(), 2);
+  f.openExternal(); f.openSidebar(); assert.equal(f.getExternal(), false); assert.equal(f.getSidebar(), true);
+  assert.equal(f.draft.note, 'Keep this draft'); assert.equal(f.clock.getState().playing, true);
+  f.openExternal(); f.focus.destroy(); f.openPanel('notebook'); f.calendar.open = true; await Promise.resolve();
+  assert.equal(f.getExternal(), true, 'Disposed coordination cannot close another owner'); f.destroy();
 });
 
 test('coalesced native detail toggles cannot close a newly opened dossier; sidebar focus and teardown have bounded ownership', async () => {

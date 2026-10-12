@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { applyModelAtmosphereWorkaround } from '../app/atmosphereCompat.js';
-import { viewerGlobeAltitude } from './globe-framing.js';
+import { applyNativeCameraLimits } from './camera-policy.js';
 import { CSS_PIXEL_RENDERING, installGlobeRenderingPolicy } from './rendering-policy.js';
 import { observeStreetMapCoverage, streetMapCoverageNotice } from './basemap-coverage.js';
 import { installAstronomy } from './astronomy.js';
@@ -48,8 +48,7 @@ export function createGlobeViewer({ container, creditContainer, onNotice = () =>
     viewer.scene.globe.loadingDescendantLimit = 8;
     viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#213a49');
     viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#13212c');
-    viewer.scene.screenSpaceCameraController.minimumZoomDistance = 250;
-    viewer.scene.screenSpaceCameraController.maximumZoomDistance = viewerGlobeAltitude(viewer, .65);
+    applyNativeCameraLimits(viewer);
     // Cesium's surface mode keeps mapped markers legible while occluding the far side.
     viewer.scene.globe.depthTestAgainstTerrain = false;
     astronomy = installAstronomy(viewer);

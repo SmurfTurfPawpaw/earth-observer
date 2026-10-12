@@ -1,4 +1,4 @@
-import { BoundingSphere, Camera, Cartesian3, Intersect, Math as CesiumMath, Matrix4, Ray, IntersectionTests } from 'cesium';
+import { BoundingSphere, Camera, Cartesian3, Intersect, Math as CesiumMath, Matrix4 } from 'cesium';
 
 const RADIUS = 6378137;
 /** Perspective sphere fit, expressed as a fraction of the shorter viewport axis. */
@@ -31,9 +31,8 @@ function restoredCamera(viewer, view) {
     endTransform: Matrix4.IDENTITY,
   });
   setPitch(bounded.pitch ?? -90);
-  return { view: bounded, camera, ellipsoid, setPitch };
+  return { view: bounded, camera, ellipsoid };
 }
-
 /** Recover only a restored view whose entire Earth is outside the actual viewport. */
 export function recoverInitialCameraView(viewer, view) {
   if (!viewer || viewer.isDestroyed?.()) return { view, recovered: false };
@@ -44,25 +43,4 @@ export function recoverInitialCameraView(viewer, view) {
     .computeVisibility(new BoundingSphere(Cartesian3.ZERO, ellipsoid.maximumRadius));
   const recovered = visibility === Intersect.OUTSIDE;
   return { view: recovered ? { ...candidate.view, pitch: -90, roll: 0 } : candidate.view, recovered };
-}
-
-/** Keep the tilt button aimed at Earth at global heights; dragging stays unrestricted. */
-export function visibleTiltCameraView(viewer, view) {
-  if (!viewer || viewer.isDestroyed?.()) return view;
-  const candidate = restoredCamera(viewer, view);
-  const { camera, ellipsoid, setPitch } = candidate;
-  const hitsEarth = () => {
-    const interval = IntersectionTests.rayEllipsoid(new Ray(camera.positionWC, camera.directionWC), ellipsoid);
-    return Boolean(interval && interval.stop > 0);
-  };
-  if (hitsEarth()) return candidate.view;
-  let visible = -90, invisible = candidate.view.pitch ?? -90;
-  for (let step = 0; step < 20; step++) {
-    const pitch = (visible + invisible) / 2;
-    setPitch(pitch);
-    if (hitsEarth()) visible = pitch;
-    else invisible = pitch;
-  }
-  // Aim inside the visible horizon rather than leaving the center ray tangent to it.
-  return { ...candidate.view, pitch: Math.max(-90, visible - 4) };
 }

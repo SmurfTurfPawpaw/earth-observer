@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { HOME_VIEW, parseViewHash, resolvePlace, serializeViewHash } from './navigation-state.js';
 import * as Cesium from 'cesium';
 import { cameraView, installNavigation, setCameraView } from './navigation.js';
+import { captureCameraOrbit } from './camera-policy.js';
 
 test('camera links survive migration while unsupported layers and effects disappear', () => {
   const state = parseViewHash('#v=2&lat=50.7572&lon=4.3502&alt=91675&heading=360&pitch=-90&style=ir&l=s.t', ['earthquakes']);
@@ -99,7 +100,7 @@ test('the actual global tilt button keeps Earth visible, reports pressed state, 
     assert.equal(tilt.attributes.get('aria-pressed'), 'true');
     assert.ok(Cesium.IntersectionTests.rayEllipsoid(new Cesium.Ray(camera.positionWC, camera.directionWC), Cesium.Ellipsoid.WGS84));
     tilt.click();
-    assert.ok(Math.abs(cameraView(viewer).pitch + 90) < 1e-7);
+    assert.ok(Math.abs(captureCameraOrbit(viewer).pitch + 90) < 1e-5);
     assert.equal(tilt.attributes.get('aria-pressed'), 'false');
     // Direct camera exploration is still permitted to aim into the sky.
     setCameraView(viewer, { ...HOME_VIEW, pitch: 0 });

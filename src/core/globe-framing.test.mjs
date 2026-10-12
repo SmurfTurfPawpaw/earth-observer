@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as Cesium from 'cesium';
-import { globeFrameAltitude, recoverInitialCameraView, visibleTiltCameraView, viewerGlobeAltitude } from './globe-framing.js';
+import { globeFrameAltitude, recoverInitialCameraView, viewerGlobeAltitude } from './globe-framing.js';
 import { setCameraView } from './navigation.js';
 import { initialWorkspace, loadSession, saveSession } from './session.js';
 
@@ -18,10 +18,6 @@ function earthVisibility(viewer, view) {
   const camera = viewer.camera;
   return camera.frustum.computeCullingVolume(camera.positionWC, camera.directionWC, camera.upWC)
     .computeVisibility(new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, Cesium.Ellipsoid.WGS84.maximumRadius));
-}
-function centerHitsEarth(viewer, view) {
-  setCameraView(viewer, view);
-  return Boolean(Cesium.IntersectionTests.rayEllipsoid(new Cesium.Ray(viewer.camera.positionWC, viewer.camera.directionWC), Cesium.Ellipsoid.WGS84));
 }
 test('global framing fills the same short-axis fraction on desktop and portrait without clipping', () => {
   for (const [width, height] of [[1384, 884], [390, 844], [844, 390], [800, 800]]) {
@@ -78,24 +74,8 @@ test('visible local and partial global tilts survive restoration, using the actu
   assert.equal(recoverInitialCameraView(portrait, partial).recovered, false);
 });
 
-test('tilt remains functional globally and preserves the requested local angle', () => {
-  for (const [width, height] of [[1384, 884], [390, 844], [844, 390]]) {
-    const viewer = cameraViewer(width, height);
-    for (const lat of [30, -33, 90]) {
-      const view = { lat, lon: 12, alt: 18000000, heading: 30, pitch: -45, roll: 0 };
-      const global = visibleTiltCameraView(viewer, view);
-      assert.ok(global.pitch > -90 && global.pitch < -45);
-      assert.equal(centerHitsEarth(viewer, global), true);
-      assert.notEqual(earthVisibility(viewer, global), Cesium.Intersect.OUTSIDE);
-      const local = { ...view, lat: 50.85, alt: 25000 };
-      assert.deepEqual(visibleTiltCameraView(viewer, local), local);
-    }
-  }
-});
-
-test('initial and tilt recovery never access a destroyed viewer', () => {
+test('initial recovery never accesses a destroyed viewer', () => {
   const view = { lat: 30, lon: 12, alt: 18000000, heading: 0, pitch: 0, roll: 0 };
   const viewer = { isDestroyed: () => true, get canvas() { assert.fail('Destroyed viewer dereferenced'); } };
   assert.deepEqual(recoverInitialCameraView(viewer, view), { view, recovered: false });
-  assert.equal(visibleTiltCameraView(viewer, view), view);
 });

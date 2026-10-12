@@ -28,7 +28,8 @@ function nativeViewer() {
   let selected, tracked, picked; const actions = new Map(), native = [], flights = [];
   actions.set(CLICK, () => native.push('native'));
   const viewer = { scene: { primitives: new Cesium.PrimitiveCollection(), requestRender() {}, pick: () => picked },
-    camera: { changed: new Cesium.Event(), moveEnd: new Cesium.Event(), flyTo: value => flights.push(value) },
+    camera: { changed: new Cesium.Event(), moveEnd: new Cesium.Event(), flyTo: value => flights.push(value),
+      positionWC: new Cesium.Cartesian3(0, 0, 7000000), directionWC: new Cesium.Cartesian3(0, 0, -1), upWC: new Cesium.Cartesian3(0, 1, 0) },
     selectedEntityChanged: new Cesium.Event(), trackedEntityChanged: new Cesium.Event(), isDestroyed: () => false,
     screenSpaceEventHandler: { getInputAction: type => actions.get(type), setInputAction: (value, type) => actions.set(type, value), removeInputAction: type => actions.delete(type) } };
   Object.defineProperties(viewer, { selectedEntity: { get: () => selected, set(value) { if (value !== selected) { selected = value; viewer.selectedEntityChanged.raiseEvent(value); } } },
@@ -107,7 +108,7 @@ test('two closed source wrappers delegate picks to their own shared-engine cohor
   assert.throws(() => createPreparedSceneLayer({ descriptor: { sourceKey: 'unreviewed' } }), TypeError);
 });
 
-test('source-constant interest refresh and highlight demotion retain exact selected/tracked proof; a changed factual basis without its row clears both', async t => {
+test('background attention and new source editions preserve the inspected selected/tracked proof until explicit disable', async t => {
   const original = await gdacsPrepared(); let current = await view(original); const f = nativeViewer(), layer = createPreparedGdacsLayer({ client: { load: async () => current }, getDemand: () => demand });
   layer.init(f.viewer); layer.enable(); t.after(() => layer.destroy()); await layer.update(f.viewer);
   const symbol = f.viewer.scene.primitives.get(0).get(0); f.pick(symbol); f.pick(symbol, DOUBLE);
@@ -117,7 +118,9 @@ test('source-constant interest refresh and highlight demotion retain exact selec
   assert.equal(f.viewer.selectedEntity, selected); assert.equal(f.viewer.trackedEntity, selected); assert.equal(selected.properties, bag);
   assert.equal(selected.properties.hasProperty('_testRetainedProof'), true); assert.equal(layer.getStats().count, 2);
   current = await view(await gdacsPrepared(false, 2000), NOW + 3600000); await layer.update(f.viewer);
-  assert.equal(f.viewer.selectedEntity, undefined); assert.equal(f.viewer.trackedEntity, undefined);
+  assert.equal(f.viewer.selectedEntity, selected); assert.equal(f.viewer.trackedEntity, selected); assert.equal(selected.properties, bag);
+  assert.notEqual(selected.properties._gdacsNotice.getValue().cohort.publishedAt, layer.getStats().cohort.publishedAt);
+  layer.disable(); assert.equal(f.viewer.selectedEntity, undefined); assert.equal(f.viewer.trackedEntity, undefined);
 });
 
 test('one area symbol per source cell preserves every category count and a chooser creates a fresh exact category context after parent close', async t => {
@@ -183,7 +186,8 @@ test('compact display materializes exact source evidence only after the pinned f
   assert.equal(current.scene.features.length, 0); assert.equal(f.viewer.selectedEntity, selected); assert.equal(selected.properties, bag);
   assert.equal(opened.length, 1, 'background display refresh does not focus the dossier again');
   current = await focusView(await gdacsPrepared(false, 2000), focused, NOW + 3600000); await layer.update(f.viewer);
-  assert.equal(f.viewer.selectedEntity, undefined, 'a changed factual source cannot retain unverified compact proof');
+  assert.equal(f.viewer.selectedEntity, selected, 'an explicitly inspected old source remains independently valid');
+  assert.equal(selected.properties, bag); assert.notEqual(selected.properties._gdacsNotice.getValue().version, current.source.version);
 });
 
 test('settled same-selection camera scaling uses shared preparation without a source GET or source-position change', async t => {
@@ -287,10 +291,75 @@ test('cold proof checks editor, command, navigation and camera intent before sel
     if (action === 'command') command.open = true;
     if (action === 'navigation') documentRef.activeElement = { isConnected: true, closest: () => null };
     if (action === 'workspace') { notebook.hidden = false; origin.isConnected = false; documentRef.activeElement = body; }
-    if (action === 'camera') f.viewer.camera.changed.raiseEvent();
+    if (action === 'camera') { f.viewer.camera.positionWC.x += 100; f.viewer.camera.changed.raiseEvent(); }
     if (action === 'row-refresh') { origin.isConnected = false; documentRef.activeElement = body; }
     gate.resolve(); const allowed = ['row-refresh', 'unchanged'].includes(action);
     assert.equal(await selecting, allowed, action); assert.equal(Boolean(f.viewer.selectedEntity), allowed, action);
     assert.equal(callbacks.length, allowed ? 1 : 0, 'focus handoff only follows admitted explicit selection'); layer.destroy();
   }
+});
+
+test('an explicit area inspection stays pinned across attention, source and resize refreshes; latest evidence is an explicit independent replacement', async t => {
+  const a = await gdacsPrepared(), b = await gdacsPrepared(false, 2000), first = await focusView(a);
+  let selection = focused, displayed = first, context, refreshCalls = 0; const pageBasis = [];
+  const f = nativeViewer(), layer = createPreparedGdacsLayer({ getDemand: () => selection, client: { load: async () => displayed,
+    getMembers: async (captured, cell) => { pageBasis.push([captured.source.version, captured.scene.version, captured.scene.interest.evaluatedAt]);
+      const prepared = captured.source.version === a.source.version ? a : b;
+      return { members: focusClusterMembers(prepared, captured.scene, cell.id), count: cell.count, nextCursor: null,
+        source: captured.source, clusterId: cell.id, viewVersion: captured.scene.version }; },
+    loadInspectionView: async requested => { ++refreshCalls; assert.deepEqual(requested, focused); return focusView(b, focused, NOW + 3600000); },
+  } });
+  layer.setClusterInspectionListener(value => { context = value; }); layer.init(f.viewer); layer.enable(); t.after(() => layer.destroy()); await layer.update(f.viewer);
+  layer.setParams({ inspectMembers: first.scene.clusters[0].id }); const pinned = context, notices = [];
+  const stop = pinned.subscribeLatest(value => notices.push(value)); t.after(stop);
+  assert.equal(pinned.isCurrent(), true); assert.deepEqual(notices, [true]);
+  displayed = await focusView(a, focused, NOW + 60000); await layer.update(f.viewer);
+  assert.equal(pinned.signal.aborted, false); assert.deepEqual(notices, [true], 'UTC minute alone is not new facts or new membership');
+  displayed = await focusView(a, focused, NOW + 3600000); await layer.update(f.viewer);
+  assert.equal(pinned.isCurrent(), true); assert.deepEqual(notices, [true, false]);
+  displayed = await focusView(b, focused, NOW + 3600000); await layer.update(f.viewer);
+  assert.equal(context, pinned); assert.equal(pinned.source.version, a.source.version); assert.equal(pinned.asOf, first.scene.interest.evaluatedAt);
+  const oldPage = await pinned.loadPage(); assert.equal(oldPage.count, 1); assert.deepEqual(pageBasis[0], [a.source.version, first.scene.version, first.scene.interest.evaluatedAt]);
+  selection = { ...focused, leaves: [[0, 4, 0], [0, 4, 1]] }; f.viewer.camera.changed.raiseEvent();
+  assert.equal(pinned.signal.aborted, false, 'same-pose resize/delivery demand does not close source reading');
+  assert.equal(await pinned.refresh(), true); assert.equal(refreshCalls, 1); assert.notEqual(context, pinned); assert.equal(pinned.signal.aborted, true);
+  assert.equal(context.source.version, b.source.version); assert.equal(context.cluster.count, 2); assert.equal(context.isLatest(), true);
+  assert.deepEqual(layer.getStats().requestedSelection.leaves, selection.leaves, 'inspection refresh does not change the displayed demand owner');
+});
+
+test('slow exact proof survives background source invalidation, while the newest explicit cross-source user request owns selection', async t => {
+  const seismic = await usgsPrepared(), notices = await gdacsPrepared(), first = await focusView(seismic), second = await focusView(notices), f = nativeViewer();
+  const corrected = await usgsPrepared(7, 2); let displayed = first; const aGates = [], bGate = Promise.withResolvers();
+  const a = createPreparedEarthquakesLayer({ getDemand: () => focused, client: { load: async () => displayed, invalidate: () => true,
+    getFeature: async (compact, source) => { const gate = Promise.withResolvers(); aGates.push(gate); await gate.promise;
+      const prepared = source.fence === 1 ? seismic : corrected;
+      return { source: prepared.source, feature: prepared.content.features.find(item => item.id === compact.id) }; } } }),
+    b = createPreparedGdacsLayer({ getDemand: () => focused, client: { load: async () => second,
+      getFeature: async compact => { await bGate.promise; return { source: notices.source, feature: notices.content.features.find(item => item.id === compact.id) }; } } });
+  a.init(f.viewer); a.enable(); b.init(f.viewer); b.enable(); t.after(() => { b.destroy(); a.destroy(); }); await a.update(f.viewer); await b.update(f.viewer);
+  const pinned = a.setParams({ inspect: first.scene.features[0].id }); a.invalidatePreparedSnapshot();
+  displayed = await focusView(corrected); await a.update(f.viewer); f.viewer.camera.changed.raiseEvent();
+  aGates[0].resolve(); assert.equal(await pinned, true); const selected = f.viewer.selectedEntity;
+  assert.equal(selected.properties.sourceReceiptId.getValue(), seismic.source.receiptId); assert.equal(selected.properties.mag.getValue(), 6);
+  const stale = a.setParams({ inspect: displayed.scene.features[0].id }), newest = b.setParams({ inspect: second.scene.features[0].id });
+  aGates[1].resolve(); assert.equal(await stale, false);
+  assert.equal(f.viewer.selectedEntity, selected, 'a superseded request does not replace the pinned dossier while the newer user request is loading');
+  bGate.resolve(); assert.equal(await newest, true); assert.ok(gdacsNoticeSelection(f.viewer.selectedEntity, Cesium.JulianDate.now()));
+});
+
+test('a pinned member context propagates actual expired proof separately from navigation/hidden cancellation', async t => {
+  const prepared = await gdacsPrepared(), current = await focusView(prepared), f = nativeViewer(), events = new Map(),
+    documentRef = { hidden: false, addEventListener: (type, listener) => events.set(type, listener), removeEventListener: type => events.delete(type) };
+  let context, expired = true;
+  const member = focusClusterMembers(prepared, current.scene, current.scene.clusters[0].id)[0];
+  const layer = createPreparedGdacsLayer({ documentRef, getDemand: () => focused, client: { load: async () => current,
+    getMembers: async () => ({ members: [member] }), getFeature: async () => { if (expired) throw Object.assign(new Error('Stored edition expired'), { refreshRequired: true, code: 'edition-not-retained' });
+      return { source: prepared.source, feature: prepared.content.features.find(item => item.id === member.id) }; } } });
+  layer.setClusterInspectionListener(value => { context = value; }); layer.init(f.viewer); layer.enable(); t.after(() => layer.destroy()); await layer.update(f.viewer);
+  layer.setParams({ inspectMembers: current.scene.clusters[0].id }); const pinned = context;
+  await assert.rejects(pinned.inspectMember(member), { refreshRequired: true }); assert.equal(pinned.signal.aborted, false); assert.equal(pinned.isCurrent(), true);
+  documentRef.hidden = true; events.get('visibilitychange')(); assert.equal(pinned.signal.aborted, true);
+  documentRef.hidden = false; assert.equal(await pinned.inspectMember(member), false); assert.equal(f.viewer.selectedEntity, undefined);
+  expired = false; layer.setParams({ inspectMembers: current.scene.clusters[0].id }); const next = context;
+  f.viewer.camera.positionWC.y += 10; await assert.rejects(next.loadPage(), { name: 'AbortError' }); assert.equal(next.signal.aborted, true);
 });
