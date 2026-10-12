@@ -24,6 +24,8 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
   let _lastUpdate = null;
   let _lastError = null;
   let _enabled = false;
+  let _snapshot = null;
+  let _stateListener = null;
   let localArea;
   let publishedRows = new Map();
 
@@ -33,7 +35,13 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
     icon: '🌋',
     source: 'USGS',
     updateInterval: 60000,
-    setLocalArea(value) { localArea = validateArea(value); },
+    setLocalArea(value) {
+      const next = validateArea(value);
+      if (JSON.stringify(next) !== JSON.stringify(localArea)) _request?.abort();
+      localArea = next;
+    },
+    setRowControlsListener(value) { _stateListener = typeof value === 'function' ? value : null; },
+    invalidatePreparedSnapshot(revision) { return source.invalidate?.(revision) !== false; },
 
     init(viewer) {
       if (_viewer) throw new Error('Earthquake layer is already initialized');
@@ -65,98 +73,106 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
       overlayHost.setVisible(EARTHQUAKE_OVERLAY_SOURCE_ID, false);
     },
 
-    async update(viewer) {
+    async update(viewer, { signal: external } = {}) {
       if (!_enabled || !_dataSource) return false;
       _request?.abort();
       const request = new AbortController();
       _request = request;
+      const signal = AbortSignal.any([request.signal, external].filter(Boolean));
+      const current = () => !signal.aborted && _request === request && _enabled && Boolean(_dataSource);
       try {
-        const rows = await source.getSnapshot({ signal: request.signal });
-        if (request.signal.aborted || _request !== request || !_enabled)
-          return false;
+        const reconcileSnapshot = snapshot => {
+          if (!current()) return false;
+          const rows = Array.isArray(snapshot) ? snapshot : snapshot.records;
 
-        const wanted = new Map();
-        let count = 0;
-        const overlayEntries = [];
+          const wanted = new Map();
+          let count = 0;
+          const overlayEntries = [];
 
-        for (const {
-          stableId,
-          usgsId,
-          lon,
-          lat,
-          depthKm,
-          mag,
-          place,
-          time,
-        } of rows) {
-          if (!inLocalArea(lat, lon, localArea)) continue;
-          count++;
-          const color = depthColor(depthKm || 0);
+          for (const row of rows) {
+            const { stableId, usgsId, lon, lat, depthKm, mag, place, time } = row;
+            if (!inLocalArea(lat, lon, localArea)) continue;
+            count++;
+            const color = depthColor(depthKm || 0);
 
-          const position = Cesium.Cartesian3.fromDegrees(lon, lat);
-          const id = `earthquake:${stableId}`, facts = { usgsId, mag, place, time, depth: depthKm };
-          const record = { lon, lat, ...facts }, previous = publishedRows.get(id), existing = _dataSource.entities.getById(id);
-          const changed = !previous || Object.keys(record).some(key => previous[key] !== record[key]);
-          wanted.set(id, { record, facts, position, color, existing, changed, added: existing ? null :
-            new Cesium.Entity({
-              id,
-              position,
-              point: {
-                pixelSize: 11,
-                color,
-                outlineColor: Cesium.Color.fromCssColorString('#17212c'),
-                outlineWidth: 2,
-                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-              },
-              properties: facts,
-            }) });
-          overlayEntries.push(
-            createEarthquakeOverlayEntry({
-              id: String(stableId),
-              position,
-              magnitude: mag,
-              accent: color.toCssColorString(),
-            }),
-          );
-        }
-
-        // Keep unchanged object/property identity: Cesium clears its selection
-        // when that object is removed, even if another entity uses the same ID.
-        const entities = _dataSource.entities; entities.suspendEvents();
-        try {
-          for (const entity of entities.values.slice()) if (!wanted.has(entity.id)) entities.remove(entity);
-          for (const [id, next] of wanted) {
-            if (!next.existing) { entities.add(next.added); continue; }
-            if (!next.changed) continue;
-            const entity = next.existing, previous = publishedRows.get(id);
-            // Retained proof belongs to its old exact facts; remove it before
-            // any corrected position or property can become visible.
-            if (entity.properties.hasProperty('_worldEvent')) entity.properties.removeProperty('_worldEvent');
-            if (!previous || previous.lon !== next.record.lon || previous.lat !== next.record.lat) entity.position = next.position;
-            for (const [key, value] of Object.entries(next.facts)) if (!previous || previous[key] !== value) entity.properties[key] = value;
-            if (!previous || previous.depth !== next.record.depth) entity.point.color = next.color;
+            const position = Cesium.Cartesian3.fromDegrees(lon, lat);
+            const id = `earthquake:${stableId}`, facts = { usgsId, mag, place, time, depth: depthKm,
+              ...Object.fromEntries(['sourceUrl', 'updatedAt', 'eventType', 'reviewStatus', 'sourceTitle']
+                .filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]])) };
+            const record = { lon, lat, ...facts }, previous = publishedRows.get(id), existing = _dataSource.entities.getById(id);
+            const changed = !previous || new Set([...Object.keys(record), ...Object.keys(previous)]).size !== Object.keys(record).length ||
+              Object.keys(record).some(key => previous[key] !== record[key]);
+            wanted.set(id, { record, facts, position, color, existing, changed, added: existing ? null :
+              new Cesium.Entity({
+                id,
+                position,
+                point: {
+                  pixelSize: 11,
+                  color,
+                  outlineColor: Cesium.Color.fromCssColorString('#17212c'),
+                  outlineWidth: 2,
+                  heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                },
+                properties: facts,
+              }) });
+            overlayEntries.push(
+              createEarthquakeOverlayEntry({
+                id: String(stableId),
+                position,
+                magnitude: mag,
+                accent: color.toCssColorString(),
+              }),
+            );
           }
-          publishedRows = new Map([...wanted].map(([id, next]) => [id, next.record]));
-        } finally { entities.resumeEvents(); }
-        if (_enabled) {
-          overlayHost.setEntries(
-            EARTHQUAKE_OVERLAY_SOURCE_ID,
-            selectEarthquakeOverlayCohort(overlayEntries),
-            {
-              cohortLimit: EARTHQUAKE_OVERLAY_COHORT_LIMIT,
-              collisionCapacity: EARTHQUAKE_OVERLAY_COLLISION_CAPACITY,
-              moving: false,
-            },
-          );
-        }
 
-        _count = count;
-        _lastUpdate = Date.now();
-        _lastError = null;
-        console.log(`[Data:Earthquakes] Updated: ${_count} events (M2.5+)`);
-        return true;
+          // Keep unchanged object/property identity: Cesium clears its selection
+          // when that object is removed, even if another entity uses the same ID.
+          const entities = _dataSource.entities; entities.suspendEvents();
+          try {
+            for (const entity of entities.values.slice()) if (!wanted.has(entity.id)) entities.remove(entity);
+            for (const [id, next] of wanted) {
+              if (!next.existing) { entities.add(next.added); continue; }
+              if (!next.changed) continue;
+              const entity = next.existing, previous = publishedRows.get(id);
+              // Retained proof belongs to its old exact facts; remove it before
+              // any corrected position or property can become visible.
+              if (entity.properties.hasProperty('_worldEvent')) entity.properties.removeProperty('_worldEvent');
+              for (const key of ['sourceUrl', 'updatedAt', 'eventType', 'reviewStatus', 'sourceTitle'])
+                if (!Object.hasOwn(next.facts, key) && entity.properties.hasProperty(key)) entity.properties.removeProperty(key);
+              if (!previous || previous.lon !== next.record.lon || previous.lat !== next.record.lat) entity.position = next.position;
+              for (const [key, value] of Object.entries(next.facts)) if (!previous || previous[key] !== value || !entity.properties.hasProperty(key)) {
+                if (!entity.properties.hasProperty(key)) entity.properties.addProperty(key, value);
+                else entity.properties[key] = value;
+              }
+              if (!previous || previous.depth !== next.record.depth) entity.point.color = next.color;
+            }
+            publishedRows = new Map([...wanted].map(([id, next]) => [id, next.record]));
+          } finally { entities.resumeEvents(); }
+          if (_enabled) {
+            overlayHost.setEntries(
+              EARTHQUAKE_OVERLAY_SOURCE_ID,
+              selectEarthquakeOverlayCohort(overlayEntries),
+              {
+                cohortLimit: EARTHQUAKE_OVERLAY_COHORT_LIMIT,
+                collisionCapacity: EARTHQUAKE_OVERLAY_COLLISION_CAPACITY,
+                moving: false,
+              },
+            );
+          }
+
+          _count = count;
+          _snapshot = Array.isArray(snapshot) ? null : snapshot;
+          _lastUpdate = _snapshot ? Date.parse(_snapshot.receipt.recordedAt) : Date.now();
+          if (!_snapshot?.browserCache) _lastError = null;
+          _stateListener?.();
+          viewer.scene?.requestRender?.();
+          return true;
+        };
+        const snapshot = await source.getSnapshot({ signal, onCached: reconcileSnapshot });
+        if (!current()) return false;
+        return reconcileSnapshot(snapshot);
       } catch (e) {
-        if (request.signal.aborted || _request !== request || !_enabled)
+        if (!current() || e?.name === 'AbortError')
           return false;
         console.warn('[Data:Earthquakes] Fetch error:', e);
         _lastError = e?.message || 'Earthquake source unavailable';
@@ -181,6 +197,8 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
       _count = 0;
       _lastUpdate = null;
       _lastError = null;
+      _snapshot = null;
+      _stateListener = null;
     },
 
     /**
@@ -228,10 +246,29 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
     },
 
     getStats() {
+      const elapsed = _snapshot ? Math.max(0, Date.now() - _snapshot.browserReadAt) : 0;
+      const sourceAgeMs = _snapshot ? _snapshot.sourceGenerationAgeMs + elapsed : null;
+      const stale = Boolean(_lastError || _snapshot?.stale || sourceAgeMs !== null && sourceAgeMs > 120000);
       return {
         count: _count,
         lastUpdate: _lastUpdate,
         error: _lastError,
+        observedAt: _snapshot ? Date.parse(_snapshot.check.sourceGeneratedAt) : null,
+        sourceAgeMs,
+        stale,
+        degraded: stale,
+        status: _lastError ? 'unavailable' : _snapshot?.check.status || null,
+        snapshot: Boolean(_snapshot),
+        browserCache: _snapshot?.browserCache || null,
+        browserCachedAt: _snapshot?.browserCachedAt || null,
+        receipt: _snapshot?.receipt || null,
+        checkedAt: _snapshot?.check.checkedAt || null,
+        lastSuccessfulAt: _snapshot?.check.lastSuccessfulAt || null,
+        sourceGeneratedAt: _snapshot?.check.sourceGeneratedAt || null,
+        retainedSourceGeneratedAt: _snapshot?.receipt.sourceUpdatedAt || null,
+        factualEditionAgeMs: _snapshot ? _snapshot.factualEditionAgeMs + elapsed : null,
+        retainedSourceGenerationAgeMs: _snapshot ? _snapshot.retainedSourceGenerationAgeMs + elapsed : null,
+        coverage: _snapshot?.coverage || null,
       };
     },
   };

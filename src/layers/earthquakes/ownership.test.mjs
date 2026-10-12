@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createEarthquakesLayer } from './index.js';
-import { createUsgsEarthquakeSource } from './source.js';
 import * as Cesium from 'cesium';
 import { depthColor } from './model.js';
 function harness(source) {
@@ -128,18 +127,36 @@ test('failed and canceled refresh leave the last valid picked object and retaine
   assert.equal(await work, false); assert.equal(h.sources[0].entities.getById(selected.id) === selected, true);
   assert.equal(selected.properties.mag.getValue(Cesium.JulianDate.now()), row.mag); assert.equal(selected.properties.hasProperty('_worldEvent'), true); h.layer.destroy();
 });
-test('USGS body completion honors cancellation even with an uncooperative transport', async () => {
-  const abort = new AbortController();
-  const source = createUsgsEarthquakeSource({
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => {
-        abort.abort();
-        return { features: [] };
-      },
-    }),
-  });
-  await assert.rejects(source.getSnapshot({ signal: abort.signal }), {
-    name: 'AbortError',
-  });
+test('cached and fresh snapshots share the manager cancellation owner; late cache cannot paint after history or area supersession', async () => {
+  const owner = new AbortController(), began = Promise.withResolvers(), finished = Promise.withResolvers(); let onCached, signal;
+  const h = harness({ getSnapshot: options => { ({ onCached, signal } = options); began.resolve(); return finished.promise; } });
+  const pending = h.layer.update(h.viewer, { signal: owner.signal }); await began.promise;
+  owner.abort(); assert.equal(signal.aborted, true); onCached([row]); finished.resolve([row]);
+  assert.equal(await pending, false); assert.equal(h.layer.getStats().count, 0); assert.equal(h.events.length, 0); h.layer.destroy();
+});
+
+test('stored check clocks and scientific metadata survive cached-first reconciliation without replacing an unchanged selection', async () => {
+  const at = Date.now(), retained = new Date(at - 3600000).toISOString(), checked = new Date(at - 10000).toISOString();
+  const storedRow = { ...row, sourceUrl: 'https://earthquake.usgs.gov/earthquakes/eventpage/event-a', updatedAt: at - 15000,
+    eventType: 'quarry blast', reviewStatus: 'reviewed', sourceTitle: 'Reported quarry blast' };
+  const view = (records, cached = false) => ({ records, receipt: { id: `receipt:${'a'.repeat(64)}`, fence: 1, recordedAt: retained, capturedAt: retained, sourceUpdatedAt: retained },
+    check: { checkedAt: checked, lastSuccessfulAt: checked, sourceGeneratedAt: checked, status: 'ready' },
+    factualEditionAgeMs: 3600000, retainedSourceGenerationAgeMs: 3600000, sourceGenerationAgeMs: 10000, browserReadAt: at,
+    browserCache: cached ? 'STALE' : null, browserCachedAt: cached ? at - 1000 : null, stale: false, coverage: { complete: true, recordCount: records.length } });
+  let rows = [storedRow], notifications = 0;
+  const h = harness({ getSnapshot: async ({ onCached }) => { onCached(view(rows, true)); return view(rows); } });
+  h.layer.setRowControlsListener(() => { notifications++; }); await h.layer.update(h.viewer);
+  const selected = h.sources[0].entities.getById('earthquake:event-a'), bag = selected.properties, time = Cesium.JulianDate.now();
+  h.viewer.selectedEntity = selected; bag.addProperty('_worldEvent', { retained: 'old-proof' });
+  rows = [{ ...storedRow }]; await h.layer.update(h.viewer);
+  assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties, bag); assert.equal(bag.hasProperty('_worldEvent'), true);
+  assert.equal(bag.eventType.getValue(time), 'quarry blast'); assert.equal(bag.sourceUrl.getValue(time), storedRow.sourceUrl);
+  const stats = h.layer.getStats(); assert.equal(stats.lastUpdate, Date.parse(retained)); assert.equal(stats.checkedAt, checked);
+  assert.equal(stats.sourceGeneratedAt, checked); assert.equal(stats.retainedSourceGeneratedAt, retained); assert.equal(stats.receipt.recordedAt, retained);
+  assert.ok(stats.sourceAgeMs >= 10000 && stats.sourceAgeMs < 120000); assert.equal(stats.stale, false); assert.equal(notifications, 4);
+  rows = [{ ...storedRow, updatedAt: at, reviewStatus: 'automatic', eventType: null, sourceTitle: 'Corrected scientific type unknown' }];
+  await h.layer.update(h.viewer); assert.equal(selected.properties, bag); assert.equal(bag.hasProperty('_worldEvent'), false);
+  assert.equal(bag.updatedAt.getValue(time), at); assert.equal(bag.reviewStatus.getValue(time), 'automatic'); assert.equal(bag.hasProperty('eventType'), true);
+  assert.equal(bag.getValue(time).eventType, null, 'explicit provider unknown remains present and is never coerced to earthquake');
+  h.layer.destroy();
 });

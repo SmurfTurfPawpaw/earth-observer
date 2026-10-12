@@ -103,3 +103,17 @@ test('malformed typed receipt fields, foreign scopes and oversized events are re
   assert.equal(seen.filter(value => value.type === 'plugin').length, 0); stream.send(plugin(), 'plugin');
   assert.equal(seen.filter(value => value.type === 'plugin').length, 1); f.updates.destroy();
 });
+
+test('fixed scientific scope accepts completed fences and equal-time A/B/A without accepting foreign or operational payloads',()=>{
+  const f=fixture(),seen=[];f.updates.subscribe(value=>seen.push(value));f.updates.start();const stream=f.streams[0];stream.open();
+  const id='usgs-live-day-m2-5-v1',a=plugin(1,'a','a',id),b=plugin(2,'b','b',id),again=plugin(3,'c','a',id);
+  for(const invalid of [{...a,scopeId:'usgs'},{...a,fence:0},{...a,fence:Number.MAX_SAFE_INTEGER+1},
+    {...a,checkedAt:a.recordedAt},{...a,pluginId:'usgs-live-day-m2.5-v1'},{...a,receiptId:'operational-check'}]) {
+    assert.equal(pluginRevision(invalid),null);stream.send(invalid,'plugin');
+  }
+  for(const value of [a,a,b,again,a,{...again,receiptId:plugin(3,'d','a',id).receiptId}])stream.send(value,'plugin');
+  const delivered=seen.filter(value=>value.type==='plugin');assert.deepEqual(delivered.map(value=>value.fence),[1,2,3]);
+  assert.equal(delivered[0].recordedAt,delivered[2].recordedAt);assert.equal(delivered[0].factsDigest,delivered[2].factsDigest);
+  const replay=[];f.updates.subscribe(value=>replay.push(value));assert.deepEqual(replay.filter(value=>value.type==='plugin'),[{type:'plugin',...again}]);
+  assert.equal(f.streams.length,1);f.updates.destroy();
+});

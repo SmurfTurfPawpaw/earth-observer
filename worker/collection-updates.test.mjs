@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFile } from 'node:fs/promises';
-import { collectionRevision, createCollectionUpdates } from './collection-updates.js';
+import { collectionRevision, createCollectionUpdates, COLLECTION_UPDATE_QUEUE_BYTES } from './collection-updates.js';
 
 const CLOCK = Date.parse('2026-10-11T12:00:00.000Z');
 const input = (offset = 0, digest = 'a') => ({ at: new Date(CLOCK + offset).toISOString(), digest: digest.repeat(64), recordCount: 350 });
@@ -146,7 +146,7 @@ test('slow consumers have bounded queued bytes and free their connection slot', 
   assert.equal(channel.status(env).clients, 0);
   let total = 0;
   for (;;) { const part = await client.reader.read(); if (part.done) break; total += part.value.byteLength; }
-  assert.ok(total <= 2048); assert.equal(clock.tasks.size, 0);
+  assert.ok(total <= COLLECTION_UPDATE_QUEUE_BYTES); assert.equal(COLLECTION_UPDATE_QUEUE_BYTES,4096); assert.equal(clock.tasks.size, 0);
 });
 
 test('a timed-out D1 read remains coalesced and its late completion cannot mutate a closed watcher', async () => {
@@ -202,19 +202,26 @@ test('aircraft and intelligence publish independently and reconnect share one du
 test('fixed typed receipts join collection delivery in one indexed query shared by all clients without evidence-object reads', async t => {
   const db = await database(t), clock = scheduler(), channel = createCollectionUpdates(clock);
   let objects = 0; const env = { EARTH_DB: db, EARTH_STORE: { get() { objects++; throw Error('Forbidden stream evidence read'); }, put() { objects++; throw Error('Forbidden stream write'); } } };
-  await channel.publishCollectionRevision(env, input());
-  const ecb = retainedPlugin(db), gas = retainedPlugin(db, { pluginId: 'eurostat-gas-origins-v1', scopeId: 'belgium-natural-gas-origins', marker: 'b' });
-  const commission = retainedPlugin(db, { pluginId: 'ec-press-v1', scopeId: 'ec-presscorner-en-metadata-v1', marker: 'f' });
+  await channel.publishCollectionRevision(env, {...input(),recordCount:500});
+  await channel.publishCollectionRevision(env, {...input(),recordCount:2000},'aircraft');
+  const fence=Number.MAX_SAFE_INTEGER;
+  const ecb = retainedPlugin(db,{fence}), gas = retainedPlugin(db, { pluginId: 'eurostat-gas-origins-v1', scopeId: 'belgium-natural-gas-origins', marker: 'b',fence });
+  const commission = retainedPlugin(db, { pluginId: 'ec-press-v1', scopeId: 'ec-presscorner-en-metadata-v1', marker: 'f',fence });
+  const seismic = retainedPlugin(db, { pluginId: 'usgs-live-day-m2-5-v1', scopeId: 'usgs-live-day-m2-5-v1', marker: 'c',fence });
   db.counters.reads = 0; const writes = db.counters.writes;
   const clients = Array.from({ length: 8 }, () => connect(channel, env)); t.after(() => clients.forEach(client => client.abort.abort())); await flush();
   // Followers can enter their wait while the first shared query is in flight;
   // all observe its retained result by the next one-second presentation tick.
   await clock.advance(1000);
   for (const client of clients) {
-    await nextEvent(client.reader); const events = [await nextEvent(client.reader, 'plugin'), await nextEvent(client.reader, 'plugin'), await nextEvent(client.reader, 'plugin')];
-    assert.deepEqual(events.map(event => event.value).sort((a, b) => a.pluginId.localeCompare(b.pluginId)), [ecb, gas, commission].sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
-    assert.match(events.find(event => event.value.pluginId === 'ec-press-v1').frame, /^id: plugin:ec-press-v1:1:receipt:/m);
+    const collection=await nextEvent(client.reader),aircraft=await nextEvent(client.reader,'aircraft');
+    const events = [await nextEvent(client.reader, 'plugin'), await nextEvent(client.reader, 'plugin'), await nextEvent(client.reader, 'plugin'), await nextEvent(client.reader, 'plugin')];
+    assert.deepEqual(events.map(event => event.value).sort((a, b) => a.pluginId.localeCompare(b.pluginId)), [ecb, gas, commission, seismic].sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
+    assert.match(events.find(event => event.value.pluginId === 'ec-press-v1').frame, /^id: plugin:ec-press-v1:9007199254740991:receipt:/m);
     assert.deepEqual(Object.keys(events[0].value), ['schemaVersion', 'pluginId', 'scopeId', 'receiptId', 'fence', 'factsDigest', 'recordedAt']);
+    const control='retry: 2000\n\nevent: status\ndata: {"schemaVersion":1,"available":true}\n\n';
+    const initialBytes=new TextEncoder().encode(control+[collection,aircraft,...events].map(event=>event.frame).join('')).byteLength;
+    assert.ok(initialBytes>2048);assert.ok(initialBytes<=COLLECTION_UPDATE_QUEUE_BYTES,'the entire fixed head replay fits before a follower starts reading');
   }
   assert.equal(db.counters.reads, 2, 'one grouped query per elapsed read slot, independent of eight connected clients'); assert.equal(db.counters.writes, writes); assert.equal(objects, 0);
   const plan = db.sqlite.prepare(`EXPLAIN QUERY PLAN ${db.counters.queries.at(-1)}`).all().map(row => row.detail).join('\n');
@@ -222,6 +229,27 @@ test('fixed typed receipts join collection delivery in one indexed query shared 
   assert.doesNotMatch(plan, /SCAN (?:s|c)\b/);
   await clock.advance(1000); assert.equal(db.counters.reads, 3); assert.equal(objects, 0);
   for (const client of clients) client.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
+});
+
+test('scientific notifications expose only the completed current head, ignore operational fences and preserve equal-time reversions',async t=>{
+  const db=await database(t),clock=scheduler(),channel=createCollectionUpdates(clock),env={EARTH_DB:db};
+  const source={pluginId:'usgs-live-day-m2-5-v1',scopeId:'usgs-live-day-m2-5-v1'};
+  const a=retainedPlugin(db,source),client=connect(channel,env);t.after(()=>client.abort.abort());await flush();
+  assert.deepEqual((await nextEvent(client.reader,'plugin')).value,a);
+  db.sqlite.prepare('UPDATE earth_plugin_state SET fence=999,checked_at=? WHERE plugin_id=?').run(new Date(CLOCK+1000).toISOString(),source.pluginId);
+  await clock.advance(1000);
+  const b=retainedPlugin(db,{...source,fence:1000,marker:'b',facts:'b'});await clock.advance(1000);
+  assert.deepEqual((await nextEvent(client.reader,'plugin')).value,b,'unchanged operational checks emitted no factual event');
+  const again=retainedPlugin(db,{...source,fence:1001,marker:'c',facts:'a'});await clock.advance(1000);
+  assert.deepEqual((await nextEvent(client.reader,'plugin')).value,again);assert.equal(again.recordedAt,a.recordedAt);
+  assert.equal(again.factsDigest,a.factsDigest);assert.notEqual(again.receiptId,a.receiptId);
+  // A retained capture not promoted to current_receipt cannot announce itself.
+  const unpromoted=retainedPlugin(db,{...source,fence:1002,marker:'d',facts:'d'});
+  db.sqlite.prepare('UPDATE earth_plugin_state SET current_receipt=?,facts_digest=? WHERE plugin_id=?').run(again.receiptId,again.factsDigest,source.pluginId);
+  await clock.advance(1000);client.abort.abort();await flush();
+  const resumed=connect(createCollectionUpdates(clock),env,{headers:{'last-event-id':`plugin:${source.pluginId}:${a.fence}:${a.receiptId}`}});
+  t.after(()=>resumed.abort.abort());await flush();assert.deepEqual((await nextEvent(resumed.reader,'plugin')).value,again);
+  assert.notEqual(again.receiptId,unpromoted.receiptId);resumed.abort.abort();await flush();assert.equal(clock.tasks.size,0);
 });
 
 test('operational checks are quiet; A/B/A receipt fences remain distinct and reconnect replays the current receipt', async t => {

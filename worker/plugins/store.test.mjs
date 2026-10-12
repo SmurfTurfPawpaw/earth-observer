@@ -131,6 +131,7 @@ test('scientific feed generated-only checks preserve the original edition while 
   const current=await readPluginObservations(f.env,{now:f.now});assert.equal(current.available,true);assert.equal(current.stale,false);
   assert.equal(current.receipt.sourceUpdatedAt,stamp(0));assert.equal(current.receipt.capturedAt,original.captured_at);
   assert.equal(current.check.sourceGeneratedAt,stamp(180000));assert.ok(current.factualEditionAgeMs>=180000);assert.equal(current.sourceGenerationAgeMs,1);
+  assert.equal(current.receipt.fence,original.fence);assert.ok(f.rows('earth_plugin_state')[0].fence>current.receipt.fence,'operational checks never change the complete receipt fence');
   f.advance(60001);f.source('B');generated=CLOCK+180000;const b=await run(f);assert.equal(b.status,'stored','same source-generation date can retain different reported facts');
   const rb=f.receipts().at(-1);assert.equal(rb.source_updated_at,stamp(180000));
   const historical=await readPluginObservations(f.env,{knownAt:rb.recorded_at,now:f.now});assert.equal(historical.records[0].mag,4);assert.equal(historical.records[0].eventType,'quarry blast');assert.equal(historical.check,null);
@@ -155,14 +156,37 @@ test('scientific raw/facts readback failure cannot admit a complete receipt and 
   const f=await fixture(t,{descriptor:observationDescriptor,sourceFeedImpl:label=>observationFeed(label)});assert.equal((await run(f)).status,'stored');
   f.reset();const data=await readPluginObservations(f.env,{now:f.now});assert.equal(data.available,true);assert.equal(data.records.length,1);
   assert.equal(f.activity.provider.length,0);assert.equal(f.activity.sql.filter(value=>value.write).length,0);
-  const row=f.receipts()[0],key=`plugins/${f.plugin.pluginId}/facts/${row.facts_digest}`;f.records.get(key).bytes[10]^=1;
+  const row=f.receipts()[0];assert.equal((await readPluginObservations(f.env,{knownAt:row.recorded_at,now:f.now})).receipt.fence,row.fence);
+  const key=`plugins/${f.plugin.pluginId}/facts/${row.facts_digest}`;f.records.get(key).bytes[10]^=1;
   assert.equal((await readPluginObservations(f.env,{now:f.now})).available,false);
-  const plans=f.activity.sql.filter(value=>value.sql.startsWith('SELECT * FROM earth_plugin_captures')).flatMap(value=>f.sqlite.prepare('EXPLAIN QUERY PLAN '+value.sql).all(...value.values));
+  const plans=f.activity.sql.filter(value=>value.sql.startsWith('SELECT * FROM earth_plugin_captures')||value.sql.startsWith('SELECT c.* FROM earth_plugin_state')).flatMap(value=>f.sqlite.prepare('EXPLAIN QUERY PLAN '+value.sql).all(...value.values));
   assert.ok(plans.some(value=>value.detail.includes('earth_plugin_captures_known')));assert.equal(plans.some(value=>/SCAN earth_plugin_captures/.test(value.detail)),false);
+  const currentPlan=plans.map(value=>value.detail).join('\n');assert.match(currentPlan,/SEARCH s USING INDEX.*plugin_id/);assert.match(currentPlan,/SEARCH c USING INDEX.*receipt_id/);
   // Corrupt retained metadata is a storage failure, never an invalid visitor query.
   f.sqlite.prepare('UPDATE earth_plugin_revisions SET projection_json=? WHERE plugin_id=?').run('null',f.plugin.pluginId);
   const corrupt=await readPluginObservations(f.env,{now:f.now});assert.equal(corrupt.configured,false);
   assert.equal(corrupt.errorCode,'stored-observation-unavailable');assert.deepEqual(corrupt.records,[]);
+});
+
+test('scientific current-head fence distinguishes equal-millisecond A/B/A and does not rewrite generic publication receipts',async t=>{
+  const f=await fixture(t,{descriptor:observationDescriptor,sourceFeedImpl:label=>observationFeed(label)});assert.equal((await run(f)).status,'stored');
+  const a=(await readPluginObservations(f.env,{now:f.now})).receipt;
+  f.databaseClock(0);
+  for(const label of ['B','A']) { f.advance(60001);f.source(label);
+    f.sqlite.prepare('UPDATE earth_plugin_state SET next_check_at=? WHERE plugin_id=?').run(stamp(0),f.plugin.pluginId);
+    assert.equal((await run(f)).status,'stored');}
+  const latest=await readPluginObservations(f.env,{now:f.now}),history=await readPluginObservations(f.env,{knownAt:stamp(0),now:f.now});
+  assert.equal(latest.records[0].mag,3);assert.equal(latest.receipt.recordedAt,a.recordedAt);assert.equal(history.receipt.id,latest.receipt.id);
+  assert.notEqual(latest.receipt.id,a.id);assert.equal(latest.receipt.factsDigest,a.factsDigest);assert.ok(latest.receipt.fence>a.fence);
+  assert.equal(f.count('earth_plugin_revisions'),2);assert.equal(f.count('earth_plugin_captures'),3);
+  f.sqlite.prepare('UPDATE earth_plugin_state SET current_receipt=?,facts_digest=? WHERE plugin_id=?').run(a.id,a.factsDigest,f.plugin.pluginId);
+  assert.equal((await readPluginObservations(f.env,{now:f.now})).receipt.id,a.id,'current delivery follows its exact pointer, not an unrelated retained capture');
+  assert.equal((await readPluginObservations(f.env,{knownAt:stamp(0),now:f.now})).receipt.id,latest.receipt.id,'historical cutoffs remain capture-journal selection');
+  f.sqlite.prepare('UPDATE earth_plugin_state SET current_receipt=?,facts_digest=? WHERE plugin_id=?').run(latest.receipt.id,latest.receipt.factsDigest,f.plugin.pluginId);
+  for(const fence of [0,Number.MAX_SAFE_INTEGER+1]) {f.sqlite.prepare('UPDATE earth_plugin_captures SET fence=? WHERE receipt_id=?').run(fence,latest.receipt.id);
+    assert.equal((await readPluginObservations(f.env,{now:f.now})).available,false,'malformed stored receipt fences fail closed');}
+  const publication=await fixture(t);assert.equal((await run(publication)).status,'stored');
+  assert.equal(Object.hasOwn((await readPluginPublications(publication.env,publication.plugin.pluginId,{now:publication.now})).receipt,'fence'),false);
 });
 
 test('an expired scientific writer cannot overwrite a newer completed edition during object readback; stored delivery retries only one edition',async t=>{

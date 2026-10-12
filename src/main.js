@@ -235,6 +235,10 @@ export async function start() {
     });
     disposers.push(() => timeline.destroy());
     disposers.push(updates.subscribe((event) => {
+      if (event.type === 'plugin' && event.pluginId === 'usgs-live-day-m2-5-v1') {
+        manager.requestRefresh('earthquakes', event);
+        return;
+      }
       if (event.type !== 'aircraft') return;
       for (const id of ['flights', 'military']) manager.requestRefresh(id);
     }));

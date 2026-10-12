@@ -18,7 +18,28 @@ the phase baseline; later release/runtime evidence belongs in FOUNDATION_PROGRES
 | Native Site cloud task + owner writer/MCP | Sites `create_schedule` is callable; managed D1/R2 exists | Hosted writer access, generated plugin connection, fresh cloud write/readback without local context, accepted cadence, quota/lag/overlap | First native candidate; bounded collection or investigation runs |
 | Awake laptop daemon → hosted writer | Existing fixed-source pipeline, publication outbox and persistent storage | Owner starts authorized run; restart/autostart/health/catch-up validation | Immediate acquisition/inference bridge while awake; not laptop-independent uptime |
 | Independent tiny Cloudflare cron → hosted writer | Standalone collector-worker is prepared; Cloudflare supports every-minute cron | Account access is not verified; deployment, secret provisioning, measured CPU and zero-visitor trial required | Minute HTTP wake with no per-minute model call; retain existing Sites storage |
-| Existing public GitHub Actions → fixed hosted collector / bounded GKG release | Authenticated repository administration and successful cloud runs are verified; standard public runners are free | New collect-only credential/contract, two persisted cloud captures, measured schedule gaps; historical recovery remains separate | Deployable laptop-independent fallback with best-effort 5/15-minute wakes; existing GKG bulk-processing bridge |
+| Existing public GitHub Actions → bounded verification / software data publication | Authenticated repository administration and successful finite cloud trials are verified; standard public runners are free | Applicable product-use terms and bounded publication/verification purpose remain necessary | Manual deployment acceptance and existing software-publication pipeline; not a permanent production collector |
+
+### October 12 reassessment: production execution remains a dependency
+
+At 03:03:38 UTC, the hosted collector history had one scheduled run created at
+02:37:39 and none in the subsequent five nominal slots. That proves one cloud wake,
+not a five-minute cadence. It predates the new USGS day feed, and the supervised
+laptop bridge also runs, so new feed receipts cannot be attributed to that cloud run.
+
+Current GitHub additional-product terms, effective August 27, 2026, restrict Actions
+use, including service/serverless usage. Free public-runner pricing does not establish
+permission to operate an always-running production collection service. The proposed
+50-minute recurring loop was withdrawn. The next source package removes the automatic
+hosted-collector schedule while preserving short manual acceptance. Existing bounded
+software/data publication is a separate purpose; do not generalize it into a service.
+[Current Actions terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features#actions),
+[schedule limits](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
+The supervised bridge ends at 06:39:10 UTC. A connected purpose-built minute runtime,
+its narrow signing secret, unattended receipts and measured resources are required
+before claiming permanent continuous acquisition. The prepared Cloudflare timer is
+the leading option; no account/deployment access has been verified or provisioned.
 
 Sites creates a cloud **agent task**, not a verified HTTP-only timer. Official
 web scheduled tasks can use connected tools without a local directory; desktop

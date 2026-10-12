@@ -8,12 +8,15 @@ const SELECT_ALL = `SELECT id,collected_at,input_digest,record_count,revision,
   UNION ALL SELECT 0,NULL,NULL,NULL,NULL,s.plugin_id,s.scope_id,c.receipt_id,c.fence,c.facts_digest,c.recorded_at
   FROM earth_plugin_state s JOIN earth_plugin_captures c ON c.receipt_id=s.current_receipt
     AND c.plugin_id=s.plugin_id AND c.scope_id=s.scope_id
-  WHERE s.plugin_id IN ('ecb-press-v1','ec-press-v1','eurostat-gas-origins-v1')`;
+  WHERE s.plugin_id IN ('ecb-press-v1','ec-press-v1','eurostat-gas-origins-v1','usgs-live-day-m2-5-v1')`;
 const UPSERT = `INSERT INTO earth_collection_revision (id, collected_at, input_digest, record_count, revision)
   VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET collected_at = excluded.collected_at,
   input_digest = excluded.input_digest, record_count = excluded.record_count, revision = excluded.revision
   WHERE excluded.collected_at > earth_collection_revision.collected_at`;
 const encoder = new TextEncoder();
+// Two main heads and four fixed typed heads exceed the former 2 KiB initial
+// replay budget. Keep a finite 4 KiB queue; overflow still closes/reconnects.
+export const COLLECTION_UPDATE_QUEUE_BYTES = 4096;
 const iso = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 const configured = (env) => Boolean(env?.EARTH_DB?.prepare);
 const json = (value, status, headers = {}) => Response.json(value, { status, headers: {
@@ -187,7 +190,7 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     const body = new ReadableStream({
       start(value) { controller = value; request.signal.addEventListener('abort', aborted, { once: true }); if (request.signal.aborted) stop(); else return pump(); },
       cancel() { stop(false); },
-    }, { highWaterMark: 2048, size: (chunk) => chunk.byteLength });
+    }, { highWaterMark: COLLECTION_UPDATE_QUEUE_BYTES, size: (chunk) => chunk.byteLength });
     return new Response(body, { headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store, no-transform',
       'x-content-type-options': 'nosniff', 'x-accel-buffering': 'no' } });
   }

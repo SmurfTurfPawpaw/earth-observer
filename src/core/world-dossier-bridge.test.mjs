@@ -35,7 +35,19 @@ test('provided scientific update, review and event type bind retained proof whil
   assert.equal(matchingWorldEvent(scientific, { ...current, updatedAt: NaN }, { id, knownAt: at }), null);
   assert.equal(matchingWorldEvent(scientific, { ...current, reviewStatus: 'automatic' }, { id, knownAt: at }), null);
   assert.equal(matchingWorldEvent(scientific, { ...current, eventType: 'quarry blast' }, { id, knownAt: at }), null);
+  assert.equal(matchingWorldEvent(scientific, { ...current, eventType: null }, { id, knownAt: at }), null);
   assert.equal(matchingWorldEvent(event, selection, { id, knownAt: at }), event, 'legacy and archive projections do not invent unavailable metadata requirements');
+});
+
+test('an explicitly unknown or non-earthquake report cannot request or retain earthquake proof', async () => {
+  for (const eventType of [null, 'quarry blast']) {
+    const f = fixture(); let calls = 0;
+    f.entity.selection.eventType = eventType; f.values.set('_worldEvent', event);
+    const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: entity => entity?.selection,
+      fetchImpl: async () => { calls++; return response(); } });
+    assert.equal(await bridge.refresh(), false); assert.equal(calls, 0); assert.equal(f.values.has('_worldEvent'), false);
+    bridge.destroy();
+  }
 });
 
 test('idle construction is request free and repeated exact historical selections reuse bounded evidence', async () => {

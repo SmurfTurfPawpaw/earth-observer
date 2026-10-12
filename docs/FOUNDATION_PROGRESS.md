@@ -967,3 +967,109 @@ an observed change rate or a low-cost long-term retention guarantee. Measure act
 changed-receipt frequency and storage growth before expanding this pattern widely.
 The existing two-source queue and 27-second shared wake budget remain; slow due
 institutional sources can be deferred, so no fairness or hosted CPU guarantee is made.
+
+## 03:00 UTC: v38 is deployed and the source cutover gate passed
+
+Application f3898179c7506112c9c057c0fd6a242f410f4a8b and combined source
+45589169d377a4080c5fa91bd423fe8315e13cd0 were built together. The required combined
+gate and 3,049 portfolio assertions passed. Saved Site version 38 deployed successfully
+at 02:54:47.579Z as appgdep_6acc4bd9d91c81918a42c11813bf227c, environment revision 7.
+Only EARTH_USGS_LIVE_DAY_ENABLED=1 was added; other runtime settings were preserved.
+Archive SHA256: 84f575bc65f88d7113e4b5a2f63b9bce3cc95d47a3373ed77f54b7594d2982f0.
+
+The first complete USGS day receipt was recorded at 02:55:34.537Z. Actual unattended
+due acquisitions completed at 02:56:35.612Z and 02:57:36.556Z. Fixed public stored
+reads returned 49 qualifying source records in about 20.9 KiB, with ready check
+status, source generation clocks, original/facts/overview hashes and immutable
+receipt dates. No owner trigger or provider request was issued by these public reads.
+Comparing the first and third retained record sets found one source record revised
+in magnitude, coordinates, depth, occurrence, place/title and revision time. These
+are source corrections, not three independently confirmed new physical events.
+Ignored read evidence is .qa/v38-observation-check-proof.jsonl. Early pre-acquisition
+503 was an honest unavailable response; fixture assertion field names were corrected
+to the actual published DTO before recording the successful proofs.
+
+The bounded hosted historical probe made two stored GETs, metadata and one scene,
+at 02:55:27.498–02:55:29.624Z. Metadata advertised 250 points; the scene delivered
+235/235 unique buffered records, no cursor or truncation, complete retained source
+coverage, archive:123. Local instant-window filtering yielded 124. Total decoded
+bytes: 138,868; elapsed 2.126 seconds. Responses used gzip; compressed wire bytes and
+GPU performance were not measured. Cursor continuation was not needed and therefore
+was not publicly exercised. Exact bodies and hashes are in
+.qa/v38-compact-scene-proof.json.
+
+Root actual browser requests used points=1, span=7d and limit=250. November 15 at
+12:00 UTC showed 124 reports. Playback advanced to November 18 and changed visible
+membership to 111, then 110 at the exact paused instant. The selected live report
+us6000u1iz remained open through an observed direct-source refresh, confirming the
+stable-entity fix before the stored-source frontend change. The readable selection
+screenshot qa-artifacts/published-foundation-v38-live-report.png was viewed and
+embedded in owner commentary. Search/world/zoom and the current context reader
+remain the actual previously verified journeys, not a new frame-rate benchmark.
+
+## Reassessment for v39: one completed head, one browser owner
+
+The hosted source gate now permits the frontend cutover. It will consume only the
+fixed stored endpoint, paint one validated finite-lifetime BrowserStore snapshot
+through the same request/abort owner, then read current retained evidence. Source
+facts and capture/publication/check/browser clocks remain distinct. Invalid reads
+cannot replace dated good evidence or cause a browser provider fallback.
+
+The existing stream joins current_receipt to its completed capture, so no extra
+outbox, migration or acquisition hook is needed. Add the fixed USGS scope and expose
+the capture fence only on observation receipts. The current observation reader must
+select and recheck that same pointer; knowledge cutoffs retain their indexed capture
+query. This is a durable latest-head notification bridge, not a guarantee that every
+intermediate edition is streamed. Replay/history rely on stored receipts.
+
+The fourth fixed source head exceeded the old 2 KiB per-client stream queue. Measured
+maximum initial replay is 2,714 bytes, including the two main heads, four typed heads,
+retry and status. The scoped backend raises the hard queue to 4 KiB, retaining slow
+consumer closure and a 128-client limit (at most 524,288 queued payload bytes).
+Fifty-four focused checks pass, including 33 SQLite-backed cases, covering factual
+capture versus operational fence, equal-time A/B/A editions, current pointer and
+cutoff coherence, failed publication, shared indexed reads and reconnect. These
+changes are local until the next exact source/build/deployment gate succeeds.
+
+The next breadth candidate is current retained GDACS notices on the globe, because
+the existing collector already has dated points and episode identities. It requires
+a separate source/coverage review and a stored-only, bounded map contract. Today's
+notices must hide in History until a real historical scene is implemented. Country
+mentions from GDELT are not incident coordinates. No speculative geopolitical pins
+or unsupported historical/future facts will be created to fill the map.
+
+## 03:10 UTC operational loop: scheduling recommendation changed
+
+Read-only workflow inspection at 03:03:38 found only the scheduled 02:37:39 run;
+no later run appeared through the five nominal slots ending 02:59. The observed
+gap was 25 minutes 59 seconds, not a five-minute service. That run predates USGS day
+activation and cannot prove cloud acquisition of the new source. Subsequent source
+receipts were collected while the laptop bridge was active.
+
+The official Actions terms effective August 27, 2026 restrict service usage. A
+proposed recurring 50-minute signer loop was withdrawn rather than treating free
+public minutes as permission. Root removes only the hosted collector's automatic
+schedule in the next source commit, preserving short owner-invoked acceptance and
+other existing software-publication workflows. The continuous production requirement
+still needs the connected purpose-built minute runtime. The supervised bridge remains
+healthy and ends at the declared 06:39:10 review boundary; this dependency is not hidden.
+
+## v39 source frozen for publication
+
+Root's combined focused invocation passed 87 checks across the stored feed, layer
+reconciliation, manager cancellation/fencing, source-type selection, retained-proof
+bridge, actual SQLite source admission and shared stream. The browser adapter admits
+the actual receipt namespace (`receipt:` plus 64 lowercase hex), verifies normalized
+factual digest and bounded membership, and accepts only the two reviewed mounts.
+Four saved real v38 response bodies also validated locally after adding only the
+planned positive capture fence; this is a compatibility fixture, not a claim that
+v38 exposed a fence or that the v39 browser has been tested in production.
+
+The cache lifetime is one hour, cache lookup wait at most 120 ms, body at most
+160 KiB and total source request deadline 15 seconds. Cached and fresh data paint
+through one layer/manager cancellation owner. A fixed source publication invalidates
+an old in-flight read immediately and retains one greatest revision across loading,
+hidden, disabled and historical states. There is no direct USGS browser fallback.
+Explicitly unknown/non-earthquake scientific types cannot acquire earthquake proof;
+absent legacy fields retain existing admission. These changes still require the
+exact committed build, save, deployment and mounted browser/source/stream acceptance.

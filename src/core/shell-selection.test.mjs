@@ -51,3 +51,19 @@ test('missing occurrence and measurements stay unspecified; other layers and arc
   assert.ok(selectionFields(other, at).some(([label, value]) => label === 'Time' && value === '1000'));
   assert.equal(createLiveEarthquakeDossier(null, { documentRef }), null);
 });
+
+test('scientific report types and correction clocks remain source statements rather than earthquake or verification claims', () => {
+  for (const eventType of [null, 'quarry blast', 'other event', '<script>']) {
+    const selection = liveEarthquakeSelection(entity({ ...facts, eventType, updatedAt: Date.parse('2026-10-12T01:14:20.125Z'), reviewStatus: 'reviewed' }), at);
+    assert.equal(selection.kind, 'Seismic report');
+    assert.ok(selection.fields.some(([key, value]) => key === 'Reported type' && value === (eventType || 'Not reported')));
+    assert.ok(selection.fields.some(([key, value]) => key === 'Source revised UTC' && value === '2026-10-12 01:14:20.125 UTC'));
+    assert.ok(selection.fields.some(([key, value]) => key === 'Source review status' && value === 'reviewed'));
+    assert.equal(nodes(createLiveEarthquakeDossier(selection, { documentRef })).some(node => node.tagName === 'script'), false);
+  }
+  assert.equal(liveEarthquakeSelection(entity({ ...facts, eventType: 'earthquake' }), at).kind, 'Earthquake');
+  for (const sourceUrl of [null, 'https://example.com/', 'https://earthquake.usgs.gov/earthquakes/eventpage/us6000other'])
+    assert.equal(liveEarthquakeSelection(entity({ ...facts, sourceUrl }), at).sourceUrl, null);
+  const sourceUrl = 'https://earthquake.usgs.gov/earthquakes/eventpage/us6000u1iz/';
+  assert.equal(liveEarthquakeSelection(entity({ ...facts, sourceUrl }), at).sourceUrl, sourceUrl);
+});

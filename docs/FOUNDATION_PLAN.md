@@ -51,6 +51,9 @@ cache, geography, source adapters and existing calculated astronomy.
 - Acquisition, expensive research, storage, serving and rendering have separate budgets.
   Baseline global coverage persists; visible cells, event severity and follows may boost
   priority. Search popularity guides indexing/cache coverage, not factual credibility.
+- Notifications describe completed current heads; they may coalesce intermediate
+  editions. Replay and analysis must read the immutable receipt history rather than
+  assuming a connected browser observed every revision. Check clocks are not facts.
 - Source content is untrusted data. No source instructions execute tools or alter
   collection policy. Reviewed adapters, fixed egress and byte/time/concurrency limits
   prevent arbitrary URL crawling; credentials stay server-side and out of Git/logs.

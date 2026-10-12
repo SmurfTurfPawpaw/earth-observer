@@ -24,7 +24,7 @@ export function matchingWorldEvent(event, selected, { id, knownAt, revision, arc
       selected.updatedAt != null && (!Number.isFinite(selected.updatedAt) || !Number.isFinite(new Date(selected.updatedAt).getTime()) ||
         iso(event.sourceTimes?.updatedAt) !== new Date(selected.updatedAt).toISOString()) ||
       selected.reviewStatus != null && event.reportedFacts?.reviewStatus !== selected.reviewStatus ||
-      selected.eventType != null && event.kind !== selected.eventType ||
+      Object.hasOwn(selected, 'eventType') && event.kind !== selected.eventType ||
       !Number.isFinite(selected.lat) || !Number.isFinite(selected.lon) ||
       Math.abs(event.place?.lat - selected.lat) > .00001 || Math.abs(event.place?.lon - selected.lon) > .00001 ||
       !Number.isFinite(event.place?.lat) || !Number.isFinite(event.place?.lon) ||
@@ -48,6 +48,7 @@ export function installWorldDossierBridge({ viewer, readSelection, fetchImpl = g
     let selected;
     try { selected = readSelection(entity); } catch { return false; }
     if (!selected || !/^[a-zA-Z0-9_-]{1,100}$/.test(selected.usgsId || '')) { clear(entity); return false; }
+    if (Object.hasOwn(selected, 'eventType') && selected.eventType !== 'earthquake') { clear(entity); return false; }
     const scene = viewer.earthTime.getState();
     const capturedKey = selectionKey(selected, scene);
     const currentSelection = () => {

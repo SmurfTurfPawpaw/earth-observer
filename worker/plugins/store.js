@@ -269,13 +269,16 @@ export async function readPluginObservations(env,{knownAt=null,now=Date.now,sign
       meaning:'Source-reported seismic observations from a rolling day summary; source event types are not reclassified.'},
     receipt:null,check:null,records:[]};
   if(!base.configured)return {...base,explanation:'Stored observation storage is unavailable.'};
-  const db=primary(env),select=`SELECT * FROM earth_plugin_captures WHERE plugin_id=? AND scope_id=?${knownAt?' AND recorded_at<=?':''}
-    ORDER BY recorded_at DESC,fence DESC LIMIT 1`,values=[plugin.pluginId,plugin.scopeId,...(knownAt?[knownAt]:[])];
+  const db=primary(env),select=knownAt?`SELECT * FROM earth_plugin_captures WHERE plugin_id=? AND scope_id=? AND recorded_at<=?
+    ORDER BY recorded_at DESC,fence DESC LIMIT 1`:`SELECT c.* FROM earth_plugin_state s JOIN earth_plugin_captures c
+    ON c.receipt_id=s.current_receipt AND c.plugin_id=s.plugin_id AND c.scope_id=s.scope_id
+    WHERE s.plugin_id=? AND s.scope_id=?`,values=[plugin.pluginId,plugin.scopeId,...(knownAt?[knownAt]:[])];
   try{
     for(let attempt=0;attempt<2;attempt++){
       signal?.throwIfAborted();const capture=(await rows(db,select,values,signal))[0];
       if(!capture)return {...base,explanation:knownAt?'This platform had no completed observation snapshot at the selected cutoff.':'This source has not completed its first retained acquisition.'};
       if(![capture.facts_digest,capture.raw_sha256,capture.artifact_sha256].every(digest)||capture.item_count!==1||
+        !Number.isSafeInteger(capture.fence)||capture.fence<1||
         !utc(capture.captured_at)||!utc(capture.recorded_at)||!utc(capture.source_updated_at)||
         !Number.isSafeInteger(capture.facts_bytes)||capture.facts_bytes<1||capture.facts_bytes>USGS_LIVE_DAY.factsBytes||
         !Number.isSafeInteger(capture.raw_bytes)||capture.raw_bytes<1||capture.raw_bytes>USGS_LIVE_DAY.rawBytes||
@@ -303,7 +306,7 @@ export async function readPluginObservations(env,{knownAt=null,now=Date.now,sign
       const current=knownAt?null:(await rows(db,'SELECT * FROM earth_plugin_state WHERE plugin_id=? AND scope_id=?',[plugin.pluginId,plugin.scopeId],signal))[0];
       if((await rows(db,select,values,signal))[0]?.receipt_id!==capture.receipt_id)continue;
       const checkedGeneration=current?.source_updated_at??capture.source_updated_at;
-      return {...base,available:true,version:capture.receipt_id,receipt:receipt(capture),check:knownAt?null:{...check(current),sourceGeneratedAt:current?.source_updated_at??null},
+      return {...base,available:true,version:capture.receipt_id,receipt:{...receipt(capture),fence:capture.fence},check:knownAt?null:{...check(current),sourceGeneratedAt:current?.source_updated_at??null},
         factualEditionAgeMs:knownAt?null:Math.max(0,now()-Date.parse(capture.captured_at)),
         retainedSourceGenerationAgeMs:knownAt?null:Math.max(0,now()-Date.parse(capture.source_updated_at)),
         sourceGenerationAgeMs:knownAt?null:Math.max(0,now()-Date.parse(checkedGeneration)),

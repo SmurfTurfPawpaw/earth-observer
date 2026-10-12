@@ -2,6 +2,7 @@ import { LAYERS } from './catalog.js';
 import { createLayer as defaultFactory, preloadLayer as defaultPreload, layerServiceRequirements } from './layer-factories.js';
 import { createCoreServices } from './services.js';
 import { validateArea } from './local-area.js';
+import { pluginRevision } from './live-updates.js';
 
 export const STORAGE_KEY = 'earth-observer:layers:v1';
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
@@ -10,6 +11,12 @@ const aborted = (error) => error?.name === 'AbortError';
 // time and hide themselves across coverage gaps. Other layers are live-only
 // until a dated source contract exists; current data cannot stand in for it.
 const OBSERVED_FRAME_LAYERS = new Set(['weather-radar', 'weather-satellite', 'weather-lightning']);
+const USGS_SCOPE = 'usgs-live-day-m2-5-v1';
+function reviewedSourceRevision(id, value) {
+  if (value === undefined) return undefined;
+  const reviewed = pluginRevision(value);
+  return id === 'earthquakes' && reviewed?.pluginId === USGS_SCOPE ? reviewed : null;
+}
 
 /** Own lazy loading, visibility intent, refresh work and persistence. */
 export function createLayerManager(viewer, onStateChange = () => {}, options = {}) {
@@ -28,7 +35,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     meta, requested: false, enabled: false, initialized: false,
     status: 'disabled', error: null, module: null, loading: null,
     queue: Promise.resolve(), revision: 0, controller: new AbortController(),
-    timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false, preparedDirty: false,
+    timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false, preparedDirty: false, preparedRevision: undefined,
   }]));
   const listeners = new Set([onStateChange]);
   let servicesPromise, services, destroyed = false, publishQueued = false, timelinePaused = false;
@@ -54,10 +61,17 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       error: entry.error || stats.error || stats.lastError || (stats.keyRequired ? 'Provider key required' : null),
       refreshing: entry.refreshing,
       snapshot: stats.snapshot === true,
-      stale: stats.stale === true || ['STALE', 'OFFLINE'].includes(entry.browserCache),
-      browserCache: entry.browserCache,
-      browserCachedAt: entry.browserCachedAt,
-      browserCacheAgeMs: entry.browserCachedAt ? Math.max(0, Date.now() - entry.browserCachedAt) : null,
+      stale: stats.stale === true || ['STALE', 'OFFLINE'].includes(stats.browserCache || entry.browserCache),
+      browserCache: stats.browserCache || entry.browserCache,
+      browserCachedAt: stats.browserCachedAt || entry.browserCachedAt,
+      browserCacheAgeMs: (stats.browserCachedAt || entry.browserCachedAt) ? Math.max(0, Date.now() - (stats.browserCachedAt || entry.browserCachedAt)) : null,
+      receipt: stats.receipt || null,
+      checkedAt: stats.checkedAt || null,
+      lastSuccessfulAt: stats.lastSuccessfulAt || null,
+      sourceGeneratedAt: stats.sourceGeneratedAt || null,
+      retainedSourceGeneratedAt: stats.retainedSourceGeneratedAt || null,
+      factualEditionAgeMs: stats.factualEditionAgeMs ?? null,
+      retainedSourceGenerationAgeMs: stats.retainedSourceGenerationAgeMs ?? null,
       mode: stats.mode || null,
       observationDate: stats.observationDate || null,
       coverage: stats.coverage || null,
@@ -159,7 +173,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     try {
       if (entry.preparedDirty) {
         entry.preparedDirty = false;
-        entry.module.invalidatePreparedSnapshot?.();
+        entry.module.invalidatePreparedSnapshot?.(entry.preparedRevision);
       }
       const updated = await entry.module.update?.(viewer, { signal: owner.signal });
       if (owner.signal.aborted) return false;
@@ -209,6 +223,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       if ((await module.enable?.(viewer, { signal: entry.controller.signal })) === false) throw new Error('Layer activation failed');
       if (destroyed || revision !== entry.revision) { await module.disable?.(viewer); return false; }
       entry.enabled = true; entry.status = 'ready';
+      if (entry.refreshing) entry.revalidated = true;
       await refresh(id);
       if (revision !== entry.revision) return false;
       armTimer(id, entry); viewer.scene?.requestRender?.(); publish(); return true;
@@ -292,7 +307,11 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       stopTimer(entry);
       entry.controller.abort();
       if (!documentRef?.hidden) entry.controller = new AbortController();
-      if (!historySuspends(entry) && !documentRef?.hidden && entry.enabled) { armTimer(id, entry); void refresh(id); }
+      if (!historySuspends(entry) && !documentRef?.hidden && entry.enabled) {
+        armTimer(id, entry);
+        if (entry.refreshing) entry.revalidated = true;
+        else void refresh(id);
+      }
       else if (!historySuspends(entry) && !documentRef?.hidden && entry.requested) void setEnabled(id, true);
     }
     publish();
@@ -323,9 +342,17 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
 
   const manager = {
     viewer, getState, setEnabled, restore, destroy, refresh, preload, setTimelineMode,
-    requestRefresh(id) {
+    requestRefresh(id, revision) {
       const entry = requireEntry(id);
       if (destroyed) return false;
+      const reviewed = reviewedSourceRevision(id, revision);
+      if (reviewed === null || reviewed && entry.preparedRevision && reviewed.fence <= entry.preparedRevision.fence) return false;
+      if (reviewed) {
+        entry.preparedRevision = reviewed;
+        // Fence a running cache/body read immediately, before its follow-up is
+        // admitted. The same revision is retained for a lazy or paused engine.
+        if (entry.module?.invalidatePreparedSnapshot?.(reviewed) === false) return false;
+      }
       // Retain one invalidation through lazy loading, hidden/history pauses and
       // disabled layers. The next permitted update must bypass an older HIT.
       entry.preparedDirty = true;

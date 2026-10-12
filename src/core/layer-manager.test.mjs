@@ -141,6 +141,45 @@ test('producer revision survives lazy loading and historical pause until an allo
   await env.manager.destroy();
 });
 
+const sourceEdition = fence => ({ schemaVersion: 1, type: 'plugin', pluginId: 'usgs-live-day-m2-5-v1', scopeId: 'usgs-live-day-m2-5-v1',
+  receiptId: `receipt:${String(fence).repeat(64)}`, fence, factsDigest: 'a'.repeat(64), recordedAt: '2026-10-12T02:55:34.537Z' });
+test('the latest reviewed source edition survives loading, hidden/history/disabled states and rejects foreign or old notifications', async () => {
+  const loading = Promise.withResolvers(), invalidations = []; let updates = 0;
+  const env = environment(() => loading.promise, { catalog: [{ id: 'earthquakes', defaults: {} }] });
+  const enabling = env.manager.setEnabled('earthquakes', true); await settle();
+  assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(1)), false);
+  assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(3)), false);
+  assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(2)), false);
+  assert.equal(env.manager.requestRefresh('earthquakes', { ...sourceEdition(4), scopeId: 'foreign' }), false);
+  loading.resolve({ ...engine([]), invalidatePreparedSnapshot(value) { invalidations.push(value); }, update() { updates++; } });
+  await enabling; assert.equal(invalidations.length, 1); assert.equal(invalidations[0].fence, 3); assert.equal(updates, 1);
+  env.document.hidden = true; env.visibility(); assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(4)), false); assert.equal(updates, 1);
+  await env.manager.setTimelineMode('history'); env.document.hidden = false; env.visibility(); await settle();
+  assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(5)), false); assert.equal(updates, 1);
+  await env.manager.setEnabled('earthquakes', false); assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(6)), false);
+  await env.manager.setTimelineMode('live'); assert.equal(updates, 1);
+  await env.manager.setEnabled('earthquakes', true); assert.equal(updates, 2); assert.equal(invalidations.at(-1).fence, 6);
+  assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(6)), false); assert.equal(updates, 2);
+  await env.manager.destroy();
+});
+
+test('a reviewed publication invalidates the active read immediately and coalesces one replacement', async () => {
+  let count = 0, readOwner, pendingRevision; const began = Promise.withResolvers(), invalidations = [];
+  const env = environment(async () => ({ ...engine([]),
+    invalidatePreparedSnapshot(value) { invalidations.push(value); pendingRevision = value; readOwner?.abort(); },
+    async update(_viewer, { signal }) {
+      count++; if (count !== 2) return true;
+      readOwner = new AbortController(); const owned = AbortSignal.any([signal, readOwner.signal]); began.resolve(owned);
+      return new Promise(resolve => owned.addEventListener('abort', () => resolve(false), { once: true }));
+    },
+  }), { catalog: [{ id: 'earthquakes', defaults: {} }] });
+  await env.manager.setEnabled('earthquakes', true); const refreshing = env.manager.refresh('earthquakes'), active = await began.promise;
+  assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(2)), true); assert.equal(active.aborted, true);
+  assert.equal(env.manager.requestRefresh('earthquakes', sourceEdition(3)), true);
+  await refreshing; await settle(); assert.equal(count, 3); assert.equal(pendingRevision.fence, 3);
+  assert.deepEqual(invalidations.map(value => value.fence), [2, 3, 3]); await env.manager.destroy();
+});
+
 test('a newer disable supersedes a pending import without activating the layer', async () => {
   const calls = [];
   const loaded = Promise.withResolvers();
@@ -206,6 +245,17 @@ test('hidden tabs suspend polling and resume without losing enabled intent', asy
   await settle();
   assert.equal(env.timers.size, 1);
   assert.equal(calls.filter((value) => value === 'update').length, 2);
+  await env.manager.destroy();
+});
+
+test('returning from history while a canceled read retires queues a fresh owned update', async () => {
+  const began = Promise.withResolvers(), blocked = Promise.withResolvers(); let updates = 0, oldSignal;
+  const env = environment(async () => ({ ...engine([]), async update(_viewer, { signal }) {
+    if (++updates === 2) { oldSignal = signal; began.resolve(); await blocked.promise; } return !signal.aborted;
+  } }));
+  await env.manager.setEnabled('test', true); const pending = env.manager.refresh('test'); await began.promise;
+  await env.manager.setTimelineMode('history'); assert.equal(oldSignal.aborted, true); await env.manager.setTimelineMode('live');
+  assert.equal(updates, 2); blocked.resolve(); await pending; await settle(); assert.equal(updates, 3);
   await env.manager.destroy();
 });
 

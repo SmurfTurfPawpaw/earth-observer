@@ -67,20 +67,30 @@ empty source response.
 Optional canonical `knownAt` chooses a complete platform receipt at that cutoff.
 Later check state/ages are omitted. This is the retained rolling feed membership
 as known to this platform, not event-time reconstruction or a two-year M2.5+
-backfill. Current and cutoff reads use an indexed capture lookup, bounded immutable
-facts/overview reads and at most one whole-edition retry.
+backfill. Current reads and their edition recheck join the indexed current receipt
+pointer to the exact completed capture. Cutoff reads use the indexed capture history.
+Both use bounded immutable facts/overview reads and at most one whole-edition retry.
+Observation-only `receipt.fence` identifies the completed factual publication;
+operational lease/check advancement cannot fabricate a newer factual fence.
+
+The existing shared SSE connection announces only the latest completed head with
+fixed plugin/scope, receipt ID, capture fence, factual digest and publication time.
+It may coalesce intermediate revisions. Stored receipts remain the history; SSE is
+not an every-edition delivery queue. Generated-only/304 checks remain quiet.
 
 ## Activation and operating limits
 
 Release backend first; enable the source through an owner environment revision;
 prove a complete receipt and at least two unattended due checks independently of
 visitors. Only then publish a separately reviewed client fetch cutover and its
-mounted `/earth/` routing/cache invalidation. This package does not change the
-existing browser direct-source adapter or claim it already serves central data.
-The existing five-minute GitHub fallback can wake the collector independently of
-visitors; that cadence cannot guarantee minute acquisition. The current supervised
-minute bridge ends at 06:39 UTC. A permanent independent minute runner still needs
-provisioning and verification.
+mounted `/earth/` routing/cache invalidation. Backend-first v38 is deployed and its
+first receipt plus two unattended due checks passed at 02:55–02:57 UTC on October 12.
+The separate v39 browser cutover is under review; do not assume it is deployed until
+the exact release and actual browser acceptance are recorded.
+The current supervised minute bridge ends at 06:39 UTC. The automatic GitHub wake
+is being removed in v39 after observed schedule gaps and a product-use terms review;
+manual bounded deployment acceptance remains separate. A permanent independent
+minute runner still needs provisioning and verification.
 
 One planning read on 2026-10-12 retained no provider body: 140,979 original bytes,
 197 source features and 46 qualifying observations, about 14.9 KiB of evidence
