@@ -11,6 +11,9 @@ import { canonicalDiscoveryRecord } from './discovery-index.js';
 import { createWorldSourceItem } from './world-model.js';
 import { worldHash } from './world-identity.js';
 import { PREPARED_SCENE_POLICY } from './prepared-scene-contract.js';
+import { createFocusScenesApiHandler } from '../../worker/focus-scenes-api.js';
+import { selectFocusScene } from '../../worker/focus-scene-builder.js';
+import { FOCUS_SCENE_POLICY } from './focus-scene-contract.js';
 
 const NOW = Date.parse('2026-10-12T09:00:00.000Z'), demand = { level: 0, cells: [[4, 0]], mode: 'features' };
 async function fixture(mag = 3, fence = 1) {
@@ -197,4 +200,54 @@ test('generic preparation retries are at most two, real unavailability does not 
       { status: 503, headers: { 'content-type': 'application/json' } }); } });
   const waiting = canceled.load(demand), rejected = assert.rejects(waiting, { name: 'AbortError' }); await started.promise;
   canceled.cancel(); await rejected; await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(calls, 1); canceled.destroy();
+});
+
+const focusDemand = { schemaVersion: 2, policyId: FOCUS_SCENE_POLICY, leaves: [[0, 4, 0]], focus: [0, 4, 0], featureBudget: 0 };
+test('mixed focus transport uses exact deltas and loads full source evidence only on demand, sharing one bounded cache', async () => {
+  const a = await gdacsFixture(), b = await gdacsFixture(2000, false); let stored = a;
+  const focus = createFocusScenesApiHandler({ now: () => NOW, read: async () => stored }),
+    detail = createPreparedScenesApiHandler({ now: () => NOW, read: async () => stored }), requests = [];
+  const client = createRegionalSceneClient({ sourceKey: 'gdacs', now: () => NOW, baseUrl: '/earth/', fetchImpl: (url, options) => {
+    requests.push(url); const request = new Request(`https://example.test${url.replace('/earth/', '/')}`, options);
+    return request.url.includes('/focus-scenes?') ? focus(request, {}) : detail(request, {});
+  } });
+  const first = await client.load(focusDemand); assert.equal(first.scene.schemaVersion, 2); assert.equal(first.scene.counts.selectedMapped, 2);
+  assert.equal(first.scene.features.length, 1); assert.equal(Object.hasOwn(first.scene.features[0], 'record'), false);
+  assert.equal(requests.length, 1, 'display does not eagerly fetch full evidence');
+  const compact = first.scene.features[0], proof = await client.getFeature(compact, first.source);
+  assert.equal(proof.feature.record.title, compact.title); assert.equal(proof.feature.provenance.evidence.snapshotId, first.source.snapshotId);
+  const cachedProof = await client.getFeature(compact, first.source); assert.equal(requests.length, 2, 'exact proof reuses the same bounded LRU');
+  assert.equal(cachedProof.current, false); assert.equal(cachedProof.check, null); assert.equal(cachedProof.browserCache, true);
+  const members = await client.getMembers(first, first.scene.clusters[0]); assert.equal(members.count, 1); assert.equal(members.members[0].role, 'member');
+  assert.notEqual(members.members[0].id, compact.id, 'residual membership excludes the separately drawn pin');
+  stored = { ...b, prior: a.prepared }; client.invalidate(); const next = await client.load(focusDemand);
+  assert.equal(next.scene.features.length, 0); assert.equal(next.scene.counts.clusteredReports, 2); assert.notEqual(next.source.version, first.source.version);
+  assert.equal(client.getState().cacheEntries, 2); assert.ok(client.getState().cacheBytes <= REGIONAL_SCENE_LIMITS.cacheBytes);
+  assert.ok(requests.every(url => url.startsWith('/earth/api/layers/'))); client.destroy();
+  await assert.rejects(client.getFeature(compact, first.source), { name: 'AbortError' });
+});
+
+test('lazy detail and residual pages reject mismatched source provenance, display facts, category, membership and late cancellation', async () => {
+  const a = await gdacsFixture(), b = await gdacsFixture(2000), scene = await selectFocusScene(b.prepared, focusDemand, { now: () => NOW }),
+    compact = scene.features[0], old = a.prepared.content.features.find(feature => feature.id === compact.id);
+  let payload = { schemaVersion: 1, kind: 'prepared-scene-feature-delivery', sourceKey: 'gdacs', configured: true, available: true,
+    pending: false, current: true, source: b.source, check: null, stale: null, sourceGenerationAgeMs: null, feature: old };
+  const client = createRegionalSceneClient({ sourceKey: 'gdacs', now: () => NOW, fetchImpl: async () => json(payload) });
+  await assert.rejects(client.getFeature(compact, b.source), TypeError, 'old cohort provenance cannot be rebound to a new source wrapper');
+  payload = { ...payload, feature: b.prepared.content.features.find(feature => feature.id === compact.id) };
+  await assert.rejects(client.getFeature({ ...compact, display: { ...compact.display, sourceType: 'invented' } }, b.source), TypeError);
+  client.destroy();
+  const wrapper = { scene, source: b.source }, cluster = scene.clusters[0], api = createFocusScenesApiHandler({ now: () => NOW, read: async () => b });
+  for (const mutate of [value => { value.members[0].role = 'highlight'; }, value => { value.members[0].geometry.lon = -120; },
+    value => { value.members[0] = { ...compact, role: 'member' }; }, value => { value.asOf = new Date(NOW - 60000).toISOString(); }]) {
+    const faulty = createRegionalSceneClient({ sourceKey: 'gdacs', now: () => NOW, fetchImpl: async (url, options) => {
+      const value = await (await api(new Request(`https://example.test${url}`, options), {})).json(); mutate(value); return json(value);
+    } });
+    await assert.rejects(faulty.getMembers(wrapper, cluster), TypeError); faulty.destroy();
+  }
+  const started = Promise.withResolvers(), gate = Promise.withResolvers(), delayed = createRegionalSceneClient({ sourceKey: 'gdacs', now: () => NOW,
+    fetchImpl: async (_url, options) => { started.resolve(options.signal); return gate.promise; } });
+  const pending = delayed.getFeature(compact, b.source), rejected = assert.rejects(pending, { name: 'AbortError' });
+  const signal = await started.promise; delayed.cancel(); assert.equal(signal.aborted, true); await rejected;
+  gate.resolve(json(payload)); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(delayed.getState().cacheEntries, 0); delayed.destroy();
 });

@@ -25,6 +25,7 @@ import { createPreparedUsgsApiHandler } from './prepared-usgs-api.js';
 import { startCoverageWake, createCoverageStatusHandler } from './coverage-runtime.js';
 import { createCoverageDemandHandler } from './coverage-demand.js';
 import { createPreparedScenesApiHandler } from './prepared-scenes-api.js';
+import { createFocusScenesApiHandler } from './focus-scenes-api.js';
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
@@ -52,6 +53,7 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
   const handleObservationApi = createObservationApiHandler({ now });
   const handlePreparedScene = createPreparedUsgsApiHandler({ now });
   const handleGenericPreparedScene = createPreparedScenesApiHandler({ now });
+  const handleFocusScene = createFocusScenesApiHandler({ now });
   const handleCoverageStatus = createCoverageStatusHandler({ now });
   const handleCoverageDemand = createCoverageDemandHandler({ now });
   let state;
@@ -109,6 +111,8 @@ export function createEarthRuntime({ prefix = '/earth/', fetchImpl = (...args) =
         if (observations) return secured(observations);
         const preparedScene = await handlePreparedScene(internal, env);
         if (preparedScene) return secured(preparedScene);
+        const focusScene = await handleFocusScene(internal, env);
+        if (focusScene) return secured(focusScene);
         const genericPreparedScene = await handleGenericPreparedScene(internal, env);
         if (genericPreparedScene) return secured(genericPreparedScene);
         const world = await createWorldModelHandler({ env, now })(internal);

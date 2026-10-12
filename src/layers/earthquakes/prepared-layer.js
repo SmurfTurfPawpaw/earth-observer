@@ -1,15 +1,18 @@
 import { createPreparedSceneLayer } from '../../core/prepared-scene-layer.js';
 import { createRegionalSceneClient } from '../../core/regional-scene-client.js';
 import { depthColor, mapAnalystRecord } from './model.js';
+import * as Cesium from 'cesium';
+import { extractCameraFocusDemand } from '../../core/focus-demand.js';
 
 export const PREPARED_EARTHQUAKES_DESCRIPTOR = Object.freeze({
   sourceKey: 'earthquakes', id: 'earthquakes', name: 'Seismic reports (24h)', icon: '🌋', sourceLabel: 'USGS', symbol: 'seismic',
   countLabel: 'reports', locationLabel: 'reported seismic locations', coverageLabel: 'M2.5+ · rolling 24 hours',
-  title: feature => feature.record.sourceTitle || `M${feature.record.mag.toFixed(1)} · ${feature.record.place}`,
+  title: feature => feature.record ? feature.record.sourceTitle || `M${feature.record.mag.toFixed(1)} · ${feature.record.place}` : feature.title,
   position: feature => Object.hasOwn(feature, 'geometry') ? feature.geometry && [feature.geometry.lon, feature.geometry.lat] :
     [feature.record.lon, feature.record.lat],
-  color: feature => depthColor(feature.record.depthKm ?? 0),
-  detail: feature => `${new Date(feature.record.time).toISOString()} · source ${feature.record.eventType || 'type unknown'}`,
+  color: feature => depthColor(feature.record?.depthKm ?? feature.display?.depthKm ?? 0),
+  detail: feature => feature.record ? `${new Date(feature.record.time).toISOString()} · source ${feature.record.eventType || 'type unknown'}` :
+    `${feature.display.observedAt || 'Date unknown'} · source ${feature.display.sourceType || 'type unknown'}`,
   entityProperties: (feature, view) => ({ usgsId: feature.record.usgsId, mag: feature.record.mag, place: feature.record.place,
     time: feature.record.time, depth: feature.record.depthKm, sourceUrl: feature.record.sourceUrl, updatedAt: feature.record.updatedAt,
     eventType: feature.record.eventType, reviewStatus: feature.record.reviewStatus, sourceTitle: feature.record.sourceTitle,
@@ -26,7 +29,8 @@ export const PREPARED_EARTHQUAKES_DESCRIPTOR = Object.freeze({
 });
 
 /** Compatibility defaults to the original stored USGS route; the factory opts into generic delivery. */
-export function createPreparedEarthquakesLayer({ client, generic = false, ...options } = {}) {
-  return createPreparedSceneLayer({ ...options, descriptor: PREPARED_EARTHQUAKES_DESCRIPTOR,
-    client: client || createRegionalSceneClient(generic ? { sourceKey: 'earthquakes' } : {}) });
+export function createPreparedEarthquakesLayer({ client, generic = false, focus = false, ...options } = {}) {
+  return createPreparedSceneLayer({ ...(focus ? { getDemand: viewer => extractCameraFocusDemand(viewer, Cesium) } : {}),
+    ...options, descriptor: PREPARED_EARTHQUAKES_DESCRIPTOR,
+    client: client || createRegionalSceneClient(generic || focus ? { sourceKey: 'earthquakes' } : {}) });
 }

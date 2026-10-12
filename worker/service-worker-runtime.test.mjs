@@ -174,11 +174,24 @@ test('document identity responds only to the requesting in-scope window with fix
   const message = (data = request, source = client, from = origin) => h.listeners.get('message')({ data, source, origin: from });
   message(); assert.equal(replies.length, 1); assert.equal(JSON.stringify(replies[0]), JSON.stringify({ ...request, identity }));
   for (const [data, source, from] of [[{ ...request, scope: '/' }, client], [{ ...request, requestId: 'wrong' }, client], [{ ...request, secret: 'private' }, client],
-    [request, { ...client, type: 'serviceworker' }], [request, { ...client, url: origin + '/earth/private' }], [request, { ...client, url: origin + scope + '?session=private' }],
+    [request, { ...client, type: 'serviceworker' }], [request, { ...client, url: origin + '/earth/private' }],
     [request, { ...client, url: 'https://other.example/earth/' }], [request, client, 'https://other.example']]) message(data, source, from);
   assert.equal(replies.length, 1); assert.equal(h.fetches.length, 0); assert.equal(h.reads.length, 0); assert.equal(h.writes.length, 0);
   const legacy = harness(); legacy.listeners.get('message')({ data: request, source: client, origin }); assert.equal(replies.length, 1);
   assert.throws(() => renderServiceWorker({ critical: [scope], version: 'fixture', scope, documentIdentity: [identity] }), /fixed document identity/);
+});
+
+test('query-bearing in-scope pages receive only the fixed public UI identity with no query echo or document caching', () => {
+  const identity = 'a'.repeat(64), h = harness({ documentIdentity: identity }), replies = [];
+  const request = { type: 'earth-observer:document-identity', schemaVersion: 1, requestId: 'b'.repeat(32), scope };
+  for (const query of ['?qa=v55', '?session=private#v=4&mode=history']) {
+    h.listeners.get('message')({ data: request, origin,
+      source: { id: 'page', type: 'window', url: origin + scope + query, postMessage(value) { replies.push(value); } } });
+  }
+  assert.equal(replies.length, 2);
+  assert.ok(replies.every(value => JSON.stringify(value) === JSON.stringify({ ...request, identity })));
+  assert.equal(h.fetches.length, 0); assert.equal(h.reads.length, 0); assert.equal(h.writes.length, 0);
+  assert.equal(h.dispatch(scope + '?session=private', { mode: 'navigate' }).result, undefined, 'Query navigation remains network-owned');
 });
 
 test('a complete new release retains one matching offline document without persisting newer request-specific navigation', async () => {

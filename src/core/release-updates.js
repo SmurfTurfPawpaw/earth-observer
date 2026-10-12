@@ -1,5 +1,6 @@
 export const RELEASE_CHECK_MS = 300000;
 export const RELEASE_IDENTITY_MS = 2000;
+export const RELEASE_IDENTITY_ATTEMPTS = 2;
 const IDENTITY_TYPE = 'earth-observer:document-identity';
 
 /** Adopt only a verified different UI; keep current documents and active exploration. */
@@ -9,8 +10,9 @@ export function installReleaseUpdates({ serviceWorker = globalThis.navigator?.se
   cryptoRef = globalThis.crypto, now = Date.now,
   setTimeoutImpl = globalThis.setTimeout, clearTimeoutImpl = globalThis.clearTimeout } = {}) {
   if (!serviceWorker?.register || !/^\/(?:[a-z0-9-]+\/)*$/.test(scope) || locationRef?.pathname !== scope) return { destroy() {} };
-  const initialController = serviceWorker.controller;
+  let initialController = serviceWorker.controller;
   let destroyed = false, registration, pending = false, adopted = false, updateReady = false, timer, adoptionTimer, identityTimer, identityRequest, checkedController, noticeText;
+  let identityAttempts = 0, identityVerified = false;
   const stopTimer = () => { if (timer !== undefined) clearTimeoutImpl(timer); timer = undefined; };
   const stopAdoption = () => { if (adoptionTimer !== undefined) clearTimeoutImpl(adoptionTimer); adoptionTimer = undefined; };
   const stopIdentity = () => { if (identityTimer !== undefined) clearTimeoutImpl(identityTimer); identityTimer = undefined; identityRequest = null; };
@@ -25,7 +27,7 @@ export function installReleaseUpdates({ serviceWorker = globalThis.navigator?.se
   };
   const exploring = () => {
     const timeline = documentRef?.getElementById?.('earth-timeline');
-    return Boolean(timeline?.open || timeline?.dataset?.mode === 'history' || ['news-panel', 'selection'].some(id => {
+    return Boolean(timeline?.open || timeline?.dataset?.mode === 'history' || ['news-panel', 'selection', 'scene-members'].some(id => {
       const panel = documentRef?.getElementById?.(id); return panel && !panel.hidden;
     }));
   };
@@ -33,10 +35,12 @@ export function installReleaseUpdates({ serviceWorker = globalThis.navigator?.se
     const notice = documentRef?.getElementById?.('notification'); noticeText = message;
     if (notice) { notice.textContent = message; notice.hidden = false; }
   };
-  const clearNotice = () => { const notice = documentRef?.getElementById?.('notification'); if (notice?.textContent === noticeText) notice.hidden = true; noticeText = null; };
+  const clearNotice = () => { const notice = documentRef?.getElementById?.('notification');
+    if (typeof noticeText === 'string' && notice?.textContent === noticeText) notice.hidden = true; noticeText = null; };
   function adopt() {
     stopAdoption();
-    if (destroyed || adopted || !updateReady || documentRef?.hidden) return;
+    if (destroyed || adopted || !updateReady || !identityVerified || serviceWorker.controller !== checkedController || !owns(checkedController) ||
+      documentRef?.hidden || navigatorRef?.onLine === false) return;
     const temporaryNotes = documentRef?.querySelector?.('.notebook-status')?.textContent?.includes('open tab only');
     if (editing() || temporaryNotes || exploring()) {
       notify(temporaryNotes ? 'An app update is ready. Export your temporary notes before it refreshes.' : editing() ?
@@ -46,7 +50,10 @@ export function installReleaseUpdates({ serviceWorker = globalThis.navigator?.se
     }
     adopted = true; stopTimer(); locationRef.reload();
   }
-  const unknownIdentity = () => { if (destroyed) return; stopIdentity(); updateReady = false; notify('An app update may be available. Reload when ready; your current workspace remains open.'); };
+  const unknownIdentity = () => { if (destroyed) return; stopIdentity(); updateReady = false; identityVerified = false;
+    // A missed reply is not evidence that this document is old. Keep the
+    // working workspace without a permanent speculative update notification.
+    clearNotice(); };
   const identityMessage = event => {
     const request = identityRequest, value = event.data;
     if (destroyed || !request || event.source !== request.worker || event.source !== serviceWorker.controller || event.origin !== locationRef.origin || !owns(event.source) ||
@@ -57,15 +64,26 @@ export function installReleaseUpdates({ serviceWorker = globalThis.navigator?.se
     const identity = metas.length === 1 ? metas[0].getAttribute?.('content') : null;
     stopIdentity();
     if (typeof identity !== 'string' || !/^[a-f0-9]{64}$/.test(identity)) { unknownIdentity(); return; }
-    updateReady = identity !== value.identity;
+    identityVerified = true; updateReady = identity !== value.identity;
     if (updateReady) adopt(); else clearNotice();
   };
-  const controllerChanged = () => {
+  const checkControllerIdentity = ({ retry = false } = {}) => {
     // First installation already serves the current online document. Only an
     // existing Earth Observer controller changing can require another boot.
     const worker = serviceWorker.controller;
-    if (destroyed || adopted || !initialController || !owns(initialController) || worker === initialController || worker === checkedController || !owns(worker)) return;
-    checkedController = worker; stopIdentity(); stopAdoption(); updateReady = false;
+    if (destroyed || adopted) return;
+    if (!initialController) { if (owns(worker)) initialController = worker; return; }
+    if (!owns(initialController) || worker === initialController || !owns(worker)) {
+      stopIdentity(); stopAdoption(); updateReady = false; identityVerified = false; clearNotice(); return;
+    }
+    if (worker === checkedController && !retry) return;
+    if (worker !== checkedController) {
+      checkedController = worker; identityAttempts = 0; identityVerified = false;
+      stopIdentity(); stopAdoption(); updateReady = false; clearNotice();
+    }
+    if (identityRequest || identityVerified || identityAttempts >= RELEASE_IDENTITY_ATTEMPTS ||
+      retry && (documentRef?.hidden || navigatorRef?.onLine === false)) return;
+    identityAttempts++;
     try {
       const id = [...cryptoRef.getRandomValues(new Uint8Array(16))].map(value => value.toString(16).padStart(2, '0')).join('');
       identityRequest = { worker, id, until: now() + RELEASE_IDENTITY_MS };
@@ -73,6 +91,7 @@ export function installReleaseUpdates({ serviceWorker = globalThis.navigator?.se
       worker.postMessage({ type: IDENTITY_TYPE, schemaVersion: 1, requestId: id, scope });
     } catch { unknownIdentity(); }
   };
+  const controllerChanged = () => checkControllerIdentity();
   const wakeAdoption = () => {
     if (!updateReady || destroyed || adopted || documentRef?.hidden || adoptionTimer !== undefined) return;
     // Run after the existing input/panel/calendar handlers have committed their state.
@@ -89,14 +108,14 @@ export function installReleaseUpdates({ serviceWorker = globalThis.navigator?.se
       if (!registration) registration = await serviceWorker.register(`${scope}sw.js`, { scope, updateViaCache: 'none' });
       else if (!registration.installing) await registration.update();
     } catch { /* Keep the working scene; offline/failed installation cannot authorize adoption. */ }
-    finally { pending = false; arm(); }
+    finally { pending = false; checkControllerIdentity({ retry: true }); arm(); }
   }
   const visibility = () => { if (documentRef?.hidden) { stopTimer(); stopAdoption(); } else { adopt(); void check(); } };
   const online = () => { adopt(); void check(); };
   const pagehide = (event) => { if (!event.persisted) destroy(); else { stopTimer(); stopAdoption(); } };
   const pageshow = (event) => { if (event.persisted) { adopt(); void check(); } };
   function destroy() {
-    if (destroyed) return; destroyed = true; stopTimer(); stopAdoption(); stopIdentity();
+    if (destroyed) return; destroyed = true; stopTimer(); stopAdoption(); stopIdentity(); clearNotice();
     serviceWorker.removeEventListener?.('controllerchange', controllerChanged); serviceWorker.removeEventListener?.('message', identityMessage); documentRef?.removeEventListener?.('visibilitychange', visibility);
     for (const name of ['input', 'change', 'focusout', 'toggle', 'earth-observer:panel']) documentRef?.removeEventListener?.(name, wakeAdoption, true);
     windowRef?.removeEventListener?.('earth-observer:timechange', wakeAdoption);

@@ -130,6 +130,14 @@ body.sidebar-open #sidebar { visibility: visible; opacity: 1; transform: transla
 #navigation { position: absolute; right: var(--safe-right); bottom: var(--workspace-bottom); display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius); background: #121d29f5; z-index: 5; }
 .navigation-divider { width: 22px; height: 1px; background: var(--line); margin: 3px 0; }
 body.side-panel-open #navigation { right: calc(var(--safe-right) + var(--dossier-width) + 12px); }
+body.scene-members-open #navigation { right: calc(var(--safe-right) + var(--dossier-width) + 12px); }
+.scene-members-status { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.scene-members-list { display: flex; flex-direction: column; gap: 6px; }
+.scene-member-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; width: 100%; min-height: 48px; padding: 12px; text-align: left; color: var(--text); background: var(--panel-soft); border: 1px solid var(--line); border-radius: 10px; font: inherit; cursor: pointer; }
+.scene-member-row:hover { border-color: var(--accent); }
+.scene-member-title { overflow-wrap: anywhere; line-height: 1.45; }
+.scene-member-action { color: var(--accent); flex-shrink: 0; }
+.scene-members-more { margin-top: 14px; min-height: 44px; width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); color: var(--text); font: inherit; cursor: pointer; }
 .view-position { position: absolute; bottom: calc(var(--credit-height) + 20px); left: var(--safe-left); max-width: calc(50% - 340px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); padding: 8px 10px; border-radius: 8px; background: #121d29dd; font-size: 12px; font-variant-numeric: tabular-nums; pointer-events: none; z-index: 3; }
 .credits { position: absolute; bottom: 0; left: 0; right: 0; background: #080f16ee; min-height: 32px; padding: 7px var(--safe-right) max(7px, env(safe-area-inset-bottom)) var(--safe-left); z-index: 10; color: var(--muted); font-size: calc(12px * var(--reading-scale, 1)); line-height: 1.5; overflow-wrap: anywhere; }
 .credits .cesium-widget-credits { position: static; display: inline; font-size: inherit; line-height: inherit; }
@@ -444,7 +452,7 @@ details[open] > summary > .summary-chevron, #sources[open] > summary > .ui-icon:
   body.sidebar-open #sidebar { transform: none; }
   .panel-header { min-height: 62px; padding-left: 16px; }
   .panel-content { padding: 16px; }
-  #navigation, body.side-panel-open #navigation { top: calc(var(--ui-top) + 72px); bottom: auto; right: var(--safe-right); flex-direction: row; padding: 4px; gap: 0; }
+  #navigation, body.side-panel-open #navigation, body.scene-members-open #navigation { top: calc(var(--ui-top) + 72px); bottom: auto; right: var(--safe-right); flex-direction: row; padding: 4px; gap: 0; }
   .navigation-divider { width: 1px; height: 20px; margin: 0 3px; }
   .earth-time-dock { width: calc(100% - 24px); bottom: calc(var(--credit-height) + 10px); }
   .earth-timeline { padding-top: 104px; }

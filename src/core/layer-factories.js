@@ -171,11 +171,11 @@ export async function createLayer(id, { services = {}, fetchImpl, getLocalArea, 
   }
   if (id === 'earthquakes') {
     const [engine, source] = modules;
-    return engine.createPreparedEarthquakesLayer({ client: source.createRegionalSceneClient({ fetchImpl, sourceKey: 'earthquakes' }) });
+    return engine.createPreparedEarthquakesLayer({ generic: true, focus: true, client: source.createRegionalSceneClient({ fetchImpl, sourceKey: 'earthquakes' }) });
   }
   if (id === 'gdacs-notices') {
     const [engine, source] = modules;
-    return engine.createPreparedGdacsLayer({ client: source.createRegionalSceneClient({ fetchImpl, sourceKey: 'gdacs' }) });
+    return engine.createPreparedGdacsLayer({ focus: true, client: source.createRegionalSceneClient({ fetchImpl, sourceKey: 'gdacs' }) });
   }
   if (id === 'fire-perimeters') {
     const [adapter, source] = modules;

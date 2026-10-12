@@ -114,7 +114,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
   // Keep the desktop preference intact when a narrow screen temporarily closes it.
   const uiState = readUiState(storage);
   const ledger = createCreditLedger(viewer.cesiumWidget.creditDisplay, (html, onScreen) => new Cesium.Credit(html, onScreen));
-  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, layerPreparation = preparationState(), frameRendered = false, keyboardNoticeAction, keyboardNoticeActionTimer;
+  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, layerPreparation = preparationState(), frameRendered = false, keyboardNoticeAction, keyboardNoticeActionTimer, selectionFocusGuard;
   const remember = () => writeUiState(storage, uiState);
   const textSizeControl = el('label', 'text-size-control');
   const textSizeMark = el('span', '', 'Aa'); textSizeMark.setAttribute('aria-hidden', 'true');
@@ -448,6 +448,11 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
   let stopSelectionDetails = () => {};
   const select = (entity) => {
     if (destroyed) return;
+    // Retain this guard before opening the dossier can hide its former editor
+    // or workspace and move activeElement to BODY. Async inspection completion
+    // cannot turn that focus loss into permission to claim keyboard focus.
+    selectionFocusGuard = { entity, protected: editableTarget(document.activeElement) ||
+      document.getElementById('command-palette').open || Boolean(activePanel && activePanel !== 'selection') };
     const action = keyboardNoticeAction; keyboardNoticeAction = undefined;
     clearTimeout(keyboardNoticeActionTimer); keyboardNoticeActionTimer = undefined;
     const focusNotice = Boolean(action && action.event.eventPhase > 0 && gdacsNoticeSelection(entity, viewer.clock.currentTime)?.notice.item.itemId === action.itemId);
@@ -568,6 +573,24 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
     openCommands: () => commandPalette.open(), closeCommands: () => commandPalette.close(),
     subscribePanels(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener); },
     selectEntity(entity) { if (viewer.selectedEntity === entity) select(entity); else viewer.selectedEntity = entity; },
+    /** Called only by an admitted explicit inspection completion, never by the
+     * general selection/update listener. It does not open or rebuild a panel. */
+    focusSelection(entity) {
+      if (destroyed || document.hidden || !entity || viewer.isDestroyed?.() || viewer.selectedEntity !== entity ||
+          selectionFocusGuard?.entity !== entity || selectionFocusGuard.protected || activePanel !== 'selection' ||
+          panels.selection.hidden || panels.selection.inert || document.getElementById('command-palette').open ||
+          editableTarget(document.activeElement)) return false;
+      try { if (getTemporal().mode !== 'live') return false; } catch { return false; }
+      const active = document.activeElement;
+      // A later navigation control keeps ownership of focus. The legitimate
+      // Layers/member handoff has already hidden its originating row, leaving
+      // BODY; focus already inside the dossier is also safe to advance.
+      if (active && active !== document.body && active !== document.documentElement && !panels.selection.contains(active)) return false;
+      const target = document.getElementById('clear-selection');
+      if (!target?.isConnected || target.disabled || target.closest('[hidden], [inert]')) return false;
+      target.focus({ preventScroll: true });
+      return viewer.selectedEntity === entity && document.activeElement === target;
+    },
     openWorldReport(event) {
       // Context can inspect an exact stored report without enabling a layer or
       // inventing a drawable feature outside the selected scene's membership.
@@ -584,7 +607,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
       if (radiusKm !== undefined && [10, 25, 50, 100, 250].includes(Number(radiusKm))) document.getElementById('local-radius').value = String(radiusKm);
     },
     destroy() {
-      destroyed = true; keyboardNoticeAction = undefined; clearTimeout(keyboardNoticeActionTimer); keyboardNoticeActionTimer = undefined; clearTimeout(noticeTimer);
+      destroyed = true; selectionFocusGuard = undefined; keyboardNoticeAction = undefined; clearTimeout(keyboardNoticeActionTimer); keyboardNoticeActionTimer = undefined; clearTimeout(noticeTimer);
       cleanup.splice(0).reverse().forEach((dispose) => dispose?.());
       for (const dispose of mounted.values()) dispose();
       ledger.clear(); rows.clear(); mounted.clear(); creditItems.clear(); panelListeners.clear();

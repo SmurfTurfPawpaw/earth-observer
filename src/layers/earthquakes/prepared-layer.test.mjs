@@ -6,7 +6,7 @@ import { normalizeRegionalSceneDelivery } from '../../core/regional-scene-client
 import { buildPreparedUsgsScene, selectPreparedUsgsCells } from '../../../worker/prepared-usgs-scene.js';
 import { USGS_LIVE_DAY, decodeUsgsLiveDay, usgsLiveDayOverview } from '../../core/usgs-live-day.js';
 import { pluginFactsDigest, pluginBytesDigest } from '../../core/plugin-evidence.js';
-import { mapSymbolImage, mapClusterBadge } from '../../core/map-symbols.js';
+for (const name of ['HTMLCanvasElement', 'HTMLImageElement', 'ImageBitmap', 'OffscreenCanvas']) globalThis[name] ||= class {};
 
 const NOW = Date.parse('2026-10-12T09:00:00.000Z'), featuresDemand = { level: 0, cells: [[4, 0]], mode: 'features' };
 const CLICK = Cesium.ScreenSpaceEventType.LEFT_CLICK;
@@ -45,32 +45,35 @@ function harness(client, initialDemand = featuresDemand) {
 
 test('native feature symbols carry exact reported coordinates and lazy pinned source selection without per-record Entities', async t => {
   const view = await viewFixture(), h = harness({ load: async () => view }); t.after(() => h.layer.destroy());
-  assert.equal(await h.layer.update(h.viewer), true); assert.equal(h.viewer.scene.primitives.length, 1);
-  const symbols = h.viewer.scene.primitives.get(0); assert.ok(symbols instanceof Cesium.BillboardCollection); assert.equal(symbols.length, 2);
+  assert.equal(await h.layer.update(h.viewer), true); assert.equal(h.viewer.scene.primitives.length, 2);
+  const symbols = h.viewer.scene.primitives.get(0); assert.ok(symbols instanceof Cesium.BillboardCollection); assert.equal(symbols.length, 4);
   assert.equal(h.viewer.selectedEntity, undefined); assert.equal(symbols.get(0).id instanceof Cesium.Entity, false);
-  assert.equal(symbols.get(0).image, mapSymbolImage('seismic')); assert.equal(symbols.get(0).disableDepthTestDistance, undefined);
-  assert.equal(Cesium.Cartesian3.equals(symbols.get(0).position, Cesium.Cartesian3.fromDegrees(4, 50)), true);
+  assert.equal(symbols.get(0).image, 'beacon-v1-head:seismic'); assert.equal(symbols.get(0).disableDepthTestDistance, undefined);
+  assert.equal(Cesium.Cartesian3.equals(symbols.get(1).position, Cesium.Cartesian3.fromDegrees(4, 50)), true);
+  const stem = h.viewer.scene.primitives.get(1).get(0); assert.equal(stem.id, symbols.get(0).id);
+  assert.equal(Cesium.Cartesian3.equals(stem.positions[0], symbols.get(1).position), true);
+  assert.equal(Cesium.Cartesian3.equals(stem.positions[1], symbols.get(0).position), true);
   h.pick(symbols.get(0)); const selected = h.viewer.selectedEntity, properties = selected.properties.getValue();
   assert.ok(selected instanceof Cesium.Entity); assert.equal(selected.id, view.scene.features[0].id); assert.equal(selected.billboard, undefined);
   assert.equal(properties.sourceReceiptId, view.source.receiptId); assert.equal(properties.sourceFeatureRevision, view.scene.features[0].revision);
   assert.equal(properties.time, NOW - 4000); assert.equal(properties.updatedAt, NOW - 3000); assert.equal(properties.eventType, 'earthquake');
-  h.pick(symbols.get(1)); assert.equal(h.viewer.selectedEntity.properties.eventType.getValue(), 'quarry blast');
+  h.pick(symbols.get(2)); assert.equal(h.viewer.selectedEntity.properties.eventType.getValue(), 'quarry blast');
   assert.equal(h.layer.getAnalystRecords().length, 2); assert.equal(h.layer.getStats().lastUpdate, NOW);
   assert.equal(h.layer.getStats().sourceGeneratedAt, new Date(NOW - 2000).toISOString());
   assert.ok(h.layer.getStats().editionMetrics.preparationMs >= 0); h.pick(null); assert.deepEqual(h.native, ['native']);
 });
 
-test('cluster badges are native cell-center summaries; activation zooms their bounds and never exposes invented analyst epicenters', async t => {
+test('cluster beacons keep exact area anchors and accessible counts; activation zooms bounds without invented analyst epicenters', async t => {
   const demand = { ...featuresDemand, mode: 'clusters' }, view = await viewFixture(demand), h = harness({ load: async () => view }, demand);
   t.after(() => h.layer.destroy()); assert.equal(await h.layer.update(h.viewer), true);
   const symbols = h.viewer.scene.primitives.get(0), cell = view.scene.clusters[0];
-  assert.equal(symbols.length, 1); assert.equal(h.viewer.scene.primitives.length, 1); assert.equal(symbols.get(0).image, mapClusterBadge(2, 'seismic').image);
-  assert.equal(symbols.get(0).width, 48); assert.equal(symbols.get(0).height, 42);
-  assert.equal(Cesium.Cartesian3.equals(symbols.get(0).position, Cesium.Cartesian3.fromDegrees(cell.lon, cell.lat)), true);
+  assert.equal(symbols.length, 2); assert.equal(h.viewer.scene.primitives.length, 2); assert.equal(symbols.get(0).image, 'beacon-v1-head:seismic');
+  assert.equal(symbols.get(0).width, 24); assert.equal(symbols.get(0).height, 24);
+  assert.equal(Cesium.Cartesian3.equals(symbols.get(1).position, Cesium.Cartesian3.fromDegrees(cell.lon, cell.lat)), true);
   h.pick(symbols.get(0)); assert.equal(h.viewer.selectedEntity, undefined); assert.equal(h.flights.length, 1);
   assert.equal(h.flights[0].destination.equals(Cesium.Rectangle.fromDegrees(cell.bounds.west, cell.bounds.south, cell.bounds.east, cell.bounds.north)), true);
   assert.deepEqual(h.layer.getAnalystRecords(), []); assert.equal(h.layer.getStats().count, 2); assert.equal(h.layer.getStats().drawnCount, 1);
-  assert.equal(h.layer.getRowControls().items[0].detail, 'Area summary; not a reported event location');
+  assert.match(h.layer.getRowControls().items[0].detail, /2 retained reports/);
 });
 
 test('unchanged editions retain selected identity/proof; corrected complete facts update it after the new receipt is committed', async t => {
@@ -100,7 +103,7 @@ test('camera scope changes retain exact prior symbols with explicit incomplete d
   let demand = featuresDemand, view = await viewFixture(); const h = harness({ load: async () => view, select() {}, cancel() {} }); t.after(() => h.layer.destroy());
   await h.layer.update(h.viewer); const previous = h.viewer.scene.primitives.get(0); h.pick(previous.get(0)); const selected = h.viewer.selectedEntity;
   demand = { ...featuresDemand, cells: [[0, 0]] }; h.setDemand(demand);
-  assert.equal(h.viewer.scene.primitives.length, 1); assert.equal(h.viewer.scene.primitives.get(0), previous); assert.equal(h.viewer.selectedEntity, selected);
+  assert.equal(h.viewer.scene.primitives.length, 2); assert.equal(h.viewer.scene.primitives.get(0), previous); assert.equal(h.viewer.selectedEntity, selected);
   assert.equal(h.layer.getStats().count, 2); assert.equal(h.layer.getStats().pending, true); assert.equal(h.layer.getStats().requestedViewportComplete, false);
   assert.equal(h.layer.getStats().cohortCoverage.requestedViewportComplete, false); assert.deepEqual(h.layer.getStats().displayedSelection, featuresDemand);
   assert.deepEqual(h.layer.getStats().requestedSelection, demand); assert.equal(selected.properties.sourceReceiptId.getValue(), view.source.receiptId);
@@ -133,7 +136,7 @@ test('late source results and late native attachment cannot publish after disabl
     const attaching = Promise.withResolvers(), gate = Promise.withResolvers(), add = h.viewer.scene.primitives.add.bind(h.viewer.scene.primitives);
     h.viewer.scene.primitives.add = collection => { attaching.resolve(); return gate.promise.then(() => add(collection)); };
     value = next; const pending = h.layer.update(h.viewer); await attaching.promise; h.layer[terminal](); gate.resolve();
-    assert.equal(await pending, false); assert.equal(h.viewer.scene.primitives.length, terminal === 'disable' ? 1 : 0);
+    assert.equal(await pending, false); assert.equal(h.viewer.scene.primitives.length, terminal === 'disable' ? 2 : 0);
     if (terminal === 'disable') { assert.equal(h.viewer.scene.primitives.get(0), previous); assert.equal(previous.show, false); assert.equal(h.layer.getStats().receipt.fence, 1); }
     h.layer.destroy(); assert.equal(h.viewer.scene.primitives.length, 0);
   }

@@ -11,6 +11,9 @@ const PATHS = Object.freeze({
   drought: 'M19 9a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM15 3V2M15 16v1M8 9H7M23 9h1M10 4 9 3M20 4l1-1M7 24h6l2-4 3 7 2-3h5',
   notice: 'm16 7 10 9-10 9L6 16l10-9ZM16 12v6M16 21h.01',
 });
+export const MAP_SYMBOL_PATHS = PATHS;
+export const MAP_SYMBOL_LABELS = Object.freeze({ seismic: 'Seismic', flood: 'Flooding', cyclone: 'Storms',
+  volcano: 'Volcanic activity', wildfire: 'Wildfires', drought: 'Drought', notice: 'Other reports' });
 const IMAGES = Object.freeze(Object.fromEntries(Object.entries(PATHS).map(([kind, path]) => [kind,
   'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="8" fill="#15212c" stroke="#ffffff" stroke-opacity=".65" stroke-width="1.3"/><path d="${path}" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`)])));
 

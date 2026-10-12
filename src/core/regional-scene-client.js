@@ -2,7 +2,9 @@ import { pluginJson } from './plugin-evidence.js';
 import { validateUsgsLiveDayFacts, USGS_LIVE_DAY } from './usgs-live-day.js';
 import { pluginRevision } from './live-updates.js';
 import { PREPARED_SCENE_POLICY, PREPARED_SCENE_SOURCES, preparedSceneSource, comparePreparedSceneSources,
-  validatePreparedRegionalScene, applyPreparedSceneDelta } from './prepared-scene-contract.js';
+  validatePreparedRegionalScene, applyPreparedSceneDelta, preparedSceneFeature } from './prepared-scene-contract.js';
+import { FOCUS_SCENE_POLICY, FOCUS_SCENE_LIMITS, focusSceneSelection, validateFocusRegionalScene, applyFocusSceneDelta,
+  validateFocusFeature, focusFeatureMatches, focusSourceVersion, focusCellAt, focusLeafKey } from './focus-scene-contract.js';
 
 export const REGIONAL_SCENE_POLICY = 'usgs-seismic-geographic-grid-v1';
 export const REGIONAL_SCENE_LIMITS = Object.freeze({ bytes: 270 * 1024, entries: 16, cacheBytes: 2 * 1024 * 1024,
@@ -17,8 +19,12 @@ const freeze = value => { if (value && typeof value === 'object' && !Object.isFr
   for (const child of Object.values(value)) freeze(child); Object.freeze(value); } return value; };
 const keys = (value, allowed) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => allowed.includes(key));
 const nonnegative = value => Number.isSafeInteger(value) && value >= 0;
+const detailMatches = (sourceKey, compact, feature, source) => focusFeatureMatches(sourceKey, compact, feature) &&
+  (sourceKey !== 'gdacs' || feature.provenance?.capturedAt === source.capturedAt && feature.provenance.recordedAt === source.publishedAt &&
+    feature.provenance.evidence?.schemaVersion === 1 && feature.provenance.evidence.snapshotId === source.snapshotId);
 
 export function regionalSelection(demand) {
+  if (demand?.schemaVersion === 2) return focusSceneSelection(demand);
   const { level, cells, mode } = demand || {};
   if (!Number.isInteger(level) || !GRIDS[level] || !['features', 'clusters'].includes(mode) || !Array.isArray(cells) || cells.length > 128) invalid();
   let previous;
@@ -149,10 +155,10 @@ export function normalizeRegionalSceneDelivery(value, demand, { base = null, now
 
 /** Generic second-source transport uses the shared source contract, not a copied decoder. */
 export function normalizePreparedSceneDelivery(value, demand, { sourceKey, base = null, now = Date.now } = {}) {
-  const selection = regionalSelection(demand);
-  if (!Object.hasOwn(PREPARED_SCENE_SOURCES, sourceKey) || !value || value.schemaVersion !== 1 || value.configured !== true ||
-      value.available !== true || value.pending !== false || value.policyId !== PREPARED_SCENE_POLICY || value.sourceKey !== sourceKey ||
-      value.kind !== 'prepared-scene-delivery' || !['snapshot', 'delta'].includes(value.transport) || typeof value.snapshotRequired !== 'boolean') invalid();
+  const selection = regionalSelection(demand), focused = selection.schemaVersion === 2;
+  if (!Object.hasOwn(PREPARED_SCENE_SOURCES, sourceKey) || !value || value.schemaVersion !== (focused ? 2 : 1) || value.configured !== true ||
+      value.available !== true || value.pending !== false || value.policyId !== (focused ? FOCUS_SCENE_POLICY : PREPARED_SCENE_POLICY) || value.sourceKey !== sourceKey ||
+      value.kind !== (focused ? 'focus-scene-delivery' : 'prepared-scene-delivery') || !['snapshot', 'delta'].includes(value.transport) || typeof value.snapshotRequired !== 'boolean') invalid();
   const source = preparedSceneSource(sourceKey, value.source, { now }), check = value.check;
   if (sourceKey === 'gdacs') {
     if (check !== null || value.stale !== null || value.sourceGenerationAgeMs !== null) invalid();
@@ -162,8 +168,9 @@ export function normalizePreparedSceneDelivery(value, demand, { sourceKey, base 
       [check.checkedAt, check.lastSuccessfulAt, check.sourceGeneratedAt].some(item => Date.parse(item) > now() + 300000) ||
       typeof check.status !== 'string' || !check.status || check.status.length > 80 || typeof value.stale !== 'boolean' ||
       !Number.isFinite(value.sourceGenerationAgeMs) || value.sourceGenerationAgeMs < 0) invalid();
-  const scene = value.transport === 'snapshot' ? value.delta === null ? validatePreparedRegionalScene(value.scene, { sourceKey, selection, now }) : invalid() :
-    value.scene === null && base && !value.snapshotRequired ? applyPreparedSceneDelta(base, value.delta, { sourceKey, now }) : invalid();
+  const validate = focused ? validateFocusRegionalScene : validatePreparedRegionalScene, apply = focused ? applyFocusSceneDelta : applyPreparedSceneDelta;
+  const scene = value.transport === 'snapshot' ? value.delta === null ? validate(value.scene, { sourceKey, selection, now }) : invalid() :
+    value.scene === null && base && !value.snapshotRequired ? apply(base, value.delta, { sourceKey, now }) : invalid();
   if (!same(scene.source, source)) invalid();
   if (base && scene.version === base.version) {
     const facts = view => ({ ...view, contentDigest: null, features: [...view.features].sort((a, b) => a.id.localeCompare(b.id)),
@@ -174,9 +181,9 @@ export function normalizePreparedSceneDelivery(value, demand, { sourceKey, base 
     browserReadAt: now(), browserCache: false, pending: false });
 }
 
-async function readJson(response, signal) {
+async function readJson(response, signal, maximum = REGIONAL_SCENE_LIMITS.bytes) {
   const length = response.headers.get('content-length');
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > REGIONAL_SCENE_LIMITS.bytes) ||
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maximum) ||
       !/^application\/json(?:;|$)/i.test(response.headers.get('content-type') || '') || !response.body?.getReader) {
     void response.body?.cancel?.(); invalid();
   }
@@ -184,7 +191,7 @@ async function readJson(response, signal) {
   const stop = () => { void reader.cancel().catch(() => {}); }; signal.addEventListener('abort', stop, { once: true });
   try {
     for (;;) { signal.throwIfAborted(); const part = await reader.read(); signal.throwIfAborted(); if (part.done) { complete = true; break; }
-      size += part.value.byteLength; if (++count > 4096 || !part.value.byteLength || size > REGIONAL_SCENE_LIMITS.bytes) invalid(); parts.push(part.value); }
+      size += part.value.byteLength; if (++count > 4096 || !part.value.byteLength || size > maximum) invalid(); parts.push(part.value); }
     const bytes = new Uint8Array(size); let at = 0; for (const part of parts) { bytes.set(part, at); at += part.byteLength; }
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   } finally { signal.removeEventListener('abort', stop); if (!complete) stop(); reader.releaseLock(); }
@@ -198,7 +205,7 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
       !Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > REGIONAL_SCENE_LIMITS.deadlineMs ||
       sourceKey !== undefined && !Object.hasOwn(PREPARED_SCENE_SOURCES, sourceKey) ||
       !Number.isInteger(retryDelayMs) || retryDelayMs < 1 || retryDelayMs > 2000) invalid();
-  const cache = new Map(); let cacheBytes = 0, active, expected, knownSource, dirty = false, destroyed = false, owner = 0, selectedKey = null;
+  const cache = new Map(), auxiliary = new Set(); let cacheBytes = 0, active, expected, knownSource, dirty = false, destroyed = false, owner = 0, selectedKey = null;
   const compare = (left, right) => sourceKey ? comparePreparedSceneSources(sourceKey, left, right) :
     same(left, right) ? 0 : left.fence === right.fence ? null : left.fence > right.fence ? 1 : -1;
   const current = (request, signal, key) => !destroyed && active === request && !signal.aborted && selectedKey === key;
@@ -223,7 +230,33 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
       const [id, entry] = cache.entries().next().value; cache.delete(id); cacheBytes -= entry.bytes;
     }
   };
-  const cancel = () => { ++owner; active?.abort(abort()); active = null; };
+  const cancelView = () => { ++owner; active?.abort(abort()); active = null; };
+  const cancel = () => { cancelView(); for (const request of auxiliary) request.abort(abort()); };
+  function paramsFor(selection) {
+    return selection.schemaVersion === 2 ? new URLSearchParams({ cells: selection.leaves.map(leaf => leaf.join(':')).join(','),
+      focus: selection.focus.join(':'), featureBudget: String(selection.featureBudget) }) :
+      new URLSearchParams({ level: String(selection.level), cells: selection.cells.map(cell => cell.join(':')).join(','), mode: selection.mode });
+  }
+  async function pinnedGet(endpoint, params, { signal: external, maximum = REGIONAL_SCENE_LIMITS.bytes } = {}) {
+    if (destroyed || !sourceKey) throw abort();
+    if (auxiliary.size >= 2) throw new Error('Stored source inspection is busy');
+    const request = new AbortController(); auxiliary.add(request);
+    const signal = external ? AbortSignal.any([request.signal, external]) : request.signal;
+    const timer = setTimeout(() => request.abort(new DOMException('Stored inspection deadline', 'TimeoutError')), deadlineMs); let stop;
+    try {
+      const operation = (async () => {
+        signal.throwIfAborted(); if (UTF8.encode(`?${params}`).length > FOCUS_SCENE_LIMITS.queryBytes) invalid();
+        const response = await fetchImpl(`${baseUrl}${endpoint}?${params}`, { method: 'GET', credentials: 'omit', cache: 'no-store', redirect: 'error', signal });
+        signal.throwIfAborted();
+        if (!response.ok) { void response.body?.cancel?.(); throw Object.assign(new Error(response.status === 409 ?
+          'This retained display edition is no longer available' : 'Stored source inspection unavailable'), {
+            code: response.status === 409 ? 'edition-not-retained' : 'inspection-unavailable', refreshRequired: response.status === 409 }); }
+        const value = await readJson(response, signal, maximum); signal.throwIfAborted(); if (destroyed) throw abort(); return value;
+      })();
+      const canceled = new Promise((_, reject) => { stop = () => reject(signal.reason || abort()); signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop(); });
+      return await Promise.race([operation, canceled]);
+    } finally { clearTimeout(timer); if (stop) signal.removeEventListener('abort', stop); auxiliary.delete(request); }
+  }
   return {
     select(demand) { const key = regionalSelectionKey(demand); if (key === selectedKey) return false; cancel(); selectedKey = key; return true; },
     invalidate(revision) {
@@ -236,9 +269,47 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
       dirty = true; cancel(); return true;
     },
     cancel,
+    async getFeature(compact, source, { signal } = {}) {
+      if (destroyed) throw abort();
+      if (!sourceKey) invalid(); validateFocusFeature(sourceKey, compact); preparedSceneSource(sourceKey, source, { now }); signal?.throwIfAborted();
+      const version = focusSourceVersion(sourceKey, source), key = `proof:${version}:${compact.id}:${compact.revision}`, saved = cache.get(key);
+      if (saved && now() - saved.savedAt <= REGIONAL_SCENE_LIMITS.cacheAgeMs && same(saved.view.source, source) &&
+          detailMatches(sourceKey, compact, saved.view.feature, source)) { cache.delete(key); cache.set(key, saved);
+        // Cached evidence retains its exact source edition, not a new current-health assertion.
+        return freeze({ ...saved.view, current: false, check: null, stale: null, sourceGenerationAgeMs: null, browserCache: true }); }
+      const value = await pinnedGet('api/layers/scenes', new URLSearchParams({ source: sourceKey, feature: compact.id,
+        revision: compact.revision, sourceVersion: version }), { signal });
+      if (value?.schemaVersion !== 1 || value.kind !== 'prepared-scene-feature-delivery' || value.sourceKey !== sourceKey || value.configured !== true ||
+          value.available !== true || value.pending !== false || typeof value.current !== 'boolean' || !same(value.source, source) ||
+          !detailMatches(sourceKey, compact, value.feature, source) || !value.current &&
+            (value.check !== null || value.stale !== null || value.sourceGenerationAgeMs !== null)) invalid();
+      preparedSceneFeature(sourceKey, value.feature); signal?.throwIfAborted(); put(key, freeze(value)); return value;
+    },
+    async getMembers(view, cluster, cursor = null, { signal } = {}) {
+      if (!sourceKey || view?.scene?.schemaVersion !== 2) invalid();
+      const scene = validateFocusRegionalScene(view.scene, { sourceKey, now });
+      if (!scene.clusters.some(item => same(item, cluster)) || cursor !== null && (typeof cursor !== 'string' || cursor.length > 512)) invalid();
+      const params = paramsFor(scene.selection); params.set('source', sourceKey); params.set('sourceVersion', focusSourceVersion(sourceKey, scene.source));
+      params.set('viewVersion', scene.version); params.set('asOf', scene.interest.evaluatedAt); params.set('cluster', cluster.id); params.set('limit', '50');
+      if (cursor !== null) params.set('cursor', cursor);
+      const value = await pinnedGet('api/layers/focus-scenes', params, { signal, maximum: FOCUS_SCENE_LIMITS.deliveryBytes });
+      if (value?.schemaVersion !== 2 || value.kind !== 'focus-members-delivery' || value.policyId !== FOCUS_SCENE_POLICY || value.sourceKey !== sourceKey ||
+          value.configured !== true || value.available !== true || value.pending !== false || value.sourceVersion !== focusSourceVersion(sourceKey, scene.source) ||
+          !same(value.source, scene.source) || value.viewVersion !== scene.version ||
+          value.clusterId !== cluster.id || value.asOf !== scene.interest.evaluatedAt || value.count !== cluster.count || !Array.isArray(value.members) ||
+          value.members.length > 50 || value.returned !== value.members.length || value.members.length > value.count ||
+          value.nextCursor !== null && !/^members:[a-f0-9]{64}:(?:0|[1-9]\d{0,2})$/.test(value.nextCursor)) invalid();
+      const seen = new Set(); for (const member of value.members) { validateFocusFeature(sourceKey, member);
+        if (member.role !== 'member' || !member.geometry || member.symbol !== cluster.symbol ||
+            focusLeafKey(focusCellAt(member.geometry, cluster.leaf[0])) !== focusLeafKey(cluster.leaf) ||
+            scene.features.some(feature => feature.id === member.id) || seen.has(member.id)) invalid(); seen.add(member.id); }
+      return freeze({ members: value.members, count: value.count, nextCursor: value.nextCursor, source: value.source,
+        clusterId: value.clusterId, viewVersion: value.viewVersion });
+    },
     async load(demand, { signal: external, onCached = () => {} } = {}) {
       if (destroyed) throw abort();
-      const selection = regionalSelection(demand), key = pluginJson(selection); cancel(); selectedKey = key;
+      const selection = regionalSelection(demand), focused = selection.schemaVersion === 2, key = pluginJson(selection);
+      if (focused && !sourceKey) invalid(); cancelView(); selectedKey = key;
       const request = new AbortController(); active = request; const revision = owner;
       const signal = external ? AbortSignal.any([request.signal, external]) : request.signal;
       const timer = setTimeout(() => request.abort(new DOMException('Stored regional scene deadline', 'TimeoutError')), deadlineMs);
@@ -249,17 +320,19 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
           assertCurrent(); const prior = cached(key); if (prior && !dirty) { await onCached(decorate(prior, true)); assertCurrent(); }
           let pendingRetries = 0, fullRecovery = false;
           for (;;) {
-            const params = new URLSearchParams({ level: String(selection.level), cells: selection.cells.map(cell => cell.join(':')).join(','), mode: selection.mode });
+            const params = paramsFor(selection);
             if (expected) params.set('fence', String(expected.fence));
             if (sourceKey) params.set('source', sourceKey);
             if (prior && !fullRecovery) params.set('baseVersion', prior.view.scene.version);
-            const endpoint = sourceKey ? 'api/layers/scenes' : 'api/layers/earthquakes/scene';
+            const endpoint = focused ? 'api/layers/focus-scenes' : sourceKey ? 'api/layers/scenes' : 'api/layers/earthquakes/scene';
+            if (UTF8.encode(`?${params}`).length > (focused ? FOCUS_SCENE_LIMITS.queryBytes : 2048)) invalid();
             assertCurrent(); const response = await fetchImpl(`${baseUrl}${endpoint}?${params}`, { method: 'GET', credentials: 'omit',
               cache: 'no-store', redirect: 'error', signal }); assertCurrent();
             if (response.status === 409 || response.status === 503) {
-              const value = await readJson(response, signal); assertCurrent();
-              if (value?.schemaVersion !== 1 || value.available !== false || value.scene !== null || value.delta !== null) invalid();
-              if (sourceKey && (value.kind !== 'prepared-scene-delivery' || value.sourceKey !== sourceKey || value.policyId !== PREPARED_SCENE_POLICY)) invalid();
+              const value = await readJson(response, signal, focused ? FOCUS_SCENE_LIMITS.deliveryBytes : REGIONAL_SCENE_LIMITS.bytes); assertCurrent();
+              if (value?.schemaVersion !== (focused ? 2 : 1) || value.available !== false || value.scene !== null || value.delta !== null) invalid();
+              if (sourceKey && (value.kind !== (focused ? 'focus-scene-delivery' : 'prepared-scene-delivery') || value.sourceKey !== sourceKey ||
+                value.policyId !== (focused ? FOCUS_SCENE_POLICY : PREPARED_SCENE_POLICY))) invalid();
               if (sourceKey && value.configured === true && value.pending === true && pendingRetries < 2) {
                 pendingRetries++; await new Promise((resolve, reject) => {
                   const stopped = () => { clearTimeout(delay); signal.removeEventListener('abort', stopped); reject(signal.reason || abort()); },
@@ -273,7 +346,7 @@ export function createRegionalSceneClient({ fetchImpl = (...args) => fetch(...ar
                   response.status === 409 ? 'source-fence-not-ready' : 'scene-preparation-pending' : 'stored-scene-unavailable' });
             }
             if (!response.ok) { void response.body?.cancel?.(); throw new Error('Stored regional scene unavailable'); }
-            const value = await readJson(response, signal); assertCurrent();
+            const value = await readJson(response, signal, focused ? FOCUS_SCENE_LIMITS.deliveryBytes : REGIONAL_SCENE_LIMITS.bytes); assertCurrent();
             let view;
             try { view = sourceKey ? normalizePreparedSceneDelivery(value, selection, { sourceKey, base: !fullRecovery ? prior?.view.scene : null, now }) :
               normalizeRegionalSceneDelivery(value, selection, { base: !fullRecovery ? prior?.view.scene : null, now }); }

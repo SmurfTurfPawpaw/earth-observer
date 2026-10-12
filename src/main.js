@@ -32,6 +32,7 @@ let contextRecovery;
 let area = null, intelligence, notebook, timeline, updates, worldDossiers, reportDossiers, navigatePlace, panelLoading = {}, locationRevision = 0, warmTimer;
 let workspaceRestore, pendingTemporal = { mode: 'live' };
 let coverageDemand;
+let sceneMembers, sceneMembersLoading;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -144,6 +145,7 @@ async function handlePanel({ panel, open }) {
   if (destroyed) return;
   if (!['news', 'notebook'].includes(panel)) return;
   if (!open) { (panel === 'news' ? intelligence : notebook)?.close(); if (panel === 'news') reportDossiers?.cancel(); return; }
+  sceneMembers?.close();
   if (!panelLoading[panel]) panelLoading[panel] = (async () => {
     if (panel === 'news') {
       const { createPluginDossierPanel } = await import('./core/plugin-dossier.js');
@@ -182,6 +184,15 @@ async function handlePanel({ panel, open }) {
   await (panel === 'news' ? intelligence : notebook)?.open();
 }
 
+async function inspectCluster(context) {
+  if (destroyed || document.hidden || currentWorkspaceTime().mode !== 'live') return;
+  sceneMembersLoading ||= import('./core/scene-members-panel.js');
+  const { createSceneMembersPanel } = await sceneMembersLoading;
+  if (destroyed || document.hidden || currentWorkspaceTime().mode !== 'live' || context.isCurrent?.() === false) return;
+  sceneMembers ||= createSceneMembersPanel({ onOpen: () => { shell.closeNews(); shell.closeNotebook(); shell.closeSidebar(); } });
+  sceneMembers.open(context);
+}
+
 export async function start({ earlySearchIntent } = {}) {
   if (destroyed) { earlySearchIntent?.destroy(); return; }
   disposers.push(() => earlySearchIntent?.destroy());
@@ -199,7 +210,8 @@ export async function start({ earlySearchIntent } = {}) {
     });
     disposers.push(() => contextRecovery.destroy());
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area,
-      onSpatialDemand: () => coverageDemand?.changed() });
+      onSpatialDemand: () => coverageDemand?.changed(), onFeatureInspection: entity => shell?.focusSelection?.(entity),
+      onClusterInspection: context => { void inspectCluster(context).catch(() => shell?.notify('Reports could not open. Try again.')); } });
     const diagnosticSession = ['qa', 'stress', 'fleet', 'synthetic'].some(key => new URLSearchParams(location.search).has(key));
     coverageDemand = createCoverageDemandClient({ enabled: import.meta.env?.PROD === true && !diagnosticSession,
       getDemand: () => extractCameraDemand(viewer, { Cartographic, Cartesian2, Ellipsoid, Math: CesiumMath }),
@@ -207,6 +219,10 @@ export async function start({ earlySearchIntent } = {}) {
         ['earthquakes', 'gdacs-notices'].some(id => manager.getState()[id]?.enabled) });
     disposers.push(() => coverageDemand.destroy());
     shell = createShell(viewer, manager, { getTemporal: currentWorkspaceTime, canShare: () => !destroyed && (!workspaceRestore || workspaceRestore.canCheckpoint()) });
+    const stopSceneSelection = viewer.selectedEntityChanged?.addEventListener?.(entity => {
+      if (entity) queueMicrotask(() => { if (!destroyed && viewer?.selectedEntity === entity) sceneMembers?.close(); });
+    });
+    if (stopSceneSelection) disposers.push(stopSceneSelection);
     // Opt-in display path for embedded surfaces. This copies actual completed
     // frames and leaves input/picking on Cesium; it does not simulate data.
     const displayButton = document.createElement('button'); displayButton.type = 'button'; displayButton.className = 'icon-button'; displayButton.id = 'compatible-display';
@@ -230,7 +246,7 @@ export async function start({ earlySearchIntent } = {}) {
         if (timeline) timeline.prepareRestore(temporal);
         else { viewer.earthTime.pause?.(); viewer.earthTime.setCoverage?.(null); viewer.earthTime.setTime?.(temporal.mode === 'history' ? temporal.at : null);
           if (temporal.mode === 'history') viewer.earthTime.setRate?.(temporal.rate); }
-        if (temporal.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
+        if (temporal.mode === 'history') { sceneMembers?.close(); shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
         intelligence?.setSceneMode(temporal.mode);
         coverageDemand.suspend();
       },
@@ -303,7 +319,7 @@ export async function start({ earlySearchIntent } = {}) {
         if (destroyed) return;
         const changed = appliedSceneMode !== state.mode;
         appliedSceneMode = state.mode;
-        if (changed && state.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
+        if (changed && state.mode === 'history') { sceneMembers?.close(); shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
         if (changed) await manager.setTimelineMode(state.mode);
         if (destroyed || appliedSceneMode !== state.mode) return;
         if (changed) intelligence?.setSceneMode(state.mode);
@@ -337,6 +353,7 @@ export async function start({ earlySearchIntent } = {}) {
     radius.addEventListener('change', radiusChange); disposers.push(() => radius.removeEventListener('change', radiusChange));
     const resetButton = document.getElementById('reset-session'); resetButton.disabled = false;
     const reset = async () => {
+      sceneMembers?.close();
       timeline.live();
       ++locationRevision; locateButton.disabled = false;
       const storage = safeStorage(); try { storage?.removeItem(SESSION_KEY); storage?.removeItem(STORAGE_KEY); } catch {}
@@ -350,6 +367,7 @@ export async function start({ earlySearchIntent } = {}) {
     disposers.push(viewer.scene.renderError.addEventListener((_scene, error) => stopFailedScene(error)));
     const visibility = () => {
       if (destroyed) return;
+      if (document.hidden) sceneMembers?.close();
       viewer.useDefaultRenderLoop = !document.hidden && !contextRecovery.isLost();
       if (viewer.useDefaultRenderLoop) viewer.scene.requestRender();
     };
@@ -410,7 +428,7 @@ export async function destroy() {
     // Direct teardown leaves requested intent and saved preferences untouched.
     for (const { id } of LAYERS) stop(() => manager?.getLayer(id)?.disable?.(viewer));
   }
-  stop(() => intelligence?.destroy()); stop(() => notebook?.destroy()); stop(() => cachedFetch.destroy());
+  stop(() => sceneMembers?.destroy()); stop(() => intelligence?.destroy()); stop(() => notebook?.destroy()); stop(() => cachedFetch.destroy());
   for (const dispose of disposers.splice(0).reverse()) stop(dispose);
   stop(() => shell?.destroy());
   stop(() => manager?.destroy());

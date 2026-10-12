@@ -238,7 +238,9 @@ self.addEventListener('message', event => {
       Object.keys(value).sort().join(',') !== 'requestId,schemaVersion,scope,type' || value.schemaVersion !== 1 || value.scope !== SCOPE ||
       typeof value.requestId !== 'string' || !/^[a-f0-9]{32}$/.test(value.requestId)) return;
     let url; try { url = new URL(source.url); } catch { return; }
-    if (url.origin !== location.origin || url.pathname !== SCOPE || url.search || url.username || url.password) return;
+    // Identity is this worker's fixed public UI hash, independent of query
+    // parameters. Replying performs no document acquisition or cache mutation.
+    if (url.origin !== location.origin || url.pathname !== SCOPE || url.username || url.password) return;
     source.postMessage({type:'earth-observer:document-identity', schemaVersion:1, requestId:value.requestId, scope:SCOPE, identity:DOCUMENT_IDENTITY}); return;
   }
   if (event.data?.type === 'earth-observer:shell-status' && event.source?.id) {

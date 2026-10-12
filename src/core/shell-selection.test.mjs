@@ -245,3 +245,38 @@ test('shell teardown cancels an unconsumed keyboard notice intent before its end
   const focus = f.doc.activeElement; await f.button.nativeClick(0);
   assert.equal(f.doc.activeElement, focus); assert.equal(pending.size, 0, 'disposed controls neither focus nor rearm the intent');
 });
+
+test('explicit async inspection completion hands focus to exact visible details after the original click task expires', async t => {
+  const f = await mountedShell(t), gate = Promise.withResolvers(), done = Promise.withResolvers(), original = f.layer.setParams;
+  f.layer.setParams = values => {
+    void gate.promise.then(() => { original(values); done.resolve(f.shell.focusSelection(f.viewer.selectedEntity)); });
+    return true;
+  };
+  f.button.focus(); await f.button.nativeClick(0); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.get('selection').hidden, true, 'the deferred source proof has not admitted a selection');
+  gate.resolve(); assert.equal(await done.promise, true);
+  assert.equal(f.doc.activeElement, f.get('clear-selection')); assert.equal(f.get('selection').hidden, false);
+  assert.equal(f.get('sidebar').inert, true); f.doc.tab();
+  assert.equal(f.doc.activeElement.className, 'world-source'); assert.equal(f.reads, 1, 'focus completion performs no source acquisition');
+  assert.equal(f.shell.focusSelection(new Cesium.Entity({ id: 'foreign:TEST_ONLY' })), false);
+});
+
+test('explicit inspection focus completion refuses later navigation, editing, History, hidden and terminal states', async t => {
+  const f = await mountedShell(t); f.button.click(1); const selected = f.viewer.selectedEntity;
+  f.get('north').focus(); assert.equal(f.shell.focusSelection(selected), false);
+  assert.equal(f.doc.activeElement, f.get('north'), 'a later navigation control keeps focus');
+  f.get('search').focus(); assert.equal(f.shell.focusSelection(selected), false);
+  assert.equal(f.doc.activeElement, f.get('search'), 'an active editor keeps focus');
+  f.doc.activeElement = f.doc.body; f.viewer.earthTime.getState = () => ({ mode: 'history' });
+  assert.equal(f.shell.focusSelection(selected), false); f.viewer.earthTime.getState = () => ({ mode: 'live' });
+  f.doc.hidden = true; assert.equal(f.shell.focusSelection(selected), false); f.doc.hidden = false;
+  f.shell.openNotebook(); assert.equal(f.shell.focusSelection(selected), false, 'another active panel is not reopened');
+  const note = f.doc.createElement('textarea'); f.get('notebook-panel').append(note); note.focus();
+  const newer = new Cesium.Entity({ id: 'feature:TEST_ONLY', name: 'TEST ONLY deferred proof' });
+  f.viewer.selectedEntity = newer;
+  assert.equal(f.doc.activeElement, f.doc.body, 'opening a new selection can hide its previous editor');
+  assert.equal(f.shell.focusSelection(newer), false, 'pre-selection editing/workspace protection survives that BODY focus loss');
+  assert.equal(f.doc.activeElement, f.doc.body);
+  f.viewer.selectedEntity = undefined; assert.equal(f.shell.focusSelection(newer), false);
+  f.shell.destroy(); assert.equal(f.shell.focusSelection(newer), false);
+});

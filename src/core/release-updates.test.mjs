@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { installReleaseUpdates, RELEASE_CHECK_MS, RELEASE_IDENTITY_MS } from './release-updates.js';
+import { installReleaseUpdates, RELEASE_CHECK_MS, RELEASE_IDENTITY_MS, RELEASE_IDENTITY_ATTEMPTS } from './release-updates.js';
 
 function events() {
   const listeners = new Map();
@@ -21,7 +21,10 @@ function fixture({ firstInstall = false, failure = false, documentIdentity = 'a'
   const timing = { setTimeoutImpl(fn, delay) { timers.set(++id, { fn, at: time + delay }); return id; }, clearTimeoutImpl(id) { timers.delete(id); },
     advance(ms) { time += ms; for (const [id, item] of [...timers]) if (item.at <= time && timers.delete(id)) item.fn(); } };
   function reply(patch = {}, source = next, origin = 'https://example.com') {
-    const value = identityRequests.at(-1); serviceWorker.emit('message', { source, origin, data: { ...value, identity: workerIdentity, ...patch } });
+    // Native MessageEvent getters hold data/origin. Node has no ServiceWorker
+    // MessageEventSource, so only that exact worker reference is a fixture.
+    const value = identityRequests.at(-1), event = new MessageEvent('message', { origin, data: { ...value, identity: workerIdentity, ...patch } });
+    Object.defineProperty(event, 'source', { value: source }); serviceWorker.emit('message', event);
   }
   const updater = installReleaseUpdates({ serviceWorker, documentRef, windowRef, locationRef, navigatorRef, scope: '/earth/', now: () => time, ...timing });
   return { serviceWorker, documentRef, windowRef, navigatorRef, locationRef, timing, updater, registrations, registration, timers, old, next, draft, notice,
@@ -101,7 +104,7 @@ test('a verified older UI preserves Context, selected dossiers, expanded calenda
   }
 });
 
-test('identity replies require the exact current controller, request, scope, origin, bounded fields and deadline; unknown identity preserves the scene', async () => {
+test('native identity messages require exact current controller, request, scope, origin, bounded fields and deadline; unknown stays quiet', async () => {
   const f = fixture({ replyIdentity: false, workerIdentity: 'a'.repeat(64) }); await settle();
   f.serviceWorker.controller = f.next; f.serviceWorker.emit('controllerchange');
   for (const [patch, source, origin] of [[{}, f.old], [{ requestId: 'f'.repeat(32) }], [{ scope: '/' }], [{ identity: ['a'.repeat(64)] }],
@@ -109,8 +112,64 @@ test('identity replies require the exact current controller, request, scope, ori
   assert.equal(f.reloads(), 0); assert.equal(f.timers.size, 2); f.reply(); assert.equal(f.reloads(), 0); assert.equal(f.timers.size, 1); f.updater.destroy();
   for (const options of [{ replyIdentity: false }, { documentIdentity: null }, { documentIdentity: 'invalid' }]) {
     const unknown = fixture(options); await settle(); unknown.serviceWorker.controller = unknown.next; unknown.serviceWorker.emit('controllerchange');
-    unknown.timing.advance(RELEASE_IDENTITY_MS); assert.equal(unknown.reloads(), 0); assert.match(unknown.notice.textContent, /current workspace remains open/);
+    unknown.timing.advance(RELEASE_IDENTITY_MS); assert.equal(unknown.reloads(), 0); assert.equal(unknown.notice.hidden, true);
     unknown.reply(); unknown.serviceWorker.emit('controllerchange'); unknown.documentRef.emit('change'); unknown.timing.advance(1000);
     assert.equal(unknown.reloads(), 0); assert.equal(unknown.identityRequests.length, 1); assert.equal(unknown.timers.size, 1); unknown.updater.destroy();
   }
+});
+
+test('a missed reply recovers on a bounded same-controller check and same UI never shows a speculative notice', async () => {
+  const f = fixture({ replyIdentity: false, workerIdentity: 'a'.repeat(64) }); await settle();
+  f.serviceWorker.controller = f.next; f.serviceWorker.emit('controllerchange'); const first = f.identityRequests[0];
+  f.timing.advance(RELEASE_IDENTITY_MS); assert.equal(f.notice.hidden, true); assert.equal(f.reloads(), 0);
+  f.next.postMessage = value => { f.identityRequests.push(value); f.reply(); };
+  f.timing.advance(RELEASE_CHECK_MS); await settle();
+  assert.equal(f.identityRequests.length, 2); assert.notEqual(f.identityRequests[1].requestId, first.requestId);
+  assert.equal(f.reloads(), 0); assert.equal(f.notice.hidden, true);
+  f.timing.advance(RELEASE_CHECK_MS); await settle(); assert.equal(f.identityRequests.length, 2, 'Verified controller needs no repeated identity exchange');
+  f.updater.destroy();
+});
+
+test('unresponsive identity attempts stop at two and hidden/offline retry waits without clearing another error', async () => {
+  const f = fixture({ replyIdentity: false }); await settle(); f.serviceWorker.controller = f.next; f.serviceWorker.emit('controllerchange');
+  f.notice.textContent = 'A retained source could not load.'; f.notice.hidden = false;
+  f.timing.advance(RELEASE_IDENTITY_MS); assert.equal(f.notice.hidden, false); assert.equal(f.reloads(), 0);
+  f.documentRef.hidden = true; f.documentRef.emit('visibilitychange'); f.timing.advance(RELEASE_CHECK_MS); await settle();
+  assert.equal(f.identityRequests.length, 1); assert.equal(f.updates(), 0);
+  f.documentRef.hidden = false; f.navigatorRef.onLine = false; f.documentRef.emit('visibilitychange'); await settle();
+  assert.equal(f.identityRequests.length, 1); assert.equal(f.reloads(), 0);
+  f.navigatorRef.onLine = true; f.windowRef.emit('online'); await settle(); assert.equal(f.identityRequests.length, RELEASE_IDENTITY_ATTEMPTS);
+  f.timing.advance(RELEASE_IDENTITY_MS);
+  for (let check = 0; check < 3; check++) { f.timing.advance(RELEASE_CHECK_MS); await settle(); }
+  assert.equal(f.identityRequests.length, 2); assert.equal(f.reloads(), 0);
+  assert.equal(f.notice.hidden, false); assert.equal(f.notice.textContent, 'A retained source could not load.');
+  f.updater.destroy(); assert.equal(f.notice.hidden, false); assert.equal(f.timers.size, 0);
+});
+
+test('controller swaps cancel older replies and same-UI confirmation removes only updater-owned notice', async () => {
+  for (const otherError of [false, true]) {
+    const f = fixture(); await settle(); f.draft.value = 'Retain this investigation';
+    f.serviceWorker.controller = f.next; f.serviceWorker.emit('controllerchange'); assert.equal(f.notice.hidden, false); assert.equal(f.reloads(), 0);
+    if (otherError) f.notice.textContent = 'The map source is unavailable.';
+    const replacement = { scriptURL: f.next.scriptURL, postMessage(value) { f.identityRequests.push(value); } };
+    f.serviceWorker.controller = replacement; f.serviceWorker.emit('controllerchange');
+    f.reply({ identity: 'b'.repeat(64) }, f.next); assert.equal(f.reloads(), 0, 'Previous owned worker cannot confirm current UI');
+    f.reply({ identity: 'a'.repeat(64) }, replacement);
+    assert.equal(f.draft.value, 'Retain this investigation'); assert.equal(f.reloads(), 0);
+    assert.equal(f.notice.hidden, !otherError);
+    if (otherError) assert.equal(f.notice.textContent, 'The map source is unavailable.');
+    f.updater.destroy();
+  }
+});
+
+test('first installation becomes a baseline and a later verified update still preserves offline exploration', async () => {
+  const f = fixture({ firstInstall: true }); await settle(); f.serviceWorker.controller = f.next; f.serviceWorker.emit('controllerchange');
+  assert.equal(f.reloads(), 0); assert.equal(f.identityRequests.length, 0);
+  const replacement = { scriptURL: f.next.scriptURL, postMessage(value) { f.identityRequests.push(value); f.reply({}, replacement); } };
+  f.navigatorRef.onLine = false; f.serviceWorker.controller = replacement; f.serviceWorker.emit('controllerchange');
+  assert.equal(f.identityRequests.length, 1); assert.equal(f.reloads(), 0, 'Verified different UI cannot force an offline navigation');
+  f.nodes['earth-timeline'].dataset.mode = 'history'; f.navigatorRef.onLine = true; f.windowRef.emit('online'); await settle();
+  assert.equal(f.reloads(), 0); assert.match(f.notice.textContent, /return to Live/);
+  f.nodes['earth-timeline'].dataset.mode = 'live'; f.windowRef.emit('earth-observer:timechange'); f.timing.advance(0);
+  assert.equal(f.reloads(), 1); f.updater.destroy();
 });

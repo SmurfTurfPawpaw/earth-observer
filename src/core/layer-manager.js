@@ -259,6 +259,8 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       // owner as source revisions, visibility and timeline changes.
       module.setDemandRefreshListener?.(() => manager.requestRefresh(id));
       module.setDemandListener?.(demand => options.onSpatialDemand?.(demand, id));
+      module.setClusterInspectionListener?.(context => options.onClusterInspection?.(context, id));
+      module.setFeatureInspectionListener?.(entity => options.onFeatureInspection?.(entity, id));
       return module;
     })().finally(() => { entry.loading = null; });
     return entry.loading;
@@ -596,6 +598,12 @@ function mountLayerControls(manager, id, container) {
         button.textContent = item.label; button.title = item.detail || '';
         button.addEventListener('click', () => manager.setLayerParams(id, item.params || {}));
         row.append(button);
+        if (item.inspectParams) {
+          const inspect = document.createElement('button'); inspect.type = 'button'; inspect.className = 'layer-chip';
+          inspect.dataset.controlKey = `inspect:${item.id || index}`; inspect.textContent = 'Inspect reports';
+          inspect.setAttribute('aria-label', `Inspect reports: ${item.label}`);
+          inspect.addEventListener('click', () => manager.setLayerParams(id, item.inspectParams)); row.append(inspect);
+        }
         if (item.detail) { const detail = document.createElement('span'); detail.textContent = item.detail; row.append(detail); }
         list.append(row);
       }
