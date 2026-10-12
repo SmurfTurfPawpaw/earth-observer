@@ -215,3 +215,142 @@ test('96-slot checkpoint and 240 long canonical records fit the release bound, w
     const altered = structuredClone(snapshot); mutate(altered); assert.throws(() => validateGkgSnapshot(altered, NOW));
   }
 });
+
+
+test('a validated future manifest recovers one mature original previous ZIP, never the advertised future label, then uses only one remaining gap slot',async()=>{
+  const future='20261011101500', source=transport({latestBatch:future}), previous=prior();
+  const before=JSON.stringify(previous), result=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:previous,fetchImpl:source.fetchImpl,now:()=>NOW});
+  assert.equal(result.status,'generated',result.reason);assert.equal(result.batch,latest);assert.equal(result.advertisedBatch,future);
+  assert.equal(result.diagnostic.code,'manifest-batch-future');assert.equal(result.diagnostic.checkedAt,iso(NOW));
+  assert.deepEqual(result.recovery,{batch:latest,status:'acquired'});
+  assert.deepEqual(source.calls.map(call=>`${call.method}:${call.url}`),[`GET:${GKG_UPDATE_MANIFEST}`,`HEAD:${officialUrl(latest)}`,`GET:${officialUrl(latest)}`,`HEAD:${officialUrl('20261011081500')}`,`GET:${officialUrl('20261011081500')}`]);
+  assert.equal(source.calls.some(call=>call.url===officialUrl(future)),false);assert.equal(result.archives,2);
+  assert.deepEqual(result.snapshot.coverage.catchup.attemptedBatches,[latest,'20261011081500']);
+  const recovered=result.snapshot.coverage.processedBatches.find(entry=>entry.id===latest);
+  assert.equal(recovered.retrievedAt,iso(NOW));assert.equal(recovered.integrity.providerMd5,null);
+  assert.equal(recovered.integrity.providerEtag,source.get(latest).etag);assert.equal(recovered.integrity.sha256,createHash('sha256').update(source.get(latest).bytes).digest('hex'));
+  assert.equal(result.snapshot.coverage.windowEnd,'2026-10-11T10:00:00.000Z');assert.equal(result.snapshot.generatedAt,iso(NOW));
+  assert.equal(result.snapshot.coverage.processedBatches.find(entry=>entry.id===early).retrievedAt,previous.generatedAt);
+  assert.equal(JSON.stringify(previous),before);assert.deepEqual(validateGkgSnapshot(result.snapshot,NOW),result.snapshot);
+  for(const report of Object.values(result.snapshot.categories).flatMap(entry=>entry.reports)){
+    assert.equal(report.indexedAt,gkgBatchTime(report.batch));assert.equal(report.publishedAt,null);assert.equal(report.observedAt,null);
+  }
+});
+
+test('an admitted latest ZIP404 can recover its independently verified prior quarter without borrowing the failed manifest MD5',async()=>{
+  const current='20261011101500', clock=Date.parse('2026-10-11T10:10:00.000Z'), previous=prior();
+  const source=transport({latestBatch:current,failure:(batch,method)=>batch===current&&method==='GET'?new Response(null,{status:404}):null});
+  const result=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:previous,fetchImpl:source.fetchImpl,now:()=>clock});
+  assert.equal(result.status,'generated',result.reason);assert.equal(result.diagnostic.code,'latest-archive-unavailable');assert.equal(result.diagnostic.httpStatus,404);
+  assert.equal(result.batch,latest);assert.equal(result.advertisedBatch,current);assert.equal(result.recovery.status,'acquired');
+  assert.equal(result.snapshot.coverage.processedBatches.some(entry=>entry.id===current),false);
+  assert.equal(source.calls.filter(call=>call.method==='HEAD').length,2);assert.equal(result.archives,2);
+  const fallback=result.snapshot.coverage.processedBatches.find(entry=>entry.id===latest);
+  assert.equal(fallback.integrity.mode,'https-head-size-and-zip-crc');assert.equal(fallback.integrity.providerMd5,null);
+  assert.equal(fallback.retrievedAt,iso(clock));assert.equal(result.snapshot.coverage.windowEnd,gkgBatchTime(latest));
+});
+
+test('previous-release recovery skips retained duplicates and honors existing per-slot deferral without relabelling their source dates',async()=>{
+  const future='20261011101500', previous=prior([early,latest]), source=transport({latestBatch:future});
+  const oldRetrieved=previous.coverage.processedBatches.at(-1).retrievedAt;
+  const duplicate=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:previous,fetchImpl:source.fetchImpl,now:()=>NOW});
+  assert.equal(duplicate.status,'generated');assert.deepEqual(duplicate.recovery,{batch:latest,status:'retained'});
+  assert.equal(source.calls.some(call=>call.url===officialUrl(latest)),false);assert.equal(duplicate.archives,2);
+  assert.equal(duplicate.snapshot.coverage.processedBatches.at(-1).retrievedAt,oldRetrieved);
+  const priorAt=NOW+300000, now=NOW+420000;
+  const base=prior([early,'20261011101500'],priorAt), deferred=createGkgSnapshot({generatedAt:base.generatedAt,processedBatches:base.coverage.processedBatches,
+    reports:Object.values(base.categories).flatMap(entry=>entry.reports),catchup:{checkedAt:iso(priorAt),attemptedBatches:[],attempts:[{id:latest,checkedAt:iso(priorAt),retryAt:iso(NOW+900000),code:'http-error',httpStatus:404}]}});
+  const delayed=transport({latestBatch:'20261011103000'}), result=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:deferred,fetchImpl:delayed.fetchImpl,now:()=>now});
+  assert.equal(result.status,'generated',result.reason);assert.deepEqual(result.recovery,{batch:latest,status:'deferred'});
+  assert.equal(delayed.calls.some(call=>call.url===officialUrl(latest)),false);assert.equal(result.archives,2);
+});
+
+test('no previous-release original preserves prior bytes; 429,RetryAfter,503,foreign and corrupt source responses do not start extra recovery',async()=>{
+  const future='20261011101500', previous=prior([latest]), before=JSON.stringify(previous);
+  const none=transport({latestBatch:future});
+  const retained=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:previous,fetchImpl:none.fetchImpl,now:()=>NOW});
+  assert.equal(retained.status,'skipped');assert.equal(retained.bytes,undefined);assert.equal(retained.snapshot,undefined);assert.equal(none.calls.length,1);
+  assert.equal(retained.diagnostic.code,'manifest-batch-future');assert.equal(retained.recovery.status,'retained');assert.equal(JSON.stringify(previous),before);
+  for(const status of [404,429,503]){
+    const failure=transport({latestBatch:future,failure:(batch,method)=>batch===latest&&method==='HEAD'?new Response(null,{status}):null});
+    const result=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:failure.fetchImpl,now:()=>NOW});
+    assert.equal(result.status,'skipped');assert.equal(result.bytes,undefined);assert.equal(result.diagnostic.code,'manifest-batch-future');
+    assert.equal(failure.calls.length,2);assert.equal(result.recovery.httpStatus,status);
+  }
+  const waiting=transport({latestBatch:latest,failure:(batch,method)=>batch===latest&&method==='GET'?new Response(null,{status:404,headers:{'retry-after':'600'}}):null});
+  const retry=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:waiting.fetchImpl,now:()=>NOW});
+  assert.equal(retry.status,'skipped');assert.equal(retry.retryAfterMs,600000);assert.equal(waiting.calls.length,2);assert.equal(retry.recovery,undefined);
+  const corrupt=transport({latestBatch:future,fixtureOptions:batch=>batch===latest?{corruptCrc:true}:undefined});
+  const invalid=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:corrupt.fetchImpl,now:()=>NOW});
+  assert.equal(invalid.status,'skipped');assert.equal(invalid.bytes,undefined);assert.equal(corrupt.calls.length,3);assert.equal(invalid.recovery.code,'invalid-response');
+  let foreignCalls=0;
+  const foreign=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),now:()=>NOW,fetchImpl:async()=>{foreignCalls++;return new Response(fixture(future).manifest.replace('data.gdeltproject.org','foreign.example'));}});
+  assert.equal(foreign.status,'skipped');assert.equal(foreign.diagnostic.code,'manifest-source-mismatch');assert.equal(foreignCalls,1);
+});
+
+test('previous-release requests share the original deadline and caller cancellation rather than opening a second acquisition wake',async()=>{
+  const future='20261011101500', keepAlive=setTimeout(()=>{},1000), calls=[];
+  try {
+    const stalled=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),timeoutMs:80,now:()=>NOW,fetchImpl:async(url,options)=>{
+      calls.push({url,method:options.method||'GET'});return url===GKG_UPDATE_MANIFEST?new Response(fixture(future).manifest):new Promise(()=>{});
+    }});
+    assert.equal(stalled.status,'skipped');assert.equal(stalled.code,'timeout');assert.equal(stalled.diagnostic.code,'manifest-batch-future');
+    assert.equal(stalled.recovery.code,'timeout');assert.equal(calls.length,2);assert.equal(stalled.bytes,undefined);
+    const controller=new AbortController(), began=Promise.withResolvers(), cancelCalls=[];
+    const running=generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),now:()=>NOW,signal:controller.signal,fetchImpl:async(url,options)=>{
+      cancelCalls.push(url);if(url===GKG_UPDATE_MANIFEST)return new Response(fixture(future).manifest);began.resolve();return new Promise(()=>{});
+    }});
+    await began.promise;controller.abort(new DOMException('TEST ONLY cancellation','AbortError'));
+    const cancelled=await running;assert.equal(cancelled.status,'skipped');assert.equal(cancelled.code,'aborted');assert.equal(cancelCalls.length,2);assert.equal(cancelled.bytes,undefined);
+  }finally{clearTimeout(keepAlive);}
+});
+
+
+test('previous probes use the fixed manifest-check maturity boundary, and disabled repair never acquires them',async()=>{
+  const future='20261011101500';
+  for(const [clock,expected] of [[NOW-1,'20261011094500'],[NOW,latest]]){
+    const source=transport({latestBatch:future});
+    const result=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:source.fetchImpl,now:()=>clock});
+    assert.equal(result.status,'generated',result.reason);assert.equal(result.recovery.batch,expected);
+    assert.ok(Date.parse(gkgBatchTime(result.recovery.batch))<=clock-300000);
+    assert.equal(source.calls.filter(call=>call.method==='HEAD').length,2);
+    assert.deepEqual(result.snapshot.coverage.catchup.budget,GKG_CATCHUP_BUDGET);
+    assert.ok(result.archiveBytes<=GKG_CATCHUP_BUDGET.maxCompressedBytes);assert.ok(result.expandedBytes<=GKG_CATCHUP_BUDGET.maxExpandedBytes);
+    assert.ok(result.bytes.byteLength<=1048576);
+  }
+  const disabled=transport({latestBatch:future}), old=prior(), before=JSON.stringify(old);
+  const result=await generateGkgSnapshot({repairEnabled:false,previousSnapshot:old,fetchImpl:disabled.fetchImpl,now:()=>NOW});
+  assert.equal(result.status,'skipped');assert.equal(disabled.calls.length,1);assert.equal(result.recovery,undefined);assert.equal(JSON.stringify(old),before);
+});
+
+test('a missing out-of-window previous probe consumes a repair slot without inventing a coverage slot; invalid HEAD or latest ZIP integrity stays closed',async()=>{
+  const future='20261011101500', old=prior([early,'20261011083000']);
+  const source=transport({latestBatch:future,failure:(batch,method)=>batch===latest&&method==='HEAD'?new Response(null,{status:404}):null});
+  const result=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:old,fetchImpl:source.fetchImpl,now:()=>NOW});
+  assert.equal(result.status,'generated',result.reason);assert.equal(result.recovery.status,'failed');assert.equal(result.recovery.httpStatus,404);
+  assert.equal(source.calls.filter(call=>call.method==='HEAD').length,2);assert.equal(result.archives,1);
+  assert.deepEqual(result.snapshot.coverage.catchup.attemptedBatches,['20261011081500']);
+  assert.equal(result.snapshot.coverage.processedBatches.some(entry=>entry.id===latest),false);
+  assert.equal(result.batch,'20261011083000');assert.equal(result.snapshot.coverage.windowEnd,gkgBatchTime(result.batch));
+  assert.deepEqual(validateGkgSnapshot(result.snapshot,NOW),result.snapshot);
+  const oversized=transport({latestBatch:future,failure:(batch,method)=>batch===latest&&method==='HEAD'?new Response(null,{headers:{'content-length':String(16*1024*1024+1),etag:'"oversized"'}}):null});
+  const rejected=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:oversized.fetchImpl,now:()=>NOW});
+  assert.equal(rejected.status,'skipped');assert.equal(rejected.recovery.code,'invalid-response');assert.equal(oversized.calls.length,2);
+  const corrupt=transport({fixtureOptions:batch=>batch===latest?{corruptCrc:true}:undefined});
+  const latestBad=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:corrupt.fetchImpl,now:()=>NOW});
+  assert.equal(latestBad.status,'skipped');assert.equal(latestBad.recovery,undefined);assert.equal(corrupt.calls.length,2);
+});
+
+
+test('new latest404 recovery requires literal Retry-After absence, while older-gap effective-backoff behavior stays unchanged',async()=>{
+  for(const instruction of ['0','Sun, 11 Oct 2026 09:00:00 GMT','not-a-valid-instruction']){
+    const source=transport({failure:(batch,method)=>batch===latest&&method==='GET'?new Response(null,{status:404,headers:{'retry-after':instruction}}):null});
+    const result=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:source.fetchImpl,now:()=>NOW});
+    assert.equal(result.status,'skipped');assert.equal(result.recovery,undefined);assert.equal(source.calls.length,2);
+    assert.equal(source.calls.some(call=>call.method==='HEAD'),false);assert.equal(result.retryAfterMs,0);
+    const oldGap=transport({failure:(batch,method)=>batch==='20261011081500'&&method==='HEAD'?new Response(null,{status:404,headers:{'retry-after':instruction}}):null});
+    const repaired=await generateGkgSnapshot({repairEnabled:true,previousSnapshot:prior(),fetchImpl:oldGap.fetchImpl,now:()=>NOW});
+    assert.equal(repaired.status,'generated');assert.equal(repaired.recovery,undefined);
+    assert.ok(oldGap.calls.some(call=>call.url===officialUrl('20261011083000')&&call.method==='HEAD'),'The legacy next-gap policy still honors only effective future backoff');
+  }
+});

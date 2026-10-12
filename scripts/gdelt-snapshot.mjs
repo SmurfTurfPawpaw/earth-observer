@@ -199,12 +199,12 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
   const duration = Math.max(1, Math.min(45000, timeoutMs)), expiresAt = Date.now() + duration;
   const deadline = AbortSignal.timeout(duration);
   const signal = callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
-  let checkedAt = null, manifestCheckedAt = null;
+  let checkedAt = null, manifestCheckedAt = null, latestFailure = null, recovery = null;
   const httpError = async (response, source) => {
     const retry = response.headers.get('retry-after');
     const delay = /^\d+$/.test(retry || '') ? Number(retry) * 1000 : Date.parse(retry || '') - now();
     await response.body?.cancel();
-    return Object.assign(new Error(`GKG ${source} HTTP ${response.status}`), { httpStatus: response.status,
+    return Object.assign(new Error(`GKG ${source} HTTP ${response.status}`), { httpStatus: response.status, retryAfterPresent: response.headers.has('retry-after'),
       retryAfterMs: Number.isFinite(delay) ? Math.max(0, Math.min(86400000, delay)) : 0 });
   };
   try {
@@ -231,8 +231,14 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
       throw error;
     }
     const manifestCheckedMs = now(); manifestCheckedAt = checkedAt = new Date(manifestCheckedMs).toISOString();
-    const descriptor = parseGkgUpdateManifest(manifestText, manifestCheckedMs);
-    const latestRetained = previous?.coverage.processedBatches.some((batch) => batch.id === descriptor.batch);
+    let descriptor;
+    try { descriptor = parseGkgUpdateManifest(manifestText, manifestCheckedMs); }
+    catch (error) {
+      if (!repairEnabled || !(error instanceof GkgManifestRejection) || error.diagnostic.code !== 'manifest-batch-future') throw error;
+      latestFailure = error;
+    }
+    const advertisedBatch = descriptor?.batch || latestFailure?.diagnostic.batch;
+    const latestRetained = descriptor && previous?.coverage.processedBatches.some((batch) => batch.id === descriptor.batch);
     if (latestRetained && !repairEnabled) return { status: 'skipped', code: 'unchanged',
       batch: descriptor.batch, checkedAt, manifestCheckedAt, reason: 'Latest GKG batch already processed; previous snapshot preserved' };
     const priority = await readDemandPriority({ enabled: demandPriority, fetchImpl: (url, options) => fetchBounded(fetchImpl, url, options), now, signal });
@@ -261,43 +267,87 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
       reports.push(...parsed.reports); factualChanged = true; generatedAt = new Date(now()).toISOString();
       return parsed;
     };
-    // Failure of the newest batch never publishes a partial catch-up or discards last-good source facts.
-    if (!latestRetained) latestParsed = await ingest(descriptor);
+    // Only a validated forward label or a missing latest ZIP permits the fixed
+    // previous-release probe. Host backoff, malformed data and integrity errors
+    // still preserve the last-good asset without trying another archive.
+    if (descriptor && !latestRetained) {
+      try { latestParsed = await ingest(descriptor); }
+      catch (error) {
+        if (!repairEnabled || error.httpStatus !== 404 || error.retryAfterPresent || signal.aborted) throw error;
+        error.diagnostic = Object.freeze({ schemaVersion: 1, code: 'latest-archive-unavailable', batch: descriptor.batch,
+          httpStatus: 404, checkedAt: new Date(now()).toISOString() });
+        latestFailure = error;
+      }
+    }
     const attemptedBatches = [], attempts = new Map((previous?.coverage.catchup?.attempts || []).map((attempt) => [attempt.id, attempt]));
-    if (repairEnabled) {
-      const gaps = gkgCoverage(processedBatches).sampleGaps.filter((id) => now() - Date.parse(gkgBatchTime(id)) <= 86400000);
-      for (const batch of gaps) {
-        if (attemptedBatches.length >= GKG_CATCHUP_BUDGET.maxRepairs || signal.aborted) break;
-        if (Date.parse(attempts.get(batch)?.retryAt) > now()) continue;
-        attemptedBatches.push(batch);
-        try {
-          const head = await fetchBounded(fetchImpl, archiveUrl(batch), { method: 'HEAD', signal, redirect: 'error', headers: { ...HEADERS, 'Accept-Encoding': 'identity' } });
-          if (!head.ok) throw await httpError(head, 'historical HEAD');
-          let candidate;
-          try { candidate = historicalGkgDescriptor(head, batch, now()); } finally { await head.body?.cancel(); }
-          await ingest(candidate); attempts.delete(batch);
-        } catch (error) {
-          const failedAt = now(), code = signal.aborted ? deadline.aborted ? 'timeout' : 'aborted' : error.name === 'TimeoutError' ? 'timeout' : error.httpStatus ? 'http-error' : 'invalid-response';
-          attempts.set(batch, { id: batch, checkedAt: new Date(failedAt).toISOString(), retryAt: new Date(failedAt + Math.max(300000, error.retryAfterMs || 0)).toISOString(), code,
-            ...(error.httpStatus ? { httpStatus: error.httpStatus } : {}) });
-          // A deadline/cancellation prevents more requests; an upstream Retry-After prevents a burst against the same host.
-          if (signal.aborted || error.retryAfterMs > 0) break;
+    let repairWork = 0, stopRepairs = false;
+    const failureCode = error => signal.aborted ? deadline.aborted ? 'timeout' : 'aborted' : error.name === 'TimeoutError' ? 'timeout' : error.httpStatus ? 'http-error' : 'invalid-response';
+    const repair = async batch => {
+      if (repairWork >= GKG_CATCHUP_BUDGET.maxRepairs || signal.aborted || Date.parse(attempts.get(batch)?.retryAt) > now()) return null;
+      repairWork++; attemptedBatches.push(batch);
+      try {
+        const head = await fetchBounded(fetchImpl, archiveUrl(batch), { method: 'HEAD', signal, redirect: 'error', headers: { ...HEADERS, 'Accept-Encoding': 'identity' } });
+        if (!head.ok) throw await httpError(head, 'historical HEAD');
+        let candidate;
+        try { candidate = historicalGkgDescriptor(head, batch, now()); } finally { await head.body?.cancel(); }
+        await ingest(candidate); attempts.delete(batch); return { acquired: true };
+      } catch (error) {
+        const failedAt = now(), code = failureCode(error);
+        attempts.set(batch, { id: batch, checkedAt: new Date(failedAt).toISOString(), retryAt: new Date(failedAt + Math.max(300000, error.retryAfterMs || 0)).toISOString(), code,
+          ...(error.httpStatus ? { httpStatus: error.httpStatus } : {}) });
+        stopRepairs = signal.aborted || error.retryAfterMs > 0;
+        return { acquired: false, error, code };
+      }
+    };
+    if (latestFailure) {
+      const step = 900000, previousAt = Date.parse(gkgBatchTime(advertisedBatch)) - step;
+      const matureAt = Math.floor((manifestCheckedMs - 300000) / step) * step, candidateAt = Math.min(previousAt, matureAt);
+      const batch = new Date(candidateAt).toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+      recovery = { batch, status: 'not-eligible' };
+      if (gkgBatchTime(batch) && candidateAt <= manifestCheckedMs - 300000 && manifestCheckedMs - candidateAt <= 86400000) {
+        if (processedBatches.some(entry => entry.id === batch)) recovery.status = 'retained';
+        else if (Date.parse(attempts.get(batch)?.retryAt) > now()) recovery.status = 'deferred';
+        else {
+          const recovered = await repair(batch);
+          if (recovered?.acquired) recovery.status = 'acquired';
+          else if (recovered) {
+            recovery = { ...recovery, status: 'failed', code: recovered.code, ...(recovered.error.httpStatus ? { httpStatus: recovered.error.httpStatus } : {}) };
+            // Another genuine missing slot may still allow a known older gap;
+            // all other previous-release failures remain fail-closed.
+            if (recovered.error.httpStatus !== 404 || recovered.error.retryAfterPresent || signal.aborted) throw recovered.error;
+          }
         }
       }
     }
+    if (repairEnabled && !stopRepairs) {
+      const gaps = gkgCoverage(processedBatches).sampleGaps.filter(id => now() - Date.parse(gkgBatchTime(id)) <= 86400000);
+      for (const batch of gaps) {
+        if (repairWork >= GKG_CATCHUP_BUDGET.maxRepairs || stopRepairs || signal.aborted) break;
+        await repair(batch);
+      }
+    }
+    if (latestFailure && !factualChanged) {
+      latestFailure.recovery = recovery; throw latestFailure;
+    }
     checkedAt = new Date(now()).toISOString();
-    const catchup = repairEnabled ? { checkedAt, attemptedBatches, attempts: [...attempts.values()] } : undefined;
+    const span = gkgCoverage(processedBatches);
+    // A failed probe outside the actual retained endpoints is a diagnostic,
+    // not a claimed coverage/checkpoint slot. Its work still consumed the cap.
+    const recordedAttempts = attemptedBatches.filter(id => gkgBatchTime(id) >= span.windowStart && gkgBatchTime(id) <= span.windowEnd);
+    const catchup = repairEnabled ? { checkedAt, attemptedBatches: recordedAttempts, attempts: [...attempts.values()] } : undefined;
     const base = createGkgSnapshot({ reports, processedBatches, generatedAt, catchup });
     const proposed = factualChanged ? applyDemandPriority(base, reports, priority) : { ...base, categories: previous.categories };
     const snapshot = validateGdeltSnapshot(proposed, now()), bytes = new TextEncoder().encode(`${JSON.stringify(snapshot)}\n`);
     if (bytes.byteLength > MAX_GDELT_SNAPSHOT_BYTES) throw new Error('GKG snapshot exceeds 1 MiB');
-    return { status: 'generated', code: factualChanged ? 'generated' : 'checked', checkedAt, manifestCheckedAt, factualChanged, snapshot, bytes, batch: descriptor.batch,
+    return { status: 'generated', code: factualChanged ? 'generated' : 'checked', checkedAt, manifestCheckedAt, factualChanged, snapshot, bytes, batch: snapshot.coverage.processedBatches.at(-1).id,
+      ...(latestFailure ? { diagnostic: latestFailure.diagnostic, advertisedBatch, recovery } : {}),
       archiveBytes: compressedBytes, expandedBytes, archives: acquired, rows: latestParsed?.rows || 0, matchedRecords: latestParsed?.matchedRecords || 0,
       sampling: { mode: priority.mode, reason: priority.reason, publishedInterests: priority.interests.length, maximumDemandShare: 0.25 } };
   } catch (error) {
     const timedOut = deadline.aborted || error.name === 'TimeoutError';
     return { status: 'skipped', code: signal.aborted ? timedOut ? 'timeout' : 'aborted' : error.httpStatus ? 'http-error' : 'invalid-response',
-      checkedAt, manifestCheckedAt, ...(error instanceof GkgManifestRejection ? { diagnostic: error.diagnostic } : {}),
+      checkedAt, manifestCheckedAt, ...(latestFailure?.diagnostic || error instanceof GkgManifestRejection ? { diagnostic: latestFailure?.diagnostic || error.diagnostic } : {}),
+      ...(recovery ? { recovery } : {}),
       ...(error.httpStatus ? { httpStatus: error.httpStatus, retryAfterMs: error.retryAfterMs } : {}),
       reason: `${timedOut ? 'GKG timed out' : error.message}; previous snapshot preserved` };
   }
@@ -364,7 +414,8 @@ async function main() {
   const destination = await writeGdeltSnapshot(process.argv[2] || '.cache/intelligence-snapshots', result);
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `status=${result.status}\n`);
   console.log(JSON.stringify({ status: result.status, code: result.code, checkedAt: result.checkedAt ?? null, manifestCheckedAt: result.manifestCheckedAt ?? null,
-    ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}), ...(result.reason ? { reason: result.reason, category: result.category } : {}),
+    ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}), ...(result.recovery ? { recovery: result.recovery, advertisedBatch: result.advertisedBatch || result.diagnostic?.batch } : {}),
+    ...(result.reason ? { reason: result.reason, category: result.category } : {}),
     ...(destination ? { destination, bytes: result.bytes.byteLength, generatedAt: result.snapshot.generatedAt,
       kind: result.snapshot.kind, batch: result.batch, archiveBytes: result.archiveBytes, rows: result.rows, matchedRecords: result.matchedRecords,
       sampling: result.sampling,

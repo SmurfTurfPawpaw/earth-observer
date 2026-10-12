@@ -135,7 +135,7 @@ test('the observed forward-labelled manifest yields exact bounded diagnostics an
   }
 });
 
-test('rejected complete manifests retain their original check UTC without archive work or retiming/replacing the last-good snapshot', async () => {
+test('rejected complete manifests retain their original check UTC and last-good facts; future-only recovery may probe one missing prior slot', async () => {
   const previousBatch = '20261011233000', previousAt = Date.parse('2026-10-11T23:40:00.000Z'), archive = zipFixture(gkgRow(0, { batch: previousBatch }), previousBatch);
   const prior = await generateGkgSnapshot({ previousSnapshot: null, now: () => previousAt,
     fetchImpl: async url => url === GKG_UPDATE_MANIFEST ? new Response(manifest(archive, previousBatch)) : new Response(archive) });
@@ -150,12 +150,16 @@ test('rejected complete manifests retain their original check UTC without archiv
       ['invalid complete source manifest', 'manifest-gkg-missing'],
     ]) {
       let at = Date.parse('2026-10-12T00:38:54.000Z'), calls = 0;
-      const failed = await generateGkgSnapshot({ previousSnapshot: prior.snapshot, now: () => at, repairEnabled: true, fetchImpl: async url => {
-        calls++; assert.equal(url, GKG_UPDATE_MANIFEST); at += 200; return new Response(text);
+      const failed = await generateGkgSnapshot({ previousSnapshot: prior.snapshot, now: () => at, repairEnabled: true, fetchImpl: async (url, options) => {
+        calls++; at += 200;
+        if(url === GKG_UPDATE_MANIFEST) return new Response(text);
+        assert.equal(code,'manifest-batch-future');assert.equal(options.method,'HEAD');
+        assert.equal(url,'https://data.gdeltproject.org/gdeltv2/20261012003000.gkg.csv.zip');
+        return new Response(null,{status:404});
       } });
       assert.equal(failed.status, 'skipped'); assert.equal(failed.code, 'invalid-response', 'Existing reader/backoff code remains compatible');
       assert.equal(failed.checkedAt, '2026-10-12T00:38:54.200Z'); assert.equal(failed.manifestCheckedAt, failed.checkedAt);
-      assert.equal(failed.diagnostic.checkedAt, failed.checkedAt); assert.equal(failed.diagnostic.code, code); assert.equal(calls, 1);
+      assert.equal(failed.diagnostic.checkedAt, failed.checkedAt); assert.equal(failed.diagnostic.code, code); assert.equal(calls, code === 'manifest-batch-future' ? 2 : 1);
       assert.equal(failed.snapshot, undefined); assert.equal(failed.bytes, undefined); assert.equal(failed.retryAfterMs, undefined, 'Retry diagnostics do not change scheduling policy');
       assert.equal(await writeGdeltSnapshot(directory, failed), false); assert.deepEqual(await readFile(sourcePath), originalBytes);
       assert.equal(JSON.stringify(prior.snapshot), before, 'Generation, retrieval and factual coverage stay unchanged');
