@@ -1,53 +1,44 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="description" content="A design preview of a quieter world intelligence atlas. All events are fictional sample data."><title>Observer · Design preview</title><link rel="stylesheet" href="./style.css"></head>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="description" content="Observer research atlas design preview. All stories, evidence and community notes are fictional examples."><title>Observer · Research design preview</title><link rel="stylesheet" href="./style.css"></head>
 <body>
-  <main id="atlas" class="atlas">
-    <header class="topbar">
-      <a class="brand" href="./" aria-label="Observer design preview"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 29 16 16 29 3 16Z"/><circle cx="16" cy="16" r="5"/><path d="M16 0v8m0 16v8M0 16h8m16 0h8"/></svg><span>OBSERVER<small>WORLD INTELLIGENCE</small></span></a>
-      <div class="top-center"><span class="status-dot"></span><span>GLOBAL OBSERVATORY</span><span class="header-divider"></span><time id="utc-clock">UTC</time></div>
-      <span class="preview-tag"><span></span>DESIGN PREVIEW <b>·</b> SAMPLE DATA</span>
-    </header>
-
-    <div class="map-stage">
-      <svg id="world-map" viewBox="0 0 1200 620" role="application" aria-label="Interactive world map with fictional sample signals. Drag to pan; scroll to zoom." tabindex="0"></svg>
-      <div class="map-heading"><span class="eyebrow">01 / WORLD VIEW</span><h1>A world of connections.</h1><p id="map-subtitle">Explore a signal. Follow the context.</p></div>
-      <div class="map-coordinates" aria-hidden="true"><span id="view-coordinates">00.00° N / 00.00° E</span><span id="view-scale">GLOBAL</span></div>
-      <div class="map-loading" id="map-loading"><span class="loading-ring"></span>Opening the atlas</div>
+<main id="atlas" class="atlas">
+  <nav class="rail" aria-label="Workspace navigation">
+    <a class="brand-mark" href="./" aria-label="Observer preview"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 30 16 16 30 2 16Z"/><circle cx="16" cy="16" r="5"/><path d="M16 0v8m0 16v8M0 16h8m16 0h8"/></svg></a>
+    <button data-nav="world" class="is-active" aria-label="Explore the world" title="Explore the world"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c5 5 5 11 0 16-5-5-5-11 0-16Z"/></svg><span>Explore</span></button>
+    <button data-nav="research" aria-label="Open research" title="Open research"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10h6m-3-3v6"/></svg><span>Research</span></button>
+    <button data-nav="saved" aria-label="Saved research trails" title="Saved research trails"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4V3Z"/></svg><span>Saved</span><b id="followed-count">0</b></button>
+    <button data-nav="community" aria-label="Community context" title="Community context"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v12H9l-5 4v-4H3V4ZM7 8h10M7 12h7"/></svg><span>Community</span></button>
+    <span class="rail-bottom">O / 01</span>
+  </nav>
+  <div class="workspace-shell">
+    <header class="topbar"><a class="brand" href="./">OBSERVER <span>/ RESEARCH ATLAS</span></a><div class="top-status"><span class="status-dot"></span><time id="utc-clock">UTC</time><span class="preview-tag">DESIGN PREVIEW · SAMPLE DATA</span></div></header>
+    <section class="inquiry" aria-label="Start a research trail">
+      <div class="inquiry-heading"><div><span class="eyebrow">CURIOSITY, CONNECTED</span><h1>Follow your curiosity<span>.</span></h1></div><p>Start with a question. Or tell us what you're trying to do.<br>Find the connections you didn't know to look for.</p></div>
+      <form id="research-form" class="research-form"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></svg><textarea id="research-query" rows="1" maxlength="600" placeholder="What are you curious about? A story, a person’s public work, a project…" aria-label="Describe your question or research goal"></textarea><button id="research-submit" type="submit">Explore <span aria-hidden="true">↗</span></button></form>
+      <div class="inquiry-options"><div id="starter-queries" class="starter-queries"><span>TRY A THREAD</span><button data-query="Taiwan and semiconductors">Taiwan &amp; chips <span>↗</span></button><button data-query="I am building a space project">My space project <span>↗</span></button><button data-query="Europe and energy security">European energy <span>↗</span></button></div><span id="research-status">Interactive preview · three prepared inquiries</span></div>
+      <div class="depth-row"><span class="eyebrow">RESEARCH DEPTH</span><nav id="depth-controls" class="depth-controls" aria-label="Research depth"><button data-depth="1" class="is-active" aria-pressed="true"><b>1</b> Brief</button><button data-depth="2" aria-pressed="false"><b>2</b> Context</button><button data-depth="3" aria-pressed="false"><b>3</b> Investigate</button><button data-depth="4" aria-pressed="false"><b>4</b> Systems</button><button data-depth="5" aria-pressed="false"><b>5</b> Synthesis</button></nav><span id="depth-description">Find the developments and the next useful question.</span></div>
+    </section>
+    <div class="trail-bar"><button id="trail-back" class="icon-button" aria-label="Back one research step" title="Back one step" disabled>←</button><nav id="research-trail" aria-label="Research trail"></nav><button id="trail-reset" class="text-button" hidden>Start over</button><span class="trail-hint">Every connection opens another question.</span></div>
+    <div class="research-layout">
+      <section class="map-stage" aria-label="Geographic research canvas">
+        <div class="map-heading"><span class="eyebrow">WORLD ATLAS / SAMPLE VIEW</span><h2 id="map-title">A world worth understanding.</h2><p id="map-subtitle">Explore the sample world, or follow a question.</p></div>
+        <svg id="world-map" viewBox="0 0 1200 620" role="application" tabindex="0" aria-label="World map of fictional sample signals and research connections. Drag to pan; scroll to zoom."></svg>
+        <div id="map-loading" class="map-loading">Opening the sample atlas…</div>
+        <div class="map-key"><span><i></i> Sample relationship</span><span><i class="dashed"></i> Hypothesis</span></div>
+        <div class="map-coordinates"><span id="view-coordinates">0.0° N / 0.0° E</span><span id="view-scale">WORLD</span></div>
+        <nav class="map-navigation" aria-label="Map navigation"><button id="map-home" class="icon-button" aria-label="World overview" title="World overview">⌖</button><button id="map-zoom-in" class="icon-button" aria-label="Zoom in" title="Zoom in">+</button><button id="map-zoom-out" class="icon-button" aria-label="Zoom out" title="Zoom out">−</button></nav>
+        <section id="world-feed" class="world-feed" aria-label="Fictional urgent world intake"><div class="section-heading"><span class="eyebrow"><span class="urgent-dot"></span> WORLD IN FOCUS</span><span>Fictional scenarios</span></div><div id="world-feed-list"></div></section>
+      </section>
+      <aside class="research-panel" aria-label="Research and questions">
+        <section id="research-empty" class="research-empty"><span class="eyebrow">THE FIRST QUESTION IS ONLY THE START</span><div class="thread-illustration" aria-hidden="true"><span></span><span></span><span></span><span></span></div><h2>Where will this<br>take you?</h2><p>Follow an idea into its people, places and systems. Keep the evidence in view, and build a trail you can return to.</p><span class="empty-detail">Try a prepared inquiry above to explore.</span></section>
+        <section id="research-workspace" class="research-workspace" hidden><div class="dossier-top"><span id="research-kicker" class="eyebrow"></span><button id="research-close" class="icon-button" aria-label="Close inquiry">×</button></div><h2 id="research-title"></h2><p id="research-summary"></p><nav id="research-tabs" class="research-tabs" aria-label="Research views"><button data-tab="findings" class="is-active" aria-pressed="true">Findings</button><button data-tab="connections" aria-pressed="false">Connections</button><button data-tab="evidence" aria-pressed="false">Evidence</button></nav><div class="dossier-scroll"><div id="research-body"></div><section id="community-section" hidden><div class="section-heading"><h3>Community context</h3><span>Sample notes</span></div><p class="research-note">Add evidence, challenge a connection, or offer context.</p><div id="community-notes"></div><details class="community-compose"><summary>Add your perspective</summary><form id="community-note-form"><label for="community-note-kind">This note adds</label><select id="community-note-kind"><option value="context">Context</option><option value="support">Supporting evidence</option><option value="challenge">A challenge</option></select><label for="community-note">Your note</label><textarea id="community-note" maxlength="500" rows="3" placeholder="What should someone investigate or consider?"></textarea><button type="submit">Add a note</button><small>Local preview drafts · not published or verified</small></form></details></section></div><button id="research-follow" class="save-button">Save this trail</button></section>
+        <section id="research-guidance" class="research-guidance"><div class="section-heading"><span class="eyebrow">GO DEEPER</span><span class="guidance-arrow">↗</span></div><div id="guidance-list"></div></section>
+      </aside>
     </div>
-
-    <aside class="explore-tools" aria-label="Explore controls">
-      <div class="search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg><input id="search-input" type="search" placeholder="Find a place or signal" autocomplete="off" aria-label="Find a sample place or signal"><kbd>/</kbd><div id="search-results" class="search-results" hidden></div></div>
-      <nav id="filter-chips" class="filter-chips" aria-label="Signal categories">
-        <button data-category="all" aria-pressed="true" class="active"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="M10 1v4m0 10v4M1 10h4m10 0h4"/></svg>All signals</button>
-        <button data-category="natural" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m2 15 5-10 4 7 3-5 4 8H2Z"/></svg>Natural</button>
-        <button data-category="politics" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3 7 7-4 7 4M4 8h12M5 9v6m5-6v6m5-6v6M3 17h14"/></svg>Politics</button>
-        <button data-category="economy" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3 14 5-5 4 3 5-7M12 5h5v5"/></svg>Economy</button>
-        <button data-category="mobility" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7h9v8H3V7Zm9 3h3l3 3v2h-6M5 15v2m10-2v2"/></svg>Mobility</button>
-      </nav>
-    </aside>
-
-    <aside id="activity" class="activity" aria-label="Sample activity">
-      <div class="section-heading"><span class="eyebrow">IN FOCUS</span><span id="activity-count" class="tiny-count"></span></div>
-      <div id="activity-list" class="activity-list"></div>
-      <button id="replay-arrival" class="replay-button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6a6 6 0 1 1-1 6M4 2v5H1"/></svg>Replay sample arrivals</button>
-    </aside>
-
-    <section id="dossier" class="dossier" aria-label="Selected sample signal" hidden>
-      <div class="dossier-top"><span class="eyebrow">SIGNAL / CONTEXT</span><button id="dossier-close" class="icon-button" aria-label="Close signal details"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div>
-      <div id="dossier-meta" class="dossier-meta"></div><h2 id="dossier-title"></h2><p id="dossier-summary"></p>
-      <nav id="dossier-tabs" class="dossier-tabs" aria-label="Signal detail views"><button data-tab="overview" class="active" aria-pressed="true">Overview</button><button data-tab="timeline" aria-pressed="false">Timeline</button><button data-tab="sources" aria-pressed="false">Sources</button></nav>
-      <div id="dossier-body" class="dossier-body"></div>
-      <footer class="dossier-footer"><button id="dossier-follow" class="follow-button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 3h8v14l-4-3-4 3V3Z"/></svg>Save this sample</button><span>Fictional design scenario</span></footer>
-    </section>
-
-    <nav class="map-navigation" aria-label="Map navigation"><button id="map-home" class="icon-button" title="World overview" aria-label="World overview"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c5 5 5 11 0 16-5-5-5-11 0-16Z"/></svg></button><span></span><button id="map-zoom-in" class="icon-button" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg></button><button id="map-zoom-out" class="icon-button" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12"/></svg></button></nav>
-
-    <section class="time-dock" aria-label="Sample history timeline">
-      <div class="time-top"><div class="time-label"><span class="eyebrow">TIME WINDOW</span><span id="timeline-date">12 OCT 2026</span><span id="timeline-readout" class="time-readout">12:00 UTC</span></div><div class="time-actions"><button id="timeline-play" class="icon-button" aria-label="Play sample history" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z"/></svg></button><button id="timeline-now" class="now-button" aria-pressed="true"><span class="status-dot"></span>Demo now</button></div></div>
-      <div class="time-track"><div id="activity-chart" class="activity-chart" aria-hidden="true"></div><input id="timeline-input" type="range" aria-label="Move through seven days of fictional sample history" min="0" max="100" value="100" step="1"></div>
-      <div id="timeline-ticks" class="timeline-ticks"></div>
-    </section>
-    <footer class="bottom-line"><span><span class="legend-dot"></span>FICTIONAL SIGNALS · DESIGN EXPLORATION</span><span class="map-instructions">DRAG TO EXPLORE <b>·</b> SCROLL TO ZOOM</span><a href="https://www.naturalearthdata.com/about/terms-of-use/" target="_blank" rel="noreferrer">Natural Earth · Public domain</a></footer>
-    <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
-  </main><script type="module" src="./map-view.js"></script>
+    <section class="time-dock" aria-label="Fictional historical timeline"><div class="time-top"><div><span class="eyebrow">MOVE THROUGH THE STORY</span><span id="timeline-date"></span><span id="timeline-readout"></span></div><div class="time-actions"><button id="timeline-play" class="icon-button" aria-label="Play sample history" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z"/></svg></button><button id="timeline-now" class="now-button" aria-pressed="true"><span class="status-dot"></span>Demo now</button><button id="timeline-expand" class="icon-button" aria-label="Expand sample timeline" aria-expanded="false">⌃</button></div></div><div class="time-track"><div id="activity-chart" aria-hidden="true"></div><input id="timeline-input" type="range" min="0" max="1000" value="1000" step="1" aria-label="Move through seven days of fictional history"></div><div id="timeline-ticks"></div><div id="timeline-detail" hidden></div></section>
+    <footer class="bottom-line"><span>Fictional stories, evidence and community examples · design review</span><a href="https://www.naturalearthdata.com/about/terms-of-use/" target="_blank" rel="noreferrer">Natural Earth · Public domain</a></footer>
+  </div>
+  <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+</main><script type="module" src="./map-view.js"></script>
 </body></html>

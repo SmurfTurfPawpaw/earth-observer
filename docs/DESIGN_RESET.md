@@ -46,3 +46,13 @@ Sources checked:
 - Which existing backend contracts survive review against the accepted experience.
 
 Do not mark these decisions made until evidence or explicit user direction resolves them.
+
+## Research and rabbit-hole preview, 12 October 2026
+
+The user explicitly authorised changing the existing design preview to explore a research experience with five depths: Brief, Context, Investigate, Systems and Synthesis. They then identified rabbit-hole exploration as the primary design goal: a social research hub where a finding leads to another question, with community contributions that can support, challenge or add context to evidence. Users may begin with a goal or project when they do not know the right question yet; the preview should suggest useful next questions.
+
+This package changes only the separate `/earth/design/` experience. It supplies authored fictional investigations for Taiwan/semiconductors, an illustrative Athena space project and European energy; an urgent sample world intake; a branching research trail; depth controls; geographic connections; evidence and local draft community notes; and sample historical playback. Deep sample analysis is prepared, then progressively revealed. It does not perform unrestricted research, collect fresh news, create real community activity, activate subscriptions or run X/Reddit collection.
+
+The design may convey urgency through hierarchy and colour while maintaining explicit sample status. Aircraft observations remain distinct from a person's whereabouts, geographic associations from confirmed incident positions, and inferred relationships from established causality. No real person's private location is supplied. Community examples and local drafts do not establish verified claims or real-user participation.
+
+Review the actual inquiry → finding → next question → trail → evidence/community → return flow. User feedback is still required before treating this new visual direction or interaction model as accepted. Existing backend work remains outside this package.
