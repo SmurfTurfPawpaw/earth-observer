@@ -48,6 +48,29 @@ test('a late response cannot attach evidence to a replaced selection', async () 
   assert.equal(await pending, false); assert.equal(values.size, 0); bridge.destroy();
 });
 
+test('a retained source-context report stays fixed across globe history and live collection updates without a scene pin', async () => {
+  const f = fixture(); let update;
+  f.entity.selection = { ...selection, _worldEvent: event,
+    _worldReport: { schemaVersion: 1, kind: 'retained-source-context', revision: event.evidence.revision } };
+  f.values.set('_worldEvent', event);
+  f.viewer.earthTime.getState = () => ({ mode: 'history', at: '2025-10-08T00:00:00.000Z' });
+  const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: entity => entity?.selection,
+    fetchImpl() { throw new Error('A context report already has its fixed retained projection'); }, subscribeUpdates(listener) { update = listener; } });
+  assert.equal(await bridge.refresh(), true); assert.equal(f.values.get('_worldEvent'), event);
+  f.viewer.earthTime.getState = () => ({ mode: 'live', at }); update({ type: 'collection' });
+  assert.equal(await bridge.refresh(), true); assert.equal(f.values.get('_worldEvent'), event); bridge.destroy();
+});
+
+test('a rejected source-context revision is removed rather than remaining renderable in the dossier', async () => {
+  const f = fixture();
+  f.entity.selection = { ...selection, _worldEvent: event,
+    _worldReport: { schemaVersion: 1, kind: 'retained-source-context', revision: 'd'.repeat(64) } };
+  f.values.set('_worldEvent', event);
+  const bridge = installWorldDossierBridge({ viewer: f.viewer, readSelection: entity => entity?.selection,
+    fetchImpl() { throw new Error('Rejected source context cannot acquire another projection'); } });
+  assert.equal(await bridge.refresh(), false); assert.equal(f.values.has('_worldEvent'), false); bridge.destroy();
+});
+
 const historicalAt = '2025-06-01T12:00:00.000Z', retainedAt = '2026-10-12T02:00:00.000Z';
 function archiveFixture(mode = 'reconstruction') {
   const f = fixture();

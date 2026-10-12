@@ -114,6 +114,60 @@ test('GKG manifest rejects foreign/ambiguous, oversized, expired and future arch
     text.replace(BATCH, '20261012100000'), text.replace(BATCH, '20261011094700'), 'x'.repeat(16385)]) assert.throws(() => parseGkgUpdateManifest(invalid, START));
 });
 
+test('the observed forward-labelled manifest yields exact bounded diagnostics and keeps the existing five-minute admission boundary', () => {
+  const row = '2386569 6f65cb2d4da7e95693960d9826bc34c7 http://data.gdeltproject.org/gdeltv2/20261012004500.gkg.csv.zip';
+  const checkedAt = '2026-10-12T00:38:54.000Z';
+  assert.throws(() => parseGkgUpdateManifest(row, Date.parse(checkedAt)), error => {
+    assert.deepEqual(error.diagnostic, { schemaVersion: 1, code: 'manifest-batch-future', checkedAt, batch: '20261012004500', sizeBytes: 2386569,
+      batchAt: '2026-10-12T00:45:00.000Z', batchDeltaMs: 366000, notBefore: '2026-10-12T00:40:00.000Z', retryAt: '2026-10-12T00:40:00.000Z' });
+    assert.ok(Buffer.byteLength(JSON.stringify(error.diagnostic)) < 512); return true;
+  });
+  assert.throws(() => parseGkgUpdateManifest(row, Date.parse('2026-10-12T00:39:59.999Z')), error => error.diagnostic.code === 'manifest-batch-future');
+  assert.equal(parseGkgUpdateManifest(row, Date.parse('2026-10-12T00:40:00.000Z')).batch, '20261012004500');
+  for (const [text, code] of [[row.replace('2386569', String(MAX_GKG_ZIP_BYTES + 1)), 'manifest-archive-oversized'],
+    [row.replace('20261012004500', '20261010004500'), 'manifest-batch-expired'], [row.replace('20261012004500', '20261012004700'), 'manifest-batch-invalid'],
+    [row.replace('data.gdeltproject.org', 'evil.example'), 'manifest-source-mismatch'], [row + '\n' + row, 'manifest-gkg-ambiguous'],
+    ['No GKG row', 'manifest-gkg-missing'], ['x'.repeat(16385), 'manifest-byte-budget']]) {
+    assert.throws(() => parseGkgUpdateManifest(text, Date.parse(checkedAt)), error => {
+      assert.equal(error.diagnostic.code, code); assert.equal(error.diagnostic.checkedAt, checkedAt);
+      assert.ok(!JSON.stringify(error.diagnostic).includes('evil.example')); return true;
+    });
+  }
+});
+
+test('rejected complete manifests retain their original check UTC without archive work or retiming/replacing the last-good snapshot', async () => {
+  const previousBatch = '20261011233000', previousAt = Date.parse('2026-10-11T23:40:00.000Z'), archive = zipFixture(gkgRow(0, { batch: previousBatch }), previousBatch);
+  const prior = await generateGkgSnapshot({ previousSnapshot: null, now: () => previousAt,
+    fetchImpl: async url => url === GKG_UPDATE_MANIFEST ? new Response(manifest(archive, previousBatch)) : new Response(archive) });
+  assert.equal(prior.status, 'generated', prior.reason); const before = JSON.stringify(prior.snapshot);
+  const directory = await mkdtemp(path.join(tmpdir(), 'earth-gkg-diagnostic-'));
+  try {
+    await writeGdeltSnapshot(directory, prior); const sourcePath = path.join(directory, GDELT_SNAPSHOT_ASSET), originalBytes = await readFile(sourcePath);
+    for (const [text, code] of [
+      ['2386569 6f65cb2d4da7e95693960d9826bc34c7 http://data.gdeltproject.org/gdeltv2/20261012004500.gkg.csv.zip', 'manifest-batch-future'],
+      [`${MAX_GKG_ZIP_BYTES + 1} ${'a'.repeat(32)} http://data.gdeltproject.org/gdeltv2/20261012003000.gkg.csv.zip`, 'manifest-archive-oversized'],
+      [`123 ${'a'.repeat(32)} http://data.gdeltproject.org/gdeltv2/20261010003000.gkg.csv.zip`, 'manifest-batch-expired'],
+      ['invalid complete source manifest', 'manifest-gkg-missing'],
+    ]) {
+      let at = Date.parse('2026-10-12T00:38:54.000Z'), calls = 0;
+      const failed = await generateGkgSnapshot({ previousSnapshot: prior.snapshot, now: () => at, repairEnabled: true, fetchImpl: async url => {
+        calls++; assert.equal(url, GKG_UPDATE_MANIFEST); at += 200; return new Response(text);
+      } });
+      assert.equal(failed.status, 'skipped'); assert.equal(failed.code, 'invalid-response', 'Existing reader/backoff code remains compatible');
+      assert.equal(failed.checkedAt, '2026-10-12T00:38:54.200Z'); assert.equal(failed.manifestCheckedAt, failed.checkedAt);
+      assert.equal(failed.diagnostic.checkedAt, failed.checkedAt); assert.equal(failed.diagnostic.code, code); assert.equal(calls, 1);
+      assert.equal(failed.snapshot, undefined); assert.equal(failed.bytes, undefined); assert.equal(failed.retryAfterMs, undefined, 'Retry diagnostics do not change scheduling policy');
+      assert.equal(await writeGdeltSnapshot(directory, failed), false); assert.deepEqual(await readFile(sourcePath), originalBytes);
+      assert.equal(JSON.stringify(prior.snapshot), before, 'Generation, retrieval and factual coverage stay unchanged');
+    }
+    const oversized = await generateGkgSnapshot({ previousSnapshot: prior.snapshot, now: () => START, fetchImpl: async url => {
+      assert.equal(url, GKG_UPDATE_MANIFEST); return new Response('x'.repeat(16385));
+    } });
+    assert.equal(oversized.diagnostic.code, 'manifest-byte-budget'); assert.equal(oversized.manifestCheckedAt, null);
+    assert.equal(oversized.checkedAt, null, 'A body rejected before completion cannot claim a completed manifest check');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('GKG ZIP rejects encryption, paths, extra entries/trailing bytes and verifies MD5/CRC/inflation limits', async () => {
   const archive = zipFixture(gkgRow()); const stamp = new Date(START).toISOString();
   assert.equal(inspectGkgZip(archive, BATCH).method, 8);

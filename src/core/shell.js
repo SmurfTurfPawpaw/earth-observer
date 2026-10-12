@@ -175,7 +175,11 @@ export function createShell(viewer, manager) {
   bind('close-news', () => closePanel('news', { focus: true }));
   bind('toggle-notebook', () => activePanel === 'notebook' ? closePanel('notebook', { focus: true }) : openPanel('notebook', { focus: true }));
   bind('close-notebook', () => closePanel('notebook', { focus: true }));
-  bind('clear-selection', () => { viewer.selectedEntity = undefined; closePanel('selection', { restoreSelection: false }); });
+  bind('clear-selection', () => {
+    const report = viewer.selectedEntity?.properties?.getValue?.(viewer.clock.currentTime)?._worldReport;
+    viewer.selectedEntity = undefined; closePanel('selection', { restoreSelection: false });
+    if (report) document.getElementById('toggle-news').focus();
+  });
   const escape = (event) => {
     if (event.key !== 'Escape') return;
     if (document.getElementById('command-palette').open) return;
@@ -476,6 +480,15 @@ export function createShell(viewer, manager) {
     openCommands: () => commandPalette.open(), closeCommands: () => commandPalette.close(),
     subscribePanels(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener); },
     selectEntity(entity) { if (viewer.selectedEntity === entity) select(entity); else viewer.selectedEntity = entity; },
+    openWorldReport(event) {
+      // Context can inspect an exact stored report without enabling a layer or
+      // inventing a drawable feature outside the selected scene's membership.
+      viewer.selectedEntity = new Cesium.Entity({ id: `report:${event.id}:${event.evidence.revision}`, name: event.title,
+        properties: { usgsId: event.evidence.sourceRecordId.slice(5), mag: event.reportedFacts.magnitude,
+          time: Date.parse(event.eventTime.at), lat: event.place.lat, lon: event.place.lon, _worldEvent: event,
+          _worldReport: { schemaVersion: 1, kind: 'retained-source-context', revision: event.evidence.revision } } });
+      document.getElementById('clear-selection').focus();
+    },
     setLocalStatus(text, { active = false, radiusKm } = {}) {
       const status = document.getElementById('local-status'); status.textContent = text; status.title = text;
       document.getElementById('local-context').dataset.active = String(active);

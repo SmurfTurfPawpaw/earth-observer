@@ -51,7 +51,7 @@ function elements(root) {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 async function settle() { await tick(); await tick(); }
 
-function fixture(t, { offline = false, intelligenceFetch } = {}) {
+function fixture(t, { offline = false, intelligenceFetch, onOpenReport, onNavigate, onSuspend } = {}) {
   const oldLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
   // A production-origin string enables the real opt-in controller. fetchImpl
   // below intercepts every request; no public aggregate counters are touched.
@@ -90,7 +90,7 @@ function fixture(t, { offline = false, intelligenceFetch } = {}) {
     return Response.json({ enabled: true, accepted: true }, { status: 202 });
   };
   const container = documentRef.createElement('section');
-  const panel = createIntelligencePanel({ container, documentRef, fetchImpl });
+  const panel = createIntelligencePanel({ container, documentRef, fetchImpl, onOpenReport, onNavigate, onSuspend });
   const find = (predicate) => elements(container).find(predicate);
   const ui = {
     form: find((element) => element.tagName === 'form'),
@@ -110,7 +110,7 @@ function fixture(t, { offline = false, intelligenceFetch } = {}) {
     panel.destroy();
     if (oldLocation) Object.defineProperty(globalThis, 'location', oldLocation); else delete globalThis.location;
   });
-  return { panel, container, ui, calls, demandCalls, intelligenceCalls, optIn };
+  return { panel, container, documentRef, ui, calls, demandCalls, intelligenceCalls, optIn };
 }
 
 test('actual panel counts only opted-in explicit submits, never mount/open/change/refresh/reopen', async (t) => {
@@ -235,4 +235,34 @@ test('a failed delivery retains existing cards and marks their source stale with
   assert.match(env.container.textContent, /older cached data/);
   assert.match(env.container.textContent, /retained metadata keeps its original dates/);
   assert.equal(env.demandCalls().length, 0);
+});
+
+test('an actual USGS card inspects retained evidence through its own callback and preserves generic place navigation', async (t) => {
+  let finish; const opened = [], places = [];
+  const env = fixture(t, { intelligenceFetch: ({ payload }) => Response.json({ ...payload, indexCoverage: undefined,
+    reports: [{ id: 'usgs:us7000test', sourceId: 'usgs', kind: 'hazard-report', eventType: 'EQ', title: 'M5.1 fixture',
+      source: 'U.S. Geological Survey', url: 'https://earthquake.usgs.gov/earthquakes/eventpage/us7000test', lat: 10, lon: 20,
+      magnitude: 5.1, observedAt: '2026-10-12T00:00:00.000Z', category: 'disasters' },
+    { id: 'gdacs:FL:1', sourceId: 'gdacs', kind: 'hazard-report', eventType: 'FL', title: 'Flood fixture',
+      source: 'GDACS', url: 'https://www.gdacs.org/report.aspx?eventid=1', lat: 30, lon: 40, category: 'disasters' }] }),
+    onOpenReport(report) { opened.push(report); return new Promise(resolve => { finish = resolve; }); },
+    onNavigate(place) { places.push(place); } });
+  await env.panel.open(); await settle();
+  const inspect = elements(env.ui.list).find(element => element.tagName === 'button' && element.textContent === 'Inspect report');
+  const locate = elements(env.ui.list).find(element => element.tagName === 'button' && element.textContent === 'View reported location');
+  assert.ok(inspect); assert.ok(locate); inspect.trigger('click');
+  assert.equal(inspect.disabled, true); assert.equal(opened[0].id, 'usgs:us7000test'); assert.equal(places.length, 0);
+  finish(true); await settle(); assert.equal(inspect.disabled, false);
+  locate.trigger('click'); assert.equal(places[0].report.id, 'gdacs:FL:1'); assert.equal(opened.length, 1);
+  assert.equal(env.demandCalls().length, 0);
+});
+
+test('feed closure, visibility suspension and destruction cancel pending report inspection', async (t) => {
+  let suspensions = 0;
+  const env = fixture(t, { onSuspend() { suspensions++; } });
+  await env.panel.open(); assert.equal(suspensions, 0);
+  env.panel.close(); assert.equal(suspensions, 1, 'Plugin tab switches close the feed and cancel its report request');
+  await env.panel.open(); env.documentRef.hidden = true;
+  for (const listener of env.documentRef.listeners.get('visibilitychange') || []) listener();
+  assert.equal(suspensions, 2); env.panel.destroy(); assert.equal(suspensions, 3);
 });

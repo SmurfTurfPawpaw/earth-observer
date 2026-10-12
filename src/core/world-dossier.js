@@ -32,7 +32,9 @@ export function createWorldDossier(entity, time, { documentRef = globalThis.docu
   field('First retained', stamp(event.knowledge?.firstRecordedAt));
   dossier.append(facts);
   const context = entity?.properties?.getValue?.(time)?._worldScene;
-  dossier.append(node('p', 'world-dossier-note', context?.mode === 'reconstruction' ?
+  const report = entity?.properties?.getValue?.(time)?._worldReport;
+  dossier.append(node('p', 'world-dossier-note', report?.kind === 'retained-source-context' ?
+    'Retained source report. Its occurrence and evidence dates are independent of the selected globe time; opening it does not add a map feature.' : context?.mode === 'reconstruction' ?
     'Historical reconstruction uses retained USGS corrections. The event date and the date this platform retained evidence are separate.' :
     context?.mode === 'as-known' ? 'This historical scene includes only evidence this platform published by the selected UTC.' :
     'Location and measurements come from USGS. The report may be revised as evidence develops.'));

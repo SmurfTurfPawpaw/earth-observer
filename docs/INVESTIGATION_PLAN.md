@@ -1,9 +1,29 @@
 # Next durable investigation slice
 
-Planning proposal, 12 October 2026. No job/entity/claim schema or AI research runtime
-has been implemented by this document. The current system retains source items,
-immutable revisions and provisional USGS earthquake/epicenter references. Other
-source items remain discovery metadata, not verified incident pins or stories.
+Foundation plan and remaining domain work, updated 12 October 2026. A narrow
+durable USGS detail investigation lane is now implemented and has a completed
+hosted acquisition/receipt/result proof. It is fixed scientific enrichment, not
+a general AI research runtime, cross-source verification or global claim graph.
+The current system also retains typed institutional publication and annual-data
+receipts. Other discovery items remain metadata, not verified incident pins.
+
+## Implemented investigation boundary
+
+`worker/investigation-pipeline.js` admits at most three recent source-reported
+USGS events per material source capture, prioritizing reported magnitude/newness.
+Its persistent admission receipt can repair a lost enqueue step on a later wake;
+unchanged checks do not continually enqueue the same input. One due job runs per
+bounded authenticated wake. `worker/investigation-jobs.js` owns conditional
+leases/fences, a fixed USGS detail source, immutable originals and cited results.
+The stored-only public API does not acquire providers. The completed hosted
+roundtrip is recorded in FOUNDATION_PROGRESS.md; it does not prove permanent
+unattended execution or corroborated geopolitical analysis.
+
+Original Commission PDF evidence is separately staged in ORIGINAL_DOCUMENTS.md.
+Institutional publication items require their own source-item subject, original
+PDF retention and analysis publication receipts. Existing USGS event/snapshot
+fields cannot be filled with invented publication identifiers. Supervised local
+extraction and pure citation validation are not hosted document investigation.
 
 ## Publication review and release boundary
 
@@ -111,13 +131,18 @@ as real demand or corroboration.
 ## Coverage and backfill dependencies
 
 The local capability ledger reviews USGS catalog date-range access, GDACS custom
-dates and EONET start/end/open/closed queries. None is implemented as archive
-backfill. USGS is the first suitable source; a catalog fetched today reconstructs
-source event history using today's available revisions, not old public knowledge.
+dates and EONET start/end/open/closed queries. USGS M4.5+ origin-time backfill is
+implemented: the initial retained range runs from 12 October 2024 through
+11 October 2026 midnight. Incremental maintenance remains a separate acceptance
+gate. A catalog fetched today reconstructs source event history using today's
+available revisions, not old public knowledge. GDACS/EONET archive backfill is
+not implemented.
 GDACS episode completeness and EONET curation/onset precision remain unverified.
-GDELT currently processes a bounded latest GKG batch; old batches and missed-batch
-catch-up require checkpointed bulk ingestion outside the public Worker. Country
-mentions and index dates remain discovery context.
+GDELT processes a bounded latest GKG batch with bounded recent missed-batch
+repair outside the public Worker. Skipped batches preserve the prior sample and
+explicit gaps; the current producer cadence is not a reliable streaming runtime.
+Longer historical ingestion requires checkpointed bulk work. Country mentions
+and index dates remain discovery context.
 
 Each backfill job declares dataset scope, requested interval, filters/resolution,
 cursor, attempted/completed coverage, truncation and actual capture/knowledge dates.

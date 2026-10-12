@@ -49,6 +49,13 @@ export function installWorldDossierBridge({ viewer, readSelection, fetchImpl = g
     let id;
     try { id = `event:usgs:${await worldHash(['usgs', `usgs:${selected.usgsId}`])}`; } catch { return false; }
     if (destroyed || owner !== generation || viewer.selectedEntity !== entity) return false;
+    // A report opened from source context is a fixed retained revision. It is
+    // not a scene feature and never borrows the selected historical cutoff.
+    if (selected._worldReport?.schemaVersion === 1 && selected._worldReport.kind === 'retained-source-context') {
+      const valid = Boolean(matchingWorldEvent(selected._worldEvent, selected, { id, revision: selected._worldReport.revision }));
+      if (!valid) clear(entity);
+      return valid;
+    }
     if (ownedScene && (context.eventId !== id || selected.time > Date.parse(scene.at) || selected.time <= Date.parse(scene.at) - 7 * 86400000)) { clear(entity); return false; }
     const matchOptions = { id, knownAt, ...(ownedScene ? { archiveScope, revision: context.revision } : {}) };
     // A complete scene already carries its admitted projection. Keep it; a

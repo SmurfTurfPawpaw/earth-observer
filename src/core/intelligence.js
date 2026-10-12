@@ -175,7 +175,7 @@ export function createIntelligenceFeed({ fetchImpl = (...args) => fetch(...args)
 }
 
 /** Source-linked metadata cards, never full article text, images, or verification claims. */
-export function createIntelligencePanel({ container, fetchImpl, store, viewer, onNavigate, subscribeUpdates, onStatus = () => {}, documentRef = container?.ownerDocument || globalThis.document } = {}) {
+export function createIntelligencePanel({ container, fetchImpl, store, viewer, onNavigate, onOpenReport, onSuspend = () => {}, subscribeUpdates, onStatus = () => {}, documentRef = container?.ownerDocument || globalThis.document } = {}) {
   if (!container || !documentRef) throw new TypeError('An intelligence panel container is required');
   const node = (tag, className, text) => { const element = documentRef.createElement(tag); if (className) element.className = className; if (text !== undefined) element.textContent = text; return element; };
   const link = (title, href) => {
@@ -237,9 +237,14 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
       block.append(sourceDetail);
     }
     if (report.relatedReason) block.append(node('p', 'intelligence-meta', String(report.relatedReason)));
-    if (!related && detail.canNavigate && typeof onNavigate === 'function') {
-      const button = node('button', '', 'View reported location'); button.type = 'button';
-      button.addEventListener('click', () => onNavigate({ lat: report.lat, lon: report.lon, title: report.title, report })); block.append(button);
+    if (!related && detail.canNavigate && (typeof onNavigate === 'function' || typeof onOpenReport === 'function')) {
+      const inspect = report.sourceId === 'usgs' && report.eventType === 'EQ' && typeof onOpenReport === 'function';
+      const button = node('button', '', inspect ? 'Inspect report' : 'View reported location'); button.type = 'button';
+      button.addEventListener('click', async () => {
+        if (!inspect) { onNavigate?.({ lat: report.lat, lon: report.lon, title: report.title, report }); return; }
+        button.disabled = true;
+        try { await onOpenReport(report); } finally { button.disabled = false; }
+      }); block.append(button);
     }
     if (!related && Array.isArray(report.relatedReports) && report.relatedReports.length) {
       const details = node('details', 'intelligence-related'); details.append(node('summary', '', `${report.relatedReports.length} related source link${report.relatedReports.length === 1 ? '' : 's'} · indicative match`));
@@ -299,12 +304,14 @@ export function createIntelligencePanel({ container, fetchImpl, store, viewer, o
   form.addEventListener('submit', submit); refresh.addEventListener('click', refreshClick);
   category.addEventListener('change', apply);
   country.addEventListener('change', apply);
+  const suspendHidden = () => { if (documentRef.hidden) onSuspend(); };
+  documentRef.addEventListener?.('visibilitychange', suspendHidden);
   render(feed.getState());
   return {
     setSceneMode(mode) { timeScope.hidden = mode !== 'history'; },
     open() { void research.open(); if (category.value === 'economy') void economics.open(country.value || 'WLD'); return feed.open(); },
-    close() { research.close(); economics.close(); feed.close(); },
+    close() { onSuspend(); research.close(); economics.close(); feed.close(); },
     refresh: refreshClick,
-    destroy() { research.destroy(); demand.destroy(); economics.destroy(); feed.destroy(); form.removeEventListener('submit', submit); category.removeEventListener('change', apply); country.removeEventListener('change', apply); refresh.removeEventListener('click', refreshClick); container.replaceChildren(); }
+    destroy() { onSuspend(); documentRef.removeEventListener?.('visibilitychange', suspendHidden); research.destroy(); demand.destroy(); economics.destroy(); feed.destroy(); form.removeEventListener('submit', submit); category.removeEventListener('change', apply); country.removeEventListener('change', apply); refresh.removeEventListener('click', refreshClick); container.replaceChildren(); }
   };
 }

@@ -22,6 +22,11 @@ const MAX_GKG_ROWS = 50000, MAX_ROW_BYTES = 524288, MAX_CANDIDATES = 10000;
 const HEADERS = { 'User-Agent': 'earth-observer-snapshots/1.0 (+https://github.com/SmurfTurfPawpaw/earth-observer)' };
 const strongEtag = (value) => typeof value === 'string' && /^"[\x21\x23-\x7e]{1,126}"$/.test(value) ? value : null;
 const archiveUrl = (batch) => `https://data.gdeltproject.org/gdeltv2/${batch}.gkg.csv.zip`;
+class GkgManifestRejection extends Error {
+  constructor(code, message, details = {}) {
+    super(message); this.diagnostic = Object.freeze({ schemaVersion: 1, code, ...details });
+  }
+}
 
 // Bound even an injected transport that fails to settle when its signal aborts.
 async function fetchBounded(fetchImpl, url, options) {
@@ -50,15 +55,24 @@ export function historicalGkgDescriptor(response, batch, nowMs = Date.now()) {
 
 /** Only the current official GKG archive; HTTP manifest links are upgraded to HTTPS. */
 export function parseGkgUpdateManifest(text, nowMs = Date.now()) {
-  if (typeof text !== 'string' || Buffer.byteLength(text) > 16384) throw new Error('GKG manifest exceeds its limit');
+  const checkedAt = new Date(nowMs).toISOString(), reject = (code, message, details = {}) => { throw new GkgManifestRejection(code, message, { checkedAt, ...details }); };
+  if (typeof text !== 'string') reject('manifest-format', 'GKG manifest is not text');
+  if (Buffer.byteLength(text) > 16384) reject('manifest-byte-budget', 'GKG manifest exceeds its 16 KiB limit');
   const lines = text.trim().split(/\r?\n/);
-  if (lines.length > 8) throw new Error('Unexpected GKG update manifest');
+  if (lines.length > 8) reject('manifest-row-budget', 'GKG manifest exceeds its eight-row limit');
   const candidates = lines.filter((line) => /\.gkg\.csv\.zip(?:\s|$)/i.test(line));
-  if (candidates.length !== 1) throw new Error('Missing or ambiguous GKG update');
+  if (candidates.length !== 1) reject(candidates.length ? 'manifest-gkg-ambiguous' : 'manifest-gkg-missing', 'Missing or ambiguous GKG update');
   const match = /^([1-9]\d{0,8})\s+([a-fA-F0-9]{32})\s+https?:\/\/data\.gdeltproject\.org\/gdeltv2\/(\d{14})\.gkg\.csv\.zip$/.exec(candidates[0]);
-  if (!match) throw new Error('GKG archive does not match the fixed official source');
+  if (!match) reject('manifest-source-mismatch', 'GKG archive does not match the fixed official source');
   const size = Number(match[1]), stamp = gkgBatchTime(match[3]), age = nowMs - Date.parse(stamp);
-  if (!stamp || size > MAX_GKG_ZIP_BYTES || age > 86400000 || age < -300000) throw new Error('GKG update is oversized, expired or future-dated');
+  const details = { batch: match[3], sizeBytes: size, ...(stamp ? { batchAt: stamp, batchDeltaMs: -age } : {}) };
+  if (!stamp) reject('manifest-batch-invalid', 'GKG batch label is not a valid quarter-hour UTC timestamp', details);
+  if (size > MAX_GKG_ZIP_BYTES) reject('manifest-archive-oversized', 'GKG archive exceeds the 16 MiB compressed limit', details);
+  if (age > 86400000) reject('manifest-batch-expired', 'GKG batch label is more than 24 hours old', details);
+  if (age < -300000) {
+    const notBefore = new Date(Date.parse(stamp) - 300000).toISOString();
+    reject('manifest-batch-future', 'GKG batch label is more than five minutes ahead of the manifest check UTC', { ...details, notBefore, retryAt: notBefore });
+  }
   return { batch: match[3], size, md5: match[2].toLowerCase(), url: `https://data.gdeltproject.org/gdeltv2/${match[3]}.gkg.csv.zip` };
 }
 
@@ -185,7 +199,7 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
   const duration = Math.max(1, Math.min(45000, timeoutMs)), expiresAt = Date.now() + duration;
   const deadline = AbortSignal.timeout(duration);
   const signal = callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
-  let checkedAt = null;
+  let checkedAt = null, manifestCheckedAt = null;
   const httpError = async (response, source) => {
     const retry = response.headers.get('retry-after');
     const delay = /^\d+$/.test(retry || '') ? Number(retry) * 1000 : Date.parse(retry || '') - now();
@@ -210,11 +224,17 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
       reason: 'GDELT provider backoff retained; no manifest or archive request issued, original source dates preserved' };
     const manifestResponse = await fetchBounded(fetchImpl, GKG_UPDATE_MANIFEST, { signal, redirect: 'error', headers: { ...HEADERS, Accept: 'text/plain' } });
     if (!manifestResponse.ok) throw await httpError(manifestResponse, 'manifest');
-    const descriptor = parseGkgUpdateManifest(await readResponseTextCapped(manifestResponse, 16384, signal), now());
-    checkedAt = new Date(now()).toISOString();
+    let manifestText;
+    try { manifestText = await readResponseTextCapped(manifestResponse, 16384, signal); }
+    catch (error) {
+      if (error.code === 'RESPONSE_TOO_LARGE') throw new GkgManifestRejection('manifest-byte-budget', 'GKG manifest exceeds its 16 KiB limit');
+      throw error;
+    }
+    const manifestCheckedMs = now(); manifestCheckedAt = checkedAt = new Date(manifestCheckedMs).toISOString();
+    const descriptor = parseGkgUpdateManifest(manifestText, manifestCheckedMs);
     const latestRetained = previous?.coverage.processedBatches.some((batch) => batch.id === descriptor.batch);
     if (latestRetained && !repairEnabled) return { status: 'skipped', code: 'unchanged',
-      batch: descriptor.batch, checkedAt, reason: 'Latest GKG batch already processed; previous snapshot preserved' };
+      batch: descriptor.batch, checkedAt, manifestCheckedAt, reason: 'Latest GKG batch already processed; previous snapshot preserved' };
     const priority = await readDemandPriority({ enabled: demandPriority, fetchImpl: (url, options) => fetchBounded(fetchImpl, url, options), now, signal });
     const processedBatches = [...(previous?.coverage.processedBatches || [])];
     const reports = previous ? Object.values(previous.categories).flatMap((category) => category.reports) : [];
@@ -271,13 +291,14 @@ export async function generateGkgSnapshot({ fetchImpl = fetch, now = Date.now, t
     const proposed = factualChanged ? applyDemandPriority(base, reports, priority) : { ...base, categories: previous.categories };
     const snapshot = validateGdeltSnapshot(proposed, now()), bytes = new TextEncoder().encode(`${JSON.stringify(snapshot)}\n`);
     if (bytes.byteLength > MAX_GDELT_SNAPSHOT_BYTES) throw new Error('GKG snapshot exceeds 1 MiB');
-    return { status: 'generated', code: factualChanged ? 'generated' : 'checked', checkedAt, factualChanged, snapshot, bytes, batch: descriptor.batch,
+    return { status: 'generated', code: factualChanged ? 'generated' : 'checked', checkedAt, manifestCheckedAt, factualChanged, snapshot, bytes, batch: descriptor.batch,
       archiveBytes: compressedBytes, expandedBytes, archives: acquired, rows: latestParsed?.rows || 0, matchedRecords: latestParsed?.matchedRecords || 0,
       sampling: { mode: priority.mode, reason: priority.reason, publishedInterests: priority.interests.length, maximumDemandShare: 0.25 } };
   } catch (error) {
     const timedOut = deadline.aborted || error.name === 'TimeoutError';
     return { status: 'skipped', code: signal.aborted ? timedOut ? 'timeout' : 'aborted' : error.httpStatus ? 'http-error' : 'invalid-response',
-      checkedAt, ...(error.httpStatus ? { httpStatus: error.httpStatus, retryAfterMs: error.retryAfterMs } : {}),
+      checkedAt, manifestCheckedAt, ...(error instanceof GkgManifestRejection ? { diagnostic: error.diagnostic } : {}),
+      ...(error.httpStatus ? { httpStatus: error.httpStatus, retryAfterMs: error.retryAfterMs } : {}),
       reason: `${timedOut ? 'GKG timed out' : error.message}; previous snapshot preserved` };
   }
 }
@@ -342,7 +363,8 @@ async function main() {
   const result = await generateGkgSnapshot({ demandPriority: process.env.INTELLIGENCE_DEMAND_PRIORITY !== '0', repairEnabled: process.env.INTELLIGENCE_GKG_REPAIR_ENABLED === '1' });
   const destination = await writeGdeltSnapshot(process.argv[2] || '.cache/intelligence-snapshots', result);
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `status=${result.status}\n`);
-  console.log(JSON.stringify({ status: result.status, ...(result.reason ? { reason: result.reason, category: result.category } : {}),
+  console.log(JSON.stringify({ status: result.status, code: result.code, checkedAt: result.checkedAt ?? null, manifestCheckedAt: result.manifestCheckedAt ?? null,
+    ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}), ...(result.reason ? { reason: result.reason, category: result.category } : {}),
     ...(destination ? { destination, bytes: result.bytes.byteLength, generatedAt: result.snapshot.generatedAt,
       kind: result.snapshot.kind, batch: result.batch, archiveBytes: result.archiveBytes, rows: result.rows, matchedRecords: result.matchedRecords,
       sampling: result.sampling,

@@ -511,3 +511,74 @@ generation at 00:38:54Z because a source size/time admission guard failed.
 No new discovery snapshot was acquired or published. The old sample remains
 dated and stale. The next source investigation identifies the precise condition
 without widening budgets or substituting a successful workflow for fresh data.
+
+### Version 32 published acceptance and re-examination — 00:50 UTC
+
+Version 32 succeeded at 00:44:41.798Z on app
+1ce551a50917ce142ff835902c0ee2737c7e638f and combined source
+216ae00381273031271760a3d8c1556adb783a44. Its exact package SHA-256 is
+41024ef9b05edeef47ceebddf3ea4865d44c928be64e9ed9065f61660132e6c8.
+The hosted browser adopted index-vij04K3X and index-fgMxnDo_ assets. The actual
+Commission view now renders all ten retained publication titles, document
+identities and source publication dates. The stored projection repair passes
+published acceptance; original receipts are unchanged.
+
+At 390×844, document clientWidth and scrollWidth both remain 390. A calendar
+seek to 2025-10-08 00:00 UTC followed by collapse shows the compact
+“USGS · M4.5+ · 7d” scope alongside the historical clock. Its accessible name
+and tooltip describe reconstruction using retained corrections. Screenshots
+are retained locally in qa-artifacts/published-foundation-v32-mobile-commission.png
+and published-foundation-v32-mobile-history.png. The mobile source selector
+still requires horizontal scrolling; purpose-based navigation remains a later
+design improvement, rather than a claim of finished visual design.
+
+Re-examination keeps continuous archive maintenance ahead of source expansion.
+Daily first-proof materialization needs a fenced owner bootstrap, exact receipt
+knowledge dates, compatibility while bootstrap is incomplete, and atomic
+publication/frontier movement. Calendar reads will gain bounded date windows,
+preserving the advertised full available range without unbounded receipt scans.
+The temporary collector bridge remains active: its 00:48 wake retained a new
+factual publication. Permanent unattended execution is still an external
+dependency and is not replaced by the successful finite cloud trial.
+
+An actual bounded USGS check for 2026-10-11 23:00–23:01 UTC returned count zero
+and an original HTTP 200 empty GeoJSON FeatureCollection. This demonstrates one
+genuine quiet interval suitable for retained coverage; it is neither fabricated
+empty data nor a universal provider-availability guarantee. Original Commission
+PDF extraction is separately staged with reproducible bytes and page citations.
+It remains local until job subjects, hosted retention and resource isolation
+pass their own gates. Broader corroborated stories, entity relations, evaluated
+future analysis, demand-driven discovery and global history remain incomplete.
+
+### Exact report inspection and diagnostic package — local, 01:00 UTC
+
+The Current feeds USGS action now resolves the exact displayed factual revision
+through stored world detail and opens the existing dossier. A source-context
+report is a non-drawable selection: inspection does not enable a layer, add a
+scene pin or change selected history time. The dossier keeps occurrence,
+correction, capture and retention dates distinct from globe time. A changed
+revision is rejected rather than silently substituted. Generic GDACS place
+navigation remains separate. Explicit inspection moves keyboard focus to the
+dossier control; closing returns focus to Context.
+
+Review repaired cancellation on source-tab switches, hidden documents, selection,
+history seek and camera changes; late work cannot replace a newly chosen view.
+Body limits, closed early transports, full displayed-fact checks, rejection
+cleanup and the real panel callback are covered by focused checks. Across the
+four affected modules, 27 meaningful checks passed after the incremental repairs.
+A real public USGS card usgs:us6000u1mv also passed the local controller against
+its retained hosted detail at 00:54:01Z. This is serving/codec evidence; the new
+published browser action remains a gate until release.
+
+GDELT producer skips now retain manifestCheckedAt before parsing and a bounded
+specific diagnostic code. Future timestamp rejection reports the existing
+five-minute admission boundary, without widening it or changing retry policy.
+Oversize, expiry, malformed/fixed-source mismatch and future cases stay distinct;
+prior snapshot bytes and factual dates remain unchanged on failure. Producer,
+catch-up and local-consumer focused checks pass 28/28. No new provider acquisition
+or workflow freshness is claimed by this diagnostic-only change.
+
+The next publication excludes unfinished archive and document-runtime work.
+Those packages retain separate atomic bootstrap, resource and durable admission
+gates. This avoids making a working report interaction depend on unproved history
+maintenance or labeling staged extraction as hosted investigation.

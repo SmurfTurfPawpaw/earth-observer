@@ -16,6 +16,7 @@ import { createTimeline } from './core/timeline.js';
 import { createLiveUpdates } from './core/live-updates.js';
 import { installWorldDossierBridge } from './core/world-dossier-bridge.js';
 import { createPlaceNavigation } from './core/workspace-focus.js';
+import { createReportDossierController } from './core/report-dossier.js';
 import { Cartographic, Math as CesiumMath } from 'cesium';
 
 let viewer;
@@ -24,7 +25,7 @@ let shell;
 let destroyed = false;
 let describeBasemap = () => {};
 let contextRecovery;
-let area = null, intelligence, notebook, timeline, updates, worldDossiers, navigatePlace, panelLoading = {}, locationRevision = 0, warmTimer;
+let area = null, intelligence, notebook, timeline, updates, worldDossiers, reportDossiers, navigatePlace, panelLoading = {}, locationRevision = 0, warmTimer;
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -114,7 +115,7 @@ function warmTools() {
 
 async function handlePanel({ panel, open }) {
   if (!['news', 'notebook'].includes(panel)) return;
-  if (!open) { (panel === 'news' ? intelligence : notebook)?.close(); return; }
+  if (!open) { (panel === 'news' ? intelligence : notebook)?.close(); if (panel === 'news') reportDossiers?.cancel(); return; }
   if (!panelLoading[panel]) panelLoading[panel] = (async () => {
     if (panel === 'news') {
       const { createPluginDossierPanel } = await import('./core/plugin-dossier.js');
@@ -128,6 +129,8 @@ async function handlePanel({ panel, open }) {
             subscribeUpdates: updates.subscribe,
             onStatus: () => {},
             onNavigate: (place) => navigatePlace(place),
+            onOpenReport: (report) => reportDossiers.open(report),
+            onSuspend: () => reportDossiers.cancel(),
           });
         },
       });
@@ -164,6 +167,7 @@ export async function start() {
     worldDossiers = installWorldDossierBridge({ viewer, subscribeUpdates: updates.subscribe,
       readSelection(entity) {
         const values = entity?.properties?.getValue?.(viewer.clock.currentTime);
+        if (values?._worldReport) return values;
         const position = entity?.position?.getValue?.(viewer.clock.currentTime);
         if (!values?.usgsId || !position) return null;
         const point = Cartographic.fromCartesian(position);
@@ -171,6 +175,11 @@ export async function start() {
       },
     });
     disposers.push(() => worldDossiers.destroy());
+    reportDossiers = createReportDossierController({ fetchImpl: cachedFetch,
+      getScene: () => viewer.earthTime.getState(), getSelection: () => viewer.selectedEntity,
+      getNavigationKey: () => JSON.stringify(cameraView(viewer)),
+      onOpen(event) { navigatePlace({ lat: event.place.lat, lon: event.place.lon }); shell.openWorldReport(event); }, onError: shell.notify });
+    disposers.push(() => reportDossiers.destroy());
     const basemapButton = document.getElementById('toggle-basemap');
     describeBasemap = () => {
       const state = viewer.earthBasemap?.getState();

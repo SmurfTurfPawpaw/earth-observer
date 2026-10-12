@@ -28,3 +28,10 @@ test('knowledge replay has its own explanation and source links cannot become ar
   const forged = { properties: { getValue: () => ({ _worldEvent: { ...event, source: { id: 'usgs', url: 'javascript:alert(1)' } } }) } };
   assert.equal(createWorldDossier(forged, null, { documentRef }), null);
 });
+
+test('a source-context dossier explicitly separates retained report dates from globe time and adds no map feature', () => {
+  const selected = { properties: { getValue: () => ({ _worldEvent: event, _worldReport: { kind: 'retained-source-context' } }) } };
+  const dossier = createWorldDossier(selected, null, { documentRef });
+  assert.match(dossier.textContent, /independent of the selected globe time/); assert.match(dossier.textContent, /does not add a map feature/);
+  assert.match(dossier.textContent, /Occurred2025-06-01 12:00:00 UTC/);
+});

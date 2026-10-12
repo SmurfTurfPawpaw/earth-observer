@@ -22,6 +22,34 @@ Coverage retains exact `processedBatches` (ID, retrieval time, parsed row count 
 
 The Node generator reads the small official `gdeltv2/lastupdate.txt` manifest and accepts only the fixed HTTPS host and timestamped `YYYYMMDDHHMMSS.gkg.csv.zip` pattern. Declared compressed length and MD5 must match. It validates the single expected CSV entry and CRC and processes it without extracting files. ZIP parsing and Node decompression belong only to the scheduled job, never the Worker/browser graph. Limits are 16 MiB compressed, 128 MiB expanded, 50,000 rows, 512 KiB per TSV row and 10,000 retained candidates. Integrity, timeout, format or limit failure skips publication and preserves the previous release. Default generation makes no DOC API requests.
 
+Skipped manifest validation now emits a bounded `diagnostic` object with an exact
+code, separately from the existing `skipped` / `invalid-response` result contract.
+Codes distinguish format/row/byte limits, missing or ambiguous GKG rows, fixed-source
+mismatch, invalid batch labels, oversized archives, expired batches and future batches.
+Only admitted manifest fields are included: batch ID, declared bytes, valid batch UTC
+and `batchDeltaMs` (positive means the label is ahead of the check clock). No raw
+manifest body, arbitrary URL or publisher text enters diagnostics.
+
+`manifestCheckedAt` records completion of the capped manifest body before metadata
+validation; `checkedAt` keeps its existing final check meaning. An incomplete, timed-out
+or byte-rejected body does not claim completed manifest validation. These operational
+fields appear in producer output, including skips; they do not enter the published
+snapshot or renew factual generation, batch retrieval, history or gap coverage.
+
+The existing guards remain 16 MiB compressed, 24-hour age, five-minute forward-label
+tolerance and a 45-second producer deadline. A future rejection includes `notBefore`
+and `retryAt`, both the batch-label UTC minus that unchanged five-minute tolerance.
+This describes the current parser's admission boundary; it neither schedules a retry
+nor guarantees that the provider will still expose that batch, and introduces no
+sleep, archive request, timezone shift or timestamp correction.
+
+A manifest-only read at `2026-10-12T00:41:47Z` declared batch `20261012004500`
+at 2,386,569 compressed bytes. The same row is rejected at `00:38:54Z` and admitted
+at `00:40:00Z` by the unchanged guard. Run `38188795825` logged a combined skip
+reason at `00:38:54.6792642Z`; its original manifest row was not retained, so a
+future-label rejection is a supported inference, not a reconstructed source observation.
+No archive was acquired by that inspection. The earlier `23:40` sample kept its dates.
+
 The small manifest inspected on 11 October 2026 declared the `20261011013000` batch as 42,855 compressed bytes for Events, 59,830 for Mentions and 2,061,078 for GKG. These are one quiet sample's sizes, not guaranteed maxima. Events are smaller but encode CAMEO actor interactions, which do not replace broad general/economic/disaster topics. Research fetched only the manifest/documentation, with no archive download.
 
 The GitHub workflow requests runs at minutes 2, 17, 32 and 47 and supports dispatch. This targets each source's 15-minute batch cadence, rather than waiting another 30 minutes between acquisitions. It cannot produce new GKG content before GDELT publishes it. Exact batches/timestamps disclose scheduling delays and skipped intervals. Publication is serialized; only a completely validated result is written by temporary-file rename and uploaded. Failed generation never replaces the asset. GitHub `--clobber` is not transactional: interrupted replacement can temporarily remove the file, so the reader retains last-good validated state.
