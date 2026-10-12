@@ -17,6 +17,8 @@ class Element {
   addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
   removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
   trigger(type) { for (const fn of this.listeners.get(type) || []) fn(); }
+  focus() { this.ownerDocument.activeElement = this; }
+  querySelector(selector) { return elements(this).find(el => el !== this && selector.startsWith('.') && el.className === selector.slice(1)) || null; }
 }
 const elements = (el) => [el, ...el.children.filter((child) => typeof child === 'object').flatMap(elements)];
 const visibleText = el => el.hidden ? '' : el._text + (el.tagName === 'details' && !el.open ?
@@ -48,13 +50,13 @@ function publications() {
       evidence: { ...clone(receipt), locator: { kind: 'rss-guid', guid: 'https://www.ecb.europa.eu/press/pr/date/2026/html/ecb.test.en.html' } } }],
     counts: { returned: 1, more: true } };
 }
-function fixture(fetchImpl = async (url) => Response.json(url.startsWith('/api/publications') ? publications() : gas())) {
+function fixture(fetchImpl = async (url) => Response.json(url.startsWith('/api/publications') ? publications() : gas()), options = {}) {
   const listeners = new Map(), timers = new Map(); let id = 0, now = 0, feedCreates = 0, feedOpens = 0, feedCloses = 0, feedDestroys = 0;
   const updates = new Set();
   const documentRef = { hidden: false, createElement: (tag) => new Element(tag, documentRef), createElementNS: (_namespace, tag) => new Element(tag, documentRef),
     addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); }, removeEventListener(type, fn) { listeners.get(type)?.delete(fn); } };
   const container = documentRef.createElement('div'), requests = [];
-  const panel = createPluginDossierPanel({ container, documentRef, windowRef: null, now: () => now,
+  const panel = createPluginDossierPanel({ container, documentRef, windowRef: null, now: () => now, ...options,
     subscribeUpdates(listener) { updates.add(listener); return () => updates.delete(listener); },
     setTimeoutImpl(fn, delay) { timers.set(++id, { fn, at: now + delay }); return id; }, clearTimeoutImpl(id) { timers.delete(id); },
     fetchImpl: (...args) => { requests.push(args); return fetchImpl(...args); },
@@ -389,4 +391,74 @@ test('Commission events are source-isolated and receipt renewal preserves each p
   assert.equal(f.requests.length, 3); assert.equal(elements(f.container).find(el => el.className === 'plugin-publication' && el.textContent.includes('statement_26_2127')), article);
   assert.equal(proof.open, true); assert.equal(f.documentRef.activeElement, proof.children[0]); assert.ok(proof.textContent.includes(older.evidence.id));
   assert.ok(!proof.textContent.includes(current.receipt.rawSha256)); f.panel.destroy();
+});
+
+test('Inspect document is fixed-item-only and lazy; Back preserves the publication list, disclosure and focus', async t => {
+  const { documentFixture, syntheticPdf, syntheticAnalysis } = await import('../../worker/document-investigation-fixture.mjs');
+  const { claimDocumentInvestigation: claim, retainDocumentRaw: retain, completeDocumentInvestigation: complete, readDocumentAnalysis: read } = await import('../../worker/document-investigations.js');
+  const { readPluginPublications } = await import('../../worker/plugins/store.js');
+  const stored = await documentFixture(t); await stored.source('A', { other: true });
+  const job = (await claim(stored.env, { workerId: 'test-only-ui', claimId: '1'.repeat(32) }, { now: stored.now })).job;
+  const rawBytes = syntheticPdf('UI'); stored.advance(1000);
+  const raw = await retain(stored.env, { jobId: job.jobId, fence: job.fence, leaseToken: job.leaseToken, acquiredAt: stored.stamp(), rawBytes }, { now: stored.now });
+  stored.advance(1000); await complete(stored.env, { jobId: job.jobId, fence: job.fence, leaseToken: job.leaseToken, rawReceiptId: raw.receipt.id, ...await syntheticAnalysis(rawBytes) }, { now: stored.now });
+  let feed = await readPluginPublications(stored.env, 'ec-press-v1', { now: stored.now }), document = await read(stored.env, {}, { now: stored.now }), imports = 0;
+  stored.reset();
+  const f = fixture(async url => Response.json(url.startsWith('/api/documents/') ? document : feed), {
+    loadDocument: () => { imports++; return import('./document-dossier.js'); }
+  });
+  await f.panel.select('commission'); assert.equal(imports, 0); assert.equal(f.requests.length, 0); await f.panel.open();
+  const buttons = elements(f.container).filter(el => el.tagName === 'button' && el.textContent === 'Inspect document'); assert.equal(buttons.length, 1); assert.equal(imports, 0);
+  const article = buttons[0].parentElement, evidence = elements(article).find(el => el.className === 'plugin-item-evidence'); evidence.open = true;
+  f.panel.setSceneMode('history'); buttons[0].trigger('click');
+  await waitFor(() => elements(f.container).filter(el => el.className === 'document-statement').length === 4, 'the retained original examination');
+  assert.equal(imports, 1); assert.equal(f.requests.length, 2); assert.equal(f.requests[1][0], '/api/documents/ec-statement-26-2127');
+  assert.match(visibleText(f.container), /Attributed source statements/); assert.match(visibleText(f.container), /Source dates remain independent of globe time/);
+  const documentHost = elements(f.container).find(el => el.className === 'plugin-document');
+  assert.equal(f.documentRef.activeElement.textContent, 'Back to publications');
+  const proof = elements(documentHost).find(el => el.className === 'plugin-evidence'); proof.open = true;
+  f.emit(update(publications(), 1)); assert.equal(f.requests.length, 2);
+  feed = edition(feed, 'f'); document = { ...document, bodyCheck: { ...document.bodyCheck, checkedAt: '2026-10-12T04:10:00.000Z' } };
+  f.emit(update(feed, 1)); await waitFor(() => f.requests.length === 3, 'the source-isolated document invalidation'); await f.panel.open();
+  assert.equal(f.requests[2][0], '/api/documents/ec-statement-26-2127'); assert.equal(elements(documentHost).find(el => el.className === 'plugin-evidence'), proof);
+  assert.equal(proof.open, true); assert.equal(elements(article).find(el => el.className === 'plugin-item-evidence') === evidence, true);
+  elements(documentHost).find(el => el.tagName === 'button' && el.textContent === 'Back to publications').trigger('click');
+  await waitFor(() => f.requests.length === 4, 'the invalidated stored publication list'); await f.panel.open();
+  assert.equal(documentHost.hidden, true); assert.equal(evidence.open, true); assert.equal(f.documentRef.activeElement, buttons[0]);
+  assert.equal(stored.activity.providers.length, 0, 'public UI reads do not acquire');
+  buttons[0].trigger('click'); await f.panel.open(); assert.equal(imports, 1); assert.equal(f.requests.length, 4, 'the same document reuses its bounded memory cache');
+  f.panel.destroy(); assert.equal(f.timers.size, 0);
+});
+
+test('a late lazy document import cannot construct or fetch after source change, hiding or destruction', async () => {
+  const ec = await commission();
+  for (const close of [f => f.panel.select('publications'), f => f.visibility(true), f => f.panel.destroy()]) {
+    let resolveImport, constructed = 0;
+    const f = fixture(async url => Response.json(url.includes('plugin=ec-press-v1') ? ec : publications()), {
+      loadDocument: () => new Promise(resolve => { resolveImport = resolve; })
+    });
+    await f.panel.select('commission'); await f.panel.open();
+    elements(f.container).find(el => el.tagName === 'button' && el.textContent === 'Inspect document').trigger('click');
+    await waitFor(() => typeof resolveImport === 'function', 'lazy import dispatch'); await close(f);
+    resolveImport({ createDocumentDossier() { constructed++; assert.fail('an obsolete lazy import constructed a document view'); } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(constructed, 0); assert.equal(f.requests.filter(([url]) => url.startsWith('/api/documents/')).length, 0); f.panel.destroy();
+  }
+});
+
+test('hiding an active document cancels its read and reopening or Back cannot be overwritten by late evidence', async () => {
+  const ec = await commission(); let complete, signal;
+  const f = fixture(async (url, options) => {
+    if (!url.startsWith('/api/documents/')) return Response.json(ec);
+    signal = options.signal; return new Promise(resolve => { complete = resolve; });
+  });
+  await f.panel.select('commission'); await f.panel.open();
+  elements(f.container).find(el => el.tagName === 'button' && el.textContent === 'Inspect document').trigger('click');
+  await waitFor(() => typeof complete === 'function', 'stored document read dispatch');
+  f.visibility(true); assert.equal(signal.aborted, true);
+  complete(Response.json({ schemaVersion: 1, configured: true, available: false, explanation: 'Late hidden response' }));
+  await new Promise(resolve => setImmediate(resolve)); assert.doesNotMatch(f.container.textContent, /Late hidden response/);
+  await f.panel.select('commission'); f.visibility(false); await f.panel.open();
+  assert.equal(elements(f.container).find(el => el.className === 'plugin-document').hidden, true);
+  assert.equal(f.requests.filter(([url]) => url.startsWith('/api/documents/')).length, 1); f.panel.destroy();
 });

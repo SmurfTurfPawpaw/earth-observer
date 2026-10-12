@@ -49,7 +49,7 @@ h2 { font-size: calc(18px * var(--reading-scale, 1)); line-height: 1.35; font-we
 .icon-button:hover { background: var(--hover); }
 .icon-button[aria-expanded="true"], .icon-button[aria-pressed="true"] { color: var(--accent); background: #7ddccb15; border-color: #7ddccb35; }
 .muted { color: var(--muted); font-size: calc(12px * var(--reading-scale, 1)); line-height: 1.65; }
-#app { height: 100dvh; min-height: 300px; position: relative; isolation: isolate; }
+#app { height: 100dvh; min-height: 300px; position: relative; isolation: isolate; --workspace-bottom: calc(var(--credit-height) + var(--dock-height) + 24px); }
 #globe { position: absolute; inset: 0; }
 #globe .cesium-widget, #globe canvas { touch-action: none; }
 #scene-preview { position: absolute; inset: 0; pointer-events: none; z-index: 1; background: var(--canvas); }
@@ -320,6 +320,8 @@ details[open] > summary > .summary-chevron, #sources[open] > summary > .ui-icon:
 .plugin-publication { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .plugin-publication:first-child { padding-top: 0; }
 .plugin-publication h4 a { display: block; min-height: 44px; }
+.document-statement { color: var(--text); font-size: calc(14px * var(--reading-scale, 1)); line-height: 1.7; margin: 10px 0; }
+.document-citation { display: inline-flex; align-items: center; min-height: 44px; font-size: calc(12px * var(--reading-scale, 1)); }
 .plugin-hash { color: var(--muted); font-size: calc(12px * var(--reading-scale, 1)); line-height: 1.7; overflow-wrap: anywhere; }
 .plugin-refresh { margin: 10px 0; min-height: 44px; font-size: calc(12px * var(--reading-scale, 1)); padding: 8px 12px; }
 

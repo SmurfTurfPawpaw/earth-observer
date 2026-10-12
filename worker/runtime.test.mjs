@@ -6,6 +6,11 @@ import { createProviderStore } from './storage.js';
 import { createSpaceHandler } from './space.js';
 import { createWindArtifactHandler } from './wind.js';
 import { createContextHandler } from './context.js';
+import { readFile } from 'node:fs/promises';
+import { createHash, createHmac } from 'node:crypto';
+import { documentFixture, syntheticPdf, syntheticAnalysis } from './document-investigation-fixture.mjs';
+import { documentProducerMessage } from './document-investigation-api.js';
+import { retainDocumentRaw, completeDocumentInvestigation } from './document-investigations.js';
 
 const request = (path, options) => new Request(`https://example.com${path}`, options);
 function bucket() {
@@ -43,6 +48,46 @@ test('runtime leaves portfolio routes alone and serves /earth assets without con
   const asset = await runtime.fetch(request('/earth/'), {}, {}, async (value) => new Response(new URL(value.url).pathname, { headers: { 'content-type': 'text/html' } }));
   assert.equal(await asset.text(), '/earth/'); assert.equal(asset.headers.get('x-content-type-options'), 'nosniff');
   assert.equal((await runtime.fetch(request('/earth/healthz'))).status, 200); assert.equal(fetched, 0); runtime.close();
+});
+
+test('actual generated document migration adds only four tables and mounted paths bypass acquisition/cache while preserving background context', async t => {
+  const f = await documentFixture(t, { documents: false });
+  const before = f.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(row => row.name);
+  const sql = await readFile(new URL('../drizzle/0010_document_investigations.sql', import.meta.url), 'utf8');
+  assert.equal(/\b(?:ALTER|DROP|DELETE|UPDATE|INSERT)\b/i.test(sql), false, 'migration must not modify prior stores or history');
+  assert.equal((sql.match(/CREATE TABLE /g) || []).length, 4);
+  assert.equal((sql.match(/CREATE (?:UNIQUE )?INDEX /g) || []).length, 7);
+  f.sqlite.exec(sql);
+  const after = f.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(row => row.name);
+  assert.deepEqual(after.filter(name => !before.includes(name)), ['earth_document_attempts', 'earth_document_publications', 'earth_document_raw_receipts', 'earth_document_work']);
+  await f.source(); f.reset();
+  let fetches = 0, cacheCalls = 0;
+  const runtime = createEarthRuntime({ now: f.now, fetchImpl: async () => { fetches++; assert.fail('Document routing cannot acquire a provider'); },
+    cache: { match: async () => { cacheCalls++; assert.fail('Document routing cannot enter provider cache'); }, put: async () => { cacheCalls++; assert.fail('Document routing cannot write provider cache'); } } });
+  t.after(() => runtime.close());
+  const publicPath = '/earth/api/documents/ec-statement-26-2127', producerPath = '/earth/api/document-investigations/producer';
+  const publicRead = await runtime.fetch(request(publicPath), f.env);
+  assert.equal(publicRead.status, 200); assert.equal((await publicRead.json()).available, false);
+  assert.equal(f.activity.sql.filter(row => row.write).length, 0); assert.equal(f.activity.objects.length, 0);
+  const deniedTasks = [], privateRead = await runtime.fetch(request(producerPath, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }), f.env,
+    { waitUntil: task => deniedTasks.push(task) });
+  assert.equal(privateRead.status, 503); assert.equal((await privateRead.json()).configured, false); assert.equal(deniedTasks.length, 0);
+  const key = 'TEST-only-document-key-'.padEnd(64, 'x'), body = JSON.stringify({ schemaVersion: 1, operation: 'claim', workerId: 'runtime-test', claimId: 'a'.repeat(32) });
+  const timestamp = String(Math.floor(f.now() / 1000)), nonce = 'b'.repeat(32), digest = createHash('sha256').update(body).digest('hex');
+  const signature = createHmac('sha256', key).update(documentProducerMessage(timestamp, nonce, digest)).digest('hex');
+  const tasks = [], claim = await runtime.fetch(request(producerPath, { method: 'POST', body, headers: { 'content-type': 'application/json',
+    'x-earth-document-timestamp': timestamp, 'x-earth-document-nonce': nonce, 'x-earth-document-digest': digest, 'x-earth-document-signature': signature } }),
+    { ...f.env, EARTH_DOCUMENT_PRODUCER_KEY: key }, { waitUntil: task => tasks.push(task) });
+  assert.equal(claim.status, 200); const job = (await claim.json()).job; assert.ok(job.leaseToken); assert.equal(tasks.length, 1); await Promise.all(tasks);
+  const lease = { jobId: job.jobId, fence: job.fence, leaseToken: job.leaseToken }, bytes = syntheticPdf('runtime');
+  f.advance(1000); const raw = await retainDocumentRaw(f.env, { ...lease, acquiredAt: f.stamp(), rawBytes: bytes }, { now: f.now });
+  const rawAt = raw.receipt.recordedAt;
+  assert.equal((await (await runtime.fetch(request(publicPath), f.env)).json()).available, false, 'raw-only receipt cannot become a complete public analysis');
+  f.advance(1000); const complete = await completeDocumentInvestigation(f.env, { ...lease, rawReceiptId: raw.receipt.id, ...await syntheticAnalysis(bytes) }, { now: f.now });
+  assert.equal(complete.stored, true);
+  const current = await (await runtime.fetch(request(publicPath), f.env)).json(); assert.equal(current.receipt.id, complete.receipt.id);
+  const historical = await (await runtime.fetch(request(publicPath + '?knownAt=' + encodeURIComponent(rawAt)), f.env)).json(); assert.equal(historical.available, false);
+  assert.equal(fetches, 0); assert.equal(cacheCalls, 0); assert.equal(f.activity.providers.length, 0);
 });
 
 test('archive and scene paths precede generic world routing and cannot enter provider acquisition', async () => {

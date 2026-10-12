@@ -664,3 +664,54 @@ collection is independent of this choice. Nineteen focused dossier checks pass,
 including publication-source revisit using compatible retained cache, cancellation,
 scenario evidence renewal and original per-item receipt preservation. Responsive
 published design acceptance will follow the exact release; this is not yet live.
+
+### Archive and context activation — published version 34, 01:35 UTC
+
+Version 34 succeeded at 2026-10-12T01:29:42.691640Z, preserving environment
+revision 5 and the existing public audience. Exact app source is
+56ffe6b5e8aa41dd1e8cd2b731bce76035bf9338; combined source is
+0ac5beef512d66e8f6659e26af0a2c51f780a9db. The local archive SHA-256 is
+5217f9c3204d0cfe09a688ece704c6ebff0dfbfd6dd3dab09d1d1e24f45c80da.
+The actual 0009 schema migration was included in the deployment package.
+Combined Worker size is 59,896,398 bytes / 41,093,270 gzip; main is
+166.13 KB / 57.71 KB gzip. These sizes are not host startup or latency proofs.
+
+Eight signed owner bootstrap calls at 01:30:33–01:30:44 processed all 114
+existing receipts without provider acquisition. The last returned ready,
+complete, materializedOrder=currentOrder=114 and frontierReady=true. Public
+metadata subsequently served day-proof-index coverage, 731 compact UTC rows
+and 161,715 delivery bytes, preserving the original historical date bounds.
+
+The existing temporary supervised authenticated bridge independently produced
+archive receipt 115 at 01:31:12.561Z, captured at 01:31:10.737Z. Its count-matched
+closed interval is 2026-10-11T00:00:00.000Z through 2026-10-12T00:00:00.000Z,
+expectedCount=recordCount=18, chunk
+92d1a57bb870aea5cd12cc8e5e6d45ce8cabb20eec0bf97192f0d3cf8a7e5b24,
+original raw hash 3ee7508f9f6b85ca6b94bedc18fa34d7c67e7957c80e9f05de0902b401889d99.
+Public receipt and scene reads confirm retained publication and contiguous
+coverage through October 12. These are catalog records in a new archive
+receipt, not 18 newly occurring or independently verified incidents. The
+separate Live packet legitimately changed during the concurrent source check;
+this external observation does not claim its pointer remained unchanged.
+The awake-laptop bridge still ends at the nine-hour review boundary; permanent
+independent minute-level hosting remains an unresolved deployment dependency.
+
+Actual browser acceptance adopted the three purpose buttons, loaded ten
+Commission records, retained Commission when moving Data→Publications, and
+reconstructed 104 earthquakes at 2024-11-01T00:00:00Z. Known then at that same
+UTC correctly reported no complete evidence available at the knowledge cutoff.
+Returning Live restored the continuous current clock. At 390×844, document
+clientWidth=scrollWidth=390 and purpose touch targets measured 57.8 pixels.
+The full-page screenshot is qa-artifacts/published-foundation-v34-context-mobile-full.png.
+The viewport screenshot backend scaled a normal screenshot to 390×219; that
+normal capture is not a visual device-size proof. Temporary viewport override
+was reset after verification.
+
+Re-examination of the actual mobile geometry found Context bottom=678 and
+clock dock top=660: an 18-pixel overlap caused by a dependent root CSS variable
+not following the app's measured wrapped attribution height. A scoped app-level
+spacing correction is local for the next package. The close-up NASA imagery
+ceiling is also now described as global overview imagery locally; neither
+change is deployed yet. Internal compression of existing portfolio text has
+separately passed its in-memory byte/header/range contracts, but its actual
+combined build and host acceptance remain pending.

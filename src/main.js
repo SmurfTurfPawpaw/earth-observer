@@ -185,11 +185,11 @@ export async function start() {
     const basemapButton = document.getElementById('toggle-basemap');
     describeBasemap = () => {
       const state = viewer.earthBasemap?.getState();
-      const action = state?.mode === 'imagery' ? 'Show roads and place names' : 'Show global satellite imagery';
+      const action = state?.mode === 'imagery' ? 'Show roads and place names' : 'Show global overview imagery';
       const detail = state?.mode === 'map'
         ? state.status === 'unavailable' ? 'Street map unavailable; coarse imagery is shown. Reconnect and choose the map again to retry.'
-          : state.coverage ? streetMapCoverageNotice(state.coverage) : ''
-        : state?.active === 'bundled' ? 'Bundled imagery is shown while satellite imagery is unavailable.' : '';
+          : state.coverage ? streetMapCoverageNotice(state.coverage) : 'NASA global overview imagery has limited close-up detail.'
+        : state?.active === 'bundled' ? 'Bundled overview imagery is shown while NASA imagery is unavailable.' : 'NASA global overview imagery has limited close-up detail; roads and place names provide local detail.';
       basemapButton.title = detail ? `${action}. ${detail}` : action;
       basemapButton.setAttribute('aria-label', action);
       if (detail) basemapButton.setAttribute('aria-description', detail);

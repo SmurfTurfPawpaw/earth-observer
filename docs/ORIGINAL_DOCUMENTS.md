@@ -1,9 +1,20 @@
-# Staged original-document investigation
+# Original-document investigation
 
-This package is local foundation code only. It registers no source, job, API,
-database table, production acquisition or UI. Its fixed policy is
-`ec-statement-pdf-v1`, Commission document `statement_26_2127`. It retains source
-attribution without treating institutional statements as verified external facts.
+The local integration includes the durable document lane, actual Drizzle migration
+`0010_document_investigations.sql`, mounted routes and a one-cycle supervised
+producer. A distinct secret is configured for the next deployment. Production
+migration, actual raw/analysis admission and reader acceptance are pending; no
+permanent producer timer is installed. The fixed policy is `ec-statement-pdf-v1`,
+Commission document `statement_26_2127`. Source attribution does not turn
+institutional statements into independently verified external facts.
+
+The local reader adds Inspect document only to this reviewed Commission statement.
+It imports its controller when selected and reads the stored public endpoint; it
+does not acquire a PDF or start producer work. Four attributed statements expose
+page/code-point citations, with source and knowledge clocks under one disclosure.
+Back preserves the publication list and focus. Metadata/body mismatch remains
+readable with an explicit notice; source switch, hide and destroy cancel late work.
+The focused UI package passed 28 checks; hosted reader acceptance is still pending.
 
 ## Existing dependencies and extraction
 
@@ -183,7 +194,7 @@ EU-owned content reuse follows the
 [Commission legal notice](https://commission.europa.eu/legal-notice_en), with source
 credit/change indication under CC BY4.0 and individual/third-party exceptions.
 
-## Later durable admission seams
+## Durable admission requirements
 
 1. Resolve an exact retained source item/revision/own receipt from plugin heads;
    deduplicate admission by material input revision and reviewed policy, not every
@@ -191,7 +202,7 @@ credit/change indication under CC BY4.0 and individual/third-party exceptions.
 2. Add a validated source-item investigation subject without fake USGS event IDs
    or snapshot references. Current USGS jobs/admissions are provider-specific;
    reuse their attempt/retry/lease/fence mechanisms through an explicitly reviewed
-   schema/policy extension. No migration is included here.
+   schema/policy extension. Migration 0010 adds the separate publication-item lane.
 3. Separate cheap document checks/raw revisions from extraction and analysis jobs.
    A body correction can occur without a changed headline. Group immutable originals
    and extraction artifacts in existing R2, with completed D1 receipts and current
@@ -224,7 +235,7 @@ extraction/statement policies. Unchanged checks update operational clocks only;
 reverted bytes preserve first retention while receiving a new current publication
 receipt. Uncertain transport completion requires status/readback before retry.
 Earlier complete results remain retained; changed inputs cannot silently reuse them
-as current analysis. This is a proposed integration seam, not implemented storage.
+as current analysis. The implemented lane below follows this sequence.
 
 Focused offline verification (CLI tests require the bundled runtime or the explicit
 `EARTH_DOCUMENT_PYTHON` test interpreter override; absent runtimes are reported as
@@ -233,3 +244,127 @@ skipped):
 ```text
 node --test src/core/document-evidence.test.mjs scripts/extract-ec-document.test.mjs scripts/document-extractor-sandbox.test.mjs
 ```
+
+## Durable source-item lane
+
+`db/document-investigation-schema.ts` exports four tables through the shared schema.
+The installed Drizzle generator produced migration 0010 and its actual snapshot and
+journal entry. It creates four tables and seven indexes; no USGS investigation table
+is changed. The full runtime checks execute this generated SQL in real SQLite.
+
+- `earth_document_work`: one fixed publication-item/policy row with material metadata
+  revision, its own immutable basis, due/check clock, monotonically increasing fence,
+  short lease and current raw/publication pointers.
+- `earth_document_attempts`: each lease attempt's metadata input, raw request identity,
+  admission token and completed/expired/superseded outcome.
+- `earth_document_raw_receipts`: immutable original PDF admission before extraction,
+  its original source-item basis and actual database retention time, identified by
+  fixed document/job plus raw SHA independently of later metadata revisions.
+- `earth_document_publications`: immutable complete analysis admissions, linked raw
+  receipt, content hash and actual database publication transaction time.
+
+`worker/document-investigations.js` resolves the exact fixed item through indexed
+plugin head/revision/capture/membership joins. Before admitting a new metadata input,
+it verifies that item's own retained original RSS bytes and canonical facts hashes.
+It does not substitute the outer latest feed receipt or fetch a provider. Unrelated
+rolling-feed changes do not reset work. Source absence from a newer feed is not
+withdrawal because the existing plugin item head remains retained.
+
+Body checks are independently due every **six hours** and may be invoked explicitly
+by the owner producer. This is a declared polling bound, not continuous PDF updates.
+A successful unchanged-byte check finishes operationally without another analysis
+receipt or extraction. A changed/reverted raw body admits another current edition;
+existing raw receipts keep their first retention time. Metadata revision changes
+invalidate active leases but retain earlier complete analysis historically.
+Analysis always binds the current work item's own retained metadata receipt;
+identical raw bytes keep their original receipt/basis and first-byte knowledge.
+The last accepted body observation has its own preserved pointer/time, separate
+from active-attempt admission, so a new lease cannot hide an observed mismatch.
+
+The new raw operation verifies content-addressed R2 put/readback, then admits its
+receipt before parsing. A fresh transaction admission token protects subsequent
+raw pointer/attempt updates even if lease time expires between statements. Analysis
+completion runs the strict fixed codec, verifies immutable content readback, and
+uses a first-statement live lease/current metadata guard. All head/attempt promotion
+depends on that exact admitted publication receipt in the same D1 batch. R2 and D1
+are not one distributed transaction: failed writes can leave private unreferenced
+content objects, but no reader selects them without a complete database receipt.
+
+The server accepts only the four reviewed attributed statement selectors and the
+fixed extraction policy. Native execution accounting supplied by the authenticated
+producer is stored as producer-reported evidence, not remote hardware attestation.
+Server content has source/raw retention clocks; its analysis publication time lives
+in the database envelope, not in a client timestamp or rewritten immutable object.
+
+`worker/document-investigation-api.js` is mounted in `worker/index.js` ahead of the
+generic provider cache. Its stored-only GET is
+`/earth/api/documents/ec-statement-26-2127`, optionally `knownAt`.
+Only complete admitted receipts can be selected. Current responses report
+`currentInputMatches`, `latestBodyMatches` and the operational body-check state.
+A newer retained PDF whose extraction fails leaves the previous complete analysis
+readable with an explicit body mismatch. Historical reads exclude later check state.
+A changed complete edition during object delivery causes at most one whole-read
+retry; repeated changes fail closed instead of mixing editions.
+
+The producer-only POST is `/earth/api/document-investigations/producer`, with closed
+schemaVersion1 operations `claim`, `raw`, `complete`, `fail` and `status`. The
+deployment must supply a new, distinct `EARTH_DOCUMENT_PRODUCER_KEY`; missing or
+reused broader collector/trigger/archive credentials fail closed. Authentication
+binds POST/path, original body SHA256, seconds timestamp and 128-bit nonce. Nonce
+rejection is isolate-local; idempotent claim identity, immutable receipt identities
+and D1 fences remain the cross-isolate mutation authority. This capability cannot
+register a URL, collect another provider, alter incident packets or admit a USGS job.
+
+Producer retry/readback distinguishes an exact absent claim from an unavailable
+read. Same active claim recovery returns its original lease. Exact attempt status
+remains addressable after a newer fence and reports expired/superseded leases without
+returning their tokens. Completion's digest must match an already admitted attempt;
+a different payload at that fence is a conflict. HTTP timeouts after mutation start
+return uncertain completion and require status/readback before retry.
+
+## One-cycle local producer and activation gates
+
+`scripts/document-investigation-producer.mjs` is an explicit one-cycle command,
+not an installed timer. Its public CLI accepts **only hidden stdin** JSON of at most
+1 KiB: `{schemaVersion:1,producerKey}`. There are no URL/path arguments or credential
+environment lookups; its library requires an explicit RAM-only key. The key is never
+put in argv, the local outbox, logs, evidence or parser environment. The parser's
+separate binary stdin contains only fetched PDF bytes.
+
+The source and hosted producer endpoint are compiled fixed URLs. Provider reading
+is capped at 512 KiB/ten seconds; API requests at 768 KiB/fifteen seconds and responses
+at 256 KiB. The Windows wrapper receives only runtime paths/import controls and runs
+isolated bundled pypdf 6.10.0. The producer validates exact original/text hashes,
+native execution fields and four unique full-sentence citations before submitting.
+Whole local cycle timeout is ninety seconds; the parser outer supervision is 22.5s.
+
+Its ignored `.cache/document-investigations/outbox.json` records the exact pending
+body/digest before dispatch, with no producer key. A lost response is reconciled by
+exact claim/attempt/raw/publication identity before the same body may be retried.
+It does not silently refetch/reextract after uncertain raw or analysis publication.
+The bounded 2 MiB local journal uses atomic temporary-file write/fsync/rename and a
+local exclusive lock. A hard-killed producer can leave the lock: automatic stale
+unlink was deliberately rejected because it can race another process. An owner
+must confirm the lock owner is dead and remove only that exact stale lock while
+preserving the outbox. Ordinary restarts after a clean exit recover their journal.
+Unix file modes do not establish Windows ACL isolation; local access follows the
+verified workspace/profile permissions and is a separate activation consideration.
+
+Release acceptance must apply the actual migration and scoped capability, run one
+real hosted raw/analysis admission with database clocks, verify the public reader,
+and retain exact lost-response readback. The one-cycle command has no collector
+hook or permanent timer. Broader policies need their own source, rights, identity
+and citation review. Any future awake schedule must state its host dependency.
+
+Focused lane verification (real SQLite schema is derived in memory from the actual
+standalone Drizzle definitions; no migration file is hand-generated):
+
+```text
+node --test worker/document-investigations.test.mjs worker/document-investigation-api.test.mjs scripts/document-investigation-producer.test.mjs
+```
+
+The first frozen package passed 32 focused checks, including a producer-to-real
+SQLite/backend transport run with mocked providers. No real provider, hosted
+mutation or Python process was invoked by those lane checks. Warm not-due admission
+uses at most three indexed SQL reads with zero writes/R2 traffic; historical delivery
+uses at most two indexed receipt reads and one bounded content object.

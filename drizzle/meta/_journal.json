@@ -71,6 +71,13 @@
       "when": 1791766922967,
       "tag": "0009_archive_maintenance",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1791768996979,
+      "tag": "0010_document_investigations",
+      "breakpoints": true
     }
   ]
 }

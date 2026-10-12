@@ -8,6 +8,7 @@ const VIEWS = Object.freeze({ gas: { label: 'Belgian gas', pluginId: 'eurostat-g
   publications: { label: 'ECB releases', title: 'ECB institutional releases', subtitle: 'Original publications · European Central Bank', pluginId: 'ecb-press-v1', url: '/api/publications?plugin=ecb-press-v1&limit=20', kind: 'publication-feed-overview' },
   commission: { label: 'Commission', title: 'European Commission publications', subtitle: 'Original publication metadata · European Commission / European Union', pluginId: 'ec-press-v1', url: '/api/publications?plugin=ec-press-v1&limit=20', kind: 'publication-feed-overview' } });
 const EC_DOCUMENT_TYPES = Object.freeze({ ip: 'Press release', statement: 'Statement', read: 'Readout', qanda: 'Questions and answers', fs: 'Factsheet', mex: 'Daily news', speech: 'Speech' });
+const INSPECTABLE_DOCUMENT = 'https://ec.europa.eu/commission/presscorner/detail/en/statement_26_2127';
 const PURPOSES = Object.freeze({ reports: { label: 'Reports', icon: 'news', views: ['feeds'] },
   data: { label: 'Data', icon: 'layers', views: ['gas'] },
   publications: { label: 'Publications', icon: 'notebook', views: ['publications', 'commission'] } });
@@ -96,7 +97,8 @@ async function readStored(response, signal) {
 
 /** One existing context workspace; only its selected, visible source owns delivery. */
 export function createPluginDossierPanel({ container, createFeed, subscribeUpdates, fetchImpl = (...args) => fetch(...args), documentRef = container?.ownerDocument || globalThis.document,
-  windowRef = documentRef?.defaultView || globalThis.window, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
+  windowRef = documentRef?.defaultView || globalThis.window, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
+  loadDocument = () => import('./document-dossier.js') } = {}) {
   if (!container || !documentRef || typeof createFeed !== 'function') throw new TypeError('Source context needs a container and current-feed delegate');
   const node = (tag, className, value) => { const el = documentRef.createElement(tag); if (className) el.className = className; if (value !== undefined) el.textContent = value; return el; };
   const link = (label, url) => { const el = node('a', '', label); el.href = url; el.target = '_blank'; el.rel = 'noopener noreferrer'; return el; };
@@ -112,14 +114,16 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
   const sourceField = node('label', 'context-source'), sourceSelect = node('select'); sourceField.append(node('span', '', 'Source'), sourceSelect);
   const sourceChange = () => { void select(sourceSelect.value); }; sourceSelect.addEventListener('change', sourceChange);
   const title = node('h3', 'plugin-title'), subtitle = node('p', 'plugin-subtitle'), status = node('p', 'plugin-status'); status.setAttribute('role', 'status');
-  const content = node('div', 'plugin-content'), refresh = node('button', 'plugin-refresh', 'Refresh stored context'); refresh.type = 'button';
-  dossierHost.append(title, subtitle, status, content, refresh); container.replaceChildren(nav, sourceField, scope, feedHost, dossierHost);
+  const content = node('div', 'plugin-content'), documentHost = node('section', 'plugin-document'), refresh = node('button', 'plugin-refresh', 'Refresh stored context'); refresh.type = 'button'; documentHost.hidden = true;
+  dossierHost.append(title, subtitle, status, content, documentHost, refresh); container.replaceChildren(nav, sourceField, scope, feedHost, dossierHost);
   let view = 'feeds', opened = false, destroyed = false, generation = 0, request, pending, timer, feed, feedPending, mode = 'live', rendered = null, followupRequested = false;
   const dirty = new Set(), updates = new Map(); let evidenceBindings = [], scenario;
+  let documentSelection, documentController, documentModule, documentEpoch = 0;
+  const documentButtons = new Map();
   const stopTimer = () => { if (timer !== undefined) clearTimeoutImpl(timer); timer = undefined; };
-  const cancel = () => { ++generation; scenario?.suspend(); request?.abort(); request = null; pending = null; followupRequested = false; stopTimer(); dossierHost.setAttribute('aria-busy', 'false'); refresh.disabled = false; };
+  const cancel = () => { ++generation; ++documentEpoch; documentController?.close(); scenario?.suspend(); request?.abort(); request = null; pending = null; followupRequested = false; stopTimer(); dossierHost.setAttribute('aria-busy', 'false'); refresh.disabled = false; };
   function arm() {
-    stopTimer(); if (!opened || destroyed || documentRef.hidden || view === 'feeds') return;
+    stopTimer(); if (!opened || destroyed || documentRef.hidden || view === 'feeds' || documentSelection) return;
     timer = setTimeoutImpl(() => { timer = undefined; void load(true); }, PLUGIN_DOSSIER_LIMITS.refreshMs);
   }
   function evidence(payload, extra = [], label = 'Source and retained evidence') {
@@ -223,7 +227,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     const signature = JSON.stringify([view, payload.available, payload.explanation, payload.available && (view === 'gas' ?
       [payload.receipt.factsDigest, payload.artifact.policyId] : payload.items.map(item => [item.itemId, item.revision]))]);
     if (rendered === signature) { refreshEvidence(payload); if (view === 'gas') scenario?.update(payload); return; }
-    rendered = signature; evidenceBindings = []; content.replaceChildren();
+    rendered = signature; evidenceBindings = []; documentButtons.clear(); content.replaceChildren();
     if (!payload.available) { if (view === 'gas') scenario?.update(payload); content.append(node('p', 'plugin-note', text(payload.explanation, 2000) ? payload.explanation : 'No retained source artifact is available yet.')); return; }
     const artifact = payload.artifact;
     if (view === 'gas') {
@@ -261,6 +265,11 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
         const article = node('article', 'plugin-publication'), heading = node('h4'); heading.append(link(item.title, item.url)); article.append(heading);
         article.append(node('p', 'plugin-publication-date', `Published ${displayTime(item.publishedAt)}`));
         if (view === 'commission') article.append(node('p', 'plugin-note', `${EC_DOCUMENT_TYPES[item.documentType]} · ${item.documentReference}`));
+        if (view === 'commission' && item.url === INSPECTABLE_DOCUMENT && item.documentReference === 'statement_26_2127' && item.documentType === 'statement') {
+          const inspect = node('button', 'plugin-refresh', 'Inspect document'); inspect.type = 'button';
+          inspect.setAttribute('aria-label', `Inspect original document: ${item.title}`);
+          inspect.addEventListener('click', () => { void inspectDocument(item, inspect); }); documentButtons.set(item.itemId, inspect); article.append(inspect);
+        }
         const knowledge = node('p', 'plugin-note', `First retained ${displayTime(item.firstRecordedAt)} · latest retained ${displayTime(item.lastRecordedAt)}`);
         const currentItem = p => p.items.find(value => value.itemId === item.itemId);
         evidenceBindings.push({ data: knowledge, getter: p => `First retained ${displayTime(currentItem(p).firstRecordedAt)} · latest retained ${displayTime(currentItem(p).lastRecordedAt)}` });
@@ -297,6 +306,46 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
       const saved = cache.get(view); rendered = null; if (saved) render(saved.payload); else content.replaceChildren(node('p', 'plugin-note', 'Stored source context loads when selected.'));
     }
   }
+  function documentPresentation() {
+    const active = Boolean(documentSelection); content.hidden = active; documentHost.hidden = !active; status.hidden = active;
+    refresh.textContent = active ? 'Refresh stored examination' : 'Refresh stored context';
+    if (active) { title.textContent = 'Source document'; subtitle.textContent = 'Original PDF · European Commission / European Union'; }
+    else if (view !== 'feeds') {
+      title.textContent = view === 'gas' ? 'Belgian natural-gas origins' : VIEWS[view].title;
+      subtitle.textContent = view === 'gas' ? 'Annual reported imports · source-backed dataset' : VIEWS[view].subtitle;
+    }
+  }
+  async function openDocument(focus = false) {
+    if (!documentSelection || destroyed || !opened || documentRef.hidden || view !== 'commission') return false;
+    const selected = documentSelection, owner = ++documentEpoch;
+    if (!documentController) documentHost.textContent = 'Loading stored document view…';
+    try {
+      documentModule ||= Promise.resolve().then(loadDocument);
+      const module = await documentModule;
+      if (owner !== documentEpoch || selected !== documentSelection || destroyed || !opened || documentRef.hidden || view !== 'commission') return false;
+      documentController ||= module.createDocumentDossier({ container: documentHost, fetchImpl, documentRef, now, setTimeoutImpl, clearTimeoutImpl, onBack: backToPublications });
+      const work = documentController.open({ item: selected.item }); if (focus) documentController.focus(); return await work;
+    } catch {
+      documentModule = null;
+      if (owner === documentEpoch && selected === documentSelection && !destroyed && opened && !documentRef.hidden) {
+        documentHost.replaceChildren(node('p', 'plugin-note', 'Stored document view could not load. Return to publications or retry.'));
+        const back = node('button', 'plugin-refresh', 'Back to publications'); back.type = 'button'; back.addEventListener('click', backToPublications); documentHost.append(back); if (focus) back.focus?.();
+      }
+      return false;
+    }
+  }
+  function clearDocument() { ++documentEpoch; documentController?.close(); const previous = documentSelection; documentSelection = null; documentPresentation(); return previous; }
+  function backToPublications() {
+    if (destroyed) return; const previous = clearDocument();
+    // Keep the original list/disclosures intact; a changed source refreshes from its
+    // stored API after the user leaves the document, never from its provider.
+    if (opened && !documentRef.hidden) void load();
+    (documentButtons.get(previous?.item.itemId) || previous?.button || sourceSelect).focus?.();
+  }
+  function inspectDocument(item, button) {
+    if (destroyed || !opened || documentRef.hidden || view !== 'commission' || item.url !== INSPECTABLE_DOCUMENT) return Promise.resolve(false);
+    cancel(); documentSelection = { item, button }; documentPresentation(); return openDocument(true);
+  }
   async function openFeed() {
     if (!feed) {
       feedPending ||= Promise.resolve().then(() => createFeed(feedHost));
@@ -306,6 +355,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     if (opened && view === 'feeds' && !documentRef.hidden) return feed.open(); return false;
   }
   function load(force = false) {
+    if (documentSelection) return documentController ? force ? documentController.refresh() : documentController.open({ item: documentSelection.item }) : openDocument();
     if (!opened || destroyed || documentRef.hidden || view === 'feeds') return Promise.resolve(false);
     if (pending) return pending;
     const saved = cache.get(view); if (!force && !dirty.has(view) && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? 'Retained source context' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
@@ -332,6 +382,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     })(); pending = work; return work;
   }
   async function select(id) { if (destroyed || id !== 'feeds' && !Object.hasOwn(VIEWS, id)) return false;
+    if (documentSelection) clearDocument();
     remembered.set(purposeFor(id), id); if (id !== view) { cancel(); feed?.close(); view = id; presentation(); }
     return opened ? view === 'feeds' ? openFeed() : load() : false; }
   const refreshClick = () => { void load(true); }; refresh.addEventListener('click', refreshClick);
@@ -346,13 +397,14 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     dirty.add(selected);
     if (selected === 'gas') scenario?.invalidate();
     if (!opened || documentRef.hidden || view !== selected) return;
+    if (documentSelection) { documentController?.invalidate(); return; }
     if (pending) followupRequested = true; else void load(true);
   }) : null;
   documentRef.addEventListener?.('visibilitychange', visibility); windowRef?.addEventListener?.('online', reconnect); presentation();
   return { select, getView: () => view, setSceneMode(value) { mode = value === 'history' ? 'history' : 'live'; scope.hidden = mode !== 'history'; feed?.setSceneMode?.(mode); },
     open() { if (destroyed) return Promise.resolve(false); opened = true; return view === 'feeds' ? openFeed() : load(); },
     close() { opened = false; cancel(); feed?.close(); }, refresh: refreshClick,
-    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); scenario?.destroy(); feed?.destroy(); unsubscribeUpdates?.(); cache.clear(); dirty.clear(); updates.clear(); evidenceBindings = [];
+    destroy() { if (destroyed) return; destroyed = true; opened = false; cancel(); documentController?.destroy(); documentSelection = null; documentButtons.clear(); scenario?.destroy(); feed?.destroy(); unsubscribeUpdates?.(); cache.clear(); dirty.clear(); updates.clear(); evidenceBindings = [];
       for (const [button, fn] of bindings) button.removeEventListener('click', fn); sourceSelect.removeEventListener('change', sourceChange); refresh.removeEventListener('click', refreshClick);
       documentRef.removeEventListener?.('visibilitychange', visibility); windowRef?.removeEventListener?.('online', reconnect); container.replaceChildren(); } };
 }
