@@ -147,6 +147,8 @@ body.side-panel-open #navigation { right: calc(var(--safe-right) + var(--dossier
 .timeline-readout { position: absolute; left: 16px; right: 294px; top: 10px; height: 44px; display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; }
 summary::-webkit-details-marker { display: none; }
 .timeline-clock { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-time-labels { display: flex; flex: 1; flex-direction: column; justify-content: center; min-width: 0; gap: 2px; }
+.timeline-current-scope { color: var(--muted); font-size: 10px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .timeline-mode { color: var(--accent); font-weight: 550; }
 .earth-time-dock[data-mode="history"] .timeline-mode { color: var(--caution); }
 .timeline-chevron { color: var(--muted); font-size: 18px; }
@@ -175,6 +177,7 @@ summary::-webkit-details-marker { display: none; }
 .timeline-coverage, .timeline-note { color: var(--muted); }
 .timeline-reports { margin-top: 12px; border-top: 1px solid var(--line); }
 .timeline-reports > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--muted); font-size: 12px; }
+.timeline-method > summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--muted); font-size: 12px; }
 .timeline-reports > summary::after { content: '+'; margin-left: auto; font-size: 18px; }
 .timeline-reports[open] > summary::after { content: '−'; }
 .timeline-records { max-height: 200px; overflow-y: auto; scrollbar-width: thin; overscroll-behavior: contain; }

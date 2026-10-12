@@ -6,6 +6,7 @@ import { ECB_PRESS_PLUGIN, collectEcbPress, ecbPressItems } from './ecb-press.js
 import { EC_PRESS_PLUGIN, collectEcPress, ecPressItems } from './ec-press.js';
 import { pluginBytesDigest, pluginFactsDigest } from '../../src/core/plugin-evidence.js';
 import { runSourcePlugin, readPluginEnvelope, readPluginPublications, PLUGIN_STORE_LIMITS } from './store.js';
+import { normalizePluginDossier } from '../../src/core/plugin-dossier.js';
 
 const CLOCK = Date.parse('2026-10-12T02:00:00.000Z'), stamp = offset => new Date(CLOCK + offset).toISOString();
 const STEP = ECB_PRESS_PLUGIN.cadenceMs + 1, UTF8 = new TextEncoder();
@@ -117,16 +118,19 @@ test('EC current and historical delivery retain reviewed document fields and eac
   const f = await fixture(t, { descriptor: ecDescriptor, sourceFeedImpl: ecFeed });
   const stored = await run(f); assert.equal(stored.status, 'stored'); const first = f.receipts()[0];
   let read = await publication(f), item = read.items.find(item => item.documentReference === 'statement_26_2127');
+  assert.equal(normalizePluginDossier(read, 'commission'), read, 'actual persisted API projection is accepted by the client');
   assert.ok(item); assert.equal(item.documentType, 'statement'); assert.deepEqual(item.categories, ['POLICY_AREA=GROWTH,JFRC']);
   assert.equal(item.evidence.id, first.receipt_id); assert.equal(read.plugin.id, 'ec-press-v1');
   f.advance(); f.source('B'); assert.equal((await run(f)).status, 'stored'); const second = f.receipts()[1];
   read = await publication(f); item = read.items.find(item => item.documentReference === 'statement_26_2127');
   assert.deepEqual(item.categories, ['POLICY_AREA=GENINFO']); assert.equal(item.evidence.id, second.receipt_id);
   const known = await readPluginPublications(f.env, f.plugin.pluginId, { knownAt: first.recorded_at, now: f.now });
+  assert.equal(normalizePluginDossier(known, 'commission'), known, 'knowledge-time delivery keeps the same client contract');
   assert.deepEqual(known.items.find(item => item.documentReference === 'statement_26_2127').categories, ['POLICY_AREA=GROWTH,JFRC']);
   f.advance(); f.source('B', true); assert.equal((await run(f)).status, 'stored'); const empty = f.receipts()[2];
   f.reset(); read = await publication(f); item = read.items.find(item => item.documentReference === 'statement_26_2127');
   assert.equal(read.receipt.id, empty.receipt_id); assert.equal(item.evidence.id, second.receipt_id);
+  assert.equal(normalizePluginDossier(read, 'commission'), read, 'retained items remain usable after leaving the rolling feed');
   assert.deepEqual(item.categories, ['POLICY_AREA=GENINFO']); assert.equal(read.artifact.items.length, 0); assert.equal(read.items.length, 10);
   assert.equal(f.activity.provider.length, 0); assert.equal(f.activity.sql.some(item => item.write), false);
   assert.equal(f.count('earth_world_captures'), 0); assert.equal(f.count('earth_investigation_jobs'), 0);

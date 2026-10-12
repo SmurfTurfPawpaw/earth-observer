@@ -31,7 +31,9 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   summary.append(node('span', 'timeline-chevron', '⌃'));
   const icon = node('span', 'timeline-clock-icon', '◷'); icon.setAttribute('aria-hidden', 'true');
   const mode = node('span', 'timeline-mode', 'Live'), clock = node('time', 'timeline-clock');
-  const readout = node('div', 'timeline-readout'); readout.setAttribute('role', 'group'); readout.setAttribute('aria-label', 'Scene UTC time'); readout.append(icon, mode, clock);
+  const timeLabels = node('div', 'timeline-time-labels'), scopeCaption = node('span', 'timeline-current-scope', 'USGS · M4.5+ · 7d'); scopeCaption.hidden = true;
+  scopeCaption.setAttribute('aria-describedby', 'timeline-history-scope-description'); timeLabels.append(clock, scopeCaption);
+  const readout = node('div', 'timeline-readout'); readout.setAttribute('role', 'group'); readout.setAttribute('aria-label', 'Scene UTC time'); readout.append(icon, mode, timeLabels);
   const transport = node('span', 'timeline-transport'); transport.setAttribute('role', 'group'); transport.setAttribute('aria-label', 'World time controls');
   const play = node('button', 'icon-button timeline-play', '▶'); play.type = 'button'; play.id = 'timeline-play';
   const live = node('button', 'timeline-live', 'Live'); live.type = 'button'; live.setAttribute('aria-label', 'Return to current UTC and live layers');
@@ -50,18 +52,19 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   const lens = node('select', 'timeline-lens'); lens.id = 'timeline-lens'; lens.setAttribute('aria-label', 'Historical evidence mode');
   for (const [value, label] of [['reconstruction', 'Reconstruction'], ['known-then', 'Known then']]) { const option = node('option', '', label); option.value = value; lens.append(option); }
   lens.value = 'reconstruction';
-  lensBar.append(lensLabel, lens, node('span', 'timeline-scope', 'Earthquakes · M4.5+ · preceding 7 days'));
+  lensBar.append(lensLabel, lens, node('span', 'timeline-scope', 'USGS earthquakes · M4.5+ · preceding 7 days'));
   const slider = node('input', 'timeline-range'); slider.type = 'range'; slider.min = '0'; slider.max = '0'; slider.step = '1'; slider.value = '0'; slider.disabled = true; slider.setAttribute('aria-label', 'Choose historical UTC time');
   const coverageBand = node('div', 'timeline-coverage-band'); coverageBand.setAttribute('role', 'img');
   const ruler = node('div', 'timeline-ruler'), firstLabel = node('time'), lastLabel = node('time'); ruler.append(firstLabel, node('span', '', 'UTC'), lastLabel);
   const status = node('p', 'timeline-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const coverage = node('p', 'timeline-coverage');
-  const note = node('p', 'timeline-note');
+  const note = node('p', 'timeline-note'); note.id = 'timeline-history-scope-description';
+  const explanation = node('details', 'timeline-method'); explanation.append(node('summary', '', 'History scope'), note);
   const reportDisclosure = node('details', 'timeline-reports'), reportSummary = node('summary', '', 'Source reports');
   reportDisclosure.append(reportSummary);
   const records = node('div', 'timeline-records'); records.setAttribute('aria-label', 'Reported historical earthquakes');
   reportDisclosure.append(records);
-  body.append(controls, lensBar, slider, coverageBand, ruler, status, coverage, note, reportDisclosure); container.replaceChildren(summary, body); dock.replaceChildren(readout, transport, container);
+  body.append(controls, lensBar, slider, coverageBand, ruler, status, coverage, explanation, reportDisclosure); container.replaceChildren(summary, body); dock.replaceChildren(readout, transport, container);
   let destroyed = false, controller, dragging = false, selecting = false, playIntent = false, seekOwner = 0, renderedCards = '', coverageSignature = '', renderedMarkers = '';
   const fallbackClock = typeof viewer.earthTime.subscribeClock === 'function' ? null : createSceneClock({ documentRef, now, monotonicNow, setTimeoutImpl, clearTimeoutImpl });
   const sceneTime = fallbackClock || viewer.earthTime;
@@ -127,6 +130,11 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     if (destroyed || documentRef.hidden) return;
     const state = sceneTime.getState(), selected = controller?.getState();
     clock.dateTime = state.at; clock.textContent = utc(state.at); mode.textContent = state.mode === 'live' ? 'Live' : state.playing ? 'Playing' : 'History';
+    scopeCaption.hidden = state.mode !== 'history';
+    const scopeDescription = `Historical USGS earthquakes, magnitude 4.5 or greater, in the preceding seven days. ${selected?.lens === 'known-then' ?
+      'Only evidence published by this platform by the selected UTC.' : 'Reconstruction using retained source corrections.'}`;
+    scopeCaption.title = scopeDescription; scopeCaption.setAttribute('aria-label', scopeDescription);
+    readout.setAttribute('aria-label', state.mode === 'history' ? `Scene UTC time. ${scopeDescription}` : 'Scene UTC time');
     container.dataset.mode = dock.dataset.mode = state.mode; container.dataset.playing = dock.dataset.playing = String(Boolean(state.playing));
     summary.setAttribute('aria-expanded', String(Boolean(container.open))); summary.title = container.open ? 'Hide calendar and historical coverage' : 'Show calendar and historical coverage';
     const running = state.playing || selecting && playIntent; play.textContent = running ? 'Ⅱ' : '▶';
@@ -165,7 +173,9 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
       }
     }
     coverage.textContent = available ? `Retained origin coverage: ${utc(available.from).slice(0, 16)} — ${utc(available.to).slice(0, 16)} UTC.` : state.metadata ? 'No historical catalog interval has been imported yet.' : 'Open the calendar or press Play to check historical coverage.';
-    note.textContent = state.lens === 'known-then' ? 'Known then uses only evidence published by this platform by the selected UTC. Sunlight follows that UTC; base map imagery is not historical.' : 'Reconstruction uses retained source corrections for events in the selected period. Sunlight follows selected UTC; base map imagery is not historical.';
+    note.textContent = 'History currently covers USGS earthquakes of magnitude 4.5 or greater in the preceding seven days. ' + (state.lens === 'known-then' ?
+      'Known then uses only evidence published by this platform by the selected UTC. Sunlight follows that UTC; base map imagery is not historical.' :
+      'Reconstruction uses retained source corrections for events in the selected period. Sunlight follows selected UTC; base map imagery is not historical.');
     const scene = state.selection, n = members(scene).length;
     const hasWindowCoverage = scene?.coverage.segments.some((segment) => segment.from <= scene.at && Date.parse(segment.to) > Date.parse(scene.at) - 7 * 86400000);
     const message = state.loading ? 'Loading stored historical data…' : state.error || (!scene ? sceneTime.getState().mode === 'history' ? 'No stored scene is available at the selected UTC.' : 'Current UTC · live layers use their own source update times.' :

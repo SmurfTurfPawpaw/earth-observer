@@ -474,3 +474,40 @@ is being staged with durable due state, fences and first-proof daily coverage;
 existing import and historical readers remain untouched until its atomic
 integration is reviewed. Automatic history extension now takes priority over
 additional sources or broader claims of timeline completeness.
+
+### Version 31 actual acceptance and contract repair — 00:41 UTC
+
+Version 31 succeeded at 00:37:26.081Z on app
+20595da6c1774dbe6a3c0256cb469da7c6118033 and combined source
+97a7d93b3e1ad15fe92edb4d455f08d704039560. Its exact package SHA-256 is
+43aef5075a8273a3b3bc74f076a4896b76ffc62c4441918a6338a5f0fad2ea4d.
+An ordinary browser reload adopted index-hd-BtIew/index-CBDz5ucR and public
+UI identity 27df255e92db86710a461a143a93a297026db89eebe696532fb6c8a128be4bf7.
+Context remained open after worker adoption with no extra reload or uncertainty
+notice. At 390×844, document scrollWidth equals clientWidth 390, both overlay
+surfaces are bounded to 390 px, and the contextual panel sits above the compact
+time dock. The responsive overflow repair passes actual published acceptance.
+
+The hosted collector admitted ten Commission publications at 00:38:19.033Z,
+receipt:48c6f5b0a1de3b726662a7d194d27b9cec56acb1e14c5e07c1a2add464a3a922.
+Raw/facts digests match the reviewed official feed acquisition. Source revision
+time is absent and stays null; publication dates stay separate from retrieval.
+Browser acceptance exposed a client/serving mismatch: validation required an
+item publisherId omitted by the common stored projection. The next repair uses
+the already validated fixed source envelope as publisher authority, accepting
+the existing projection while rejecting conflicting optional publisher identity.
+No stored evidence or receipt is rewritten. A real native-SQLite current,
+known-time and rolling-absence projection now passes the client codec, and the
+actual ten-item public response also passes the repaired local codec. Published
+browser rendering remains a gate until the repair release completes.
+
+The collapsed History dock gains a concise scope caption within its existing
+space; Live remains a general scene clock. Detailed history/imagery methodology
+moves behind a closed disclosure in the existing Calendar. Tests preserve seek,
+play/pause, context and update behavior; narrow layout is verified after release.
+
+GDELT manual refresh 38188795825 completed successfully as a job but skipped
+generation at 00:38:54Z because a source size/time admission guard failed.
+No new discovery snapshot was acquired or published. The old sample remains
+dated and stale. The next source investigation identifies the precise condition
+without widening budgets or substituting a successful workflow for fresh data.

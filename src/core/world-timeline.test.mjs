@@ -299,3 +299,25 @@ test('historical reports are behind an independent closed disclosure while calen
   timeline.live(); assert.equal(disclosure.hidden, true);
   timeline.destroy(); f.sceneClock.destroy();
 });
+
+test('collapsed History identifies the exact supported source window, preserves UTC and uses a local progressive explanation without narrowing Live', async () => {
+  const f = fixture(), at = '2025-06-01T12:00:00.000Z', p = await point('scope', at), requests = [];
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async url => {
+    const query = new URL(url, 'https://example.test').searchParams; requests.push(query);
+    return query.get('knownMode') === 'scene' ? response(query.get('at'), [], baseRange, { mode: 'as-known', knownMode: 'scene', knownAt: query.get('at'), points: undefined }) :
+      response(query.get('at'), query.has('metadata') ? [] : [p]);
+  } });
+  const all = elements(f.container.parentElement), caption = all.find(el => el.className === 'timeline-current-scope'), readout = all.find(el => el.className === 'timeline-readout');
+  const explanation = all.find(el => el.className === 'timeline-method'), clock = all.find(el => el.className === 'timeline-clock'), lens = all.find(el => el.id === 'timeline-lens');
+  assert.equal(caption.hidden, true); assert.equal(readout.attributes['aria-label'], 'Scene UTC time'); assert.ok(!explanation.open); assert.equal(requests.length, 0);
+  await timeline.seek(at); assert.ok(!f.container.open); assert.equal(caption.hidden, false); assert.equal(caption.textContent, 'USGS · M4.5+ · 7d');
+  assert.match(caption.attributes['aria-label'], /magnitude 4.5 or greater.*preceding seven days.*Reconstruction/);
+  assert.equal(clock.dateTime, at); assert.equal(f.sceneClock.getState().at, at); const count = requests.length;
+  explanation.open = true; explanation.trigger('toggle'); assert.match(explanation.textContent, /base map imagery is not historical/);
+  assert.equal(requests.length, count); assert.equal(f.sceneClock.getState().at, at); assert.equal(f.entities.size, 1);
+  lens.value = 'known-then'; lens.trigger('change'); await waitFor(() => !timeline.getState().loading && timeline.getState().selection?.mode === 'as-known', 'the known-then stored scene');
+  assert.equal(clock.dateTime, at); assert.match(caption.attributes['aria-label'], /Only evidence published by this platform by the selected UTC/);
+  assert.equal(explanation.open, true, 'Mode explanations update without replacing the disclosure');
+  timeline.live(); assert.equal(caption.hidden, true); assert.equal(readout.attributes['aria-label'], 'Scene UTC time');
+  assert.equal(f.sceneClock.getState().mode, 'live'); timeline.destroy(); f.sceneClock.destroy(); assert.equal(f.timers.size, 0);
+});

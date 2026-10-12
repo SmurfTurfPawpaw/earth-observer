@@ -52,7 +52,9 @@ export function normalizePluginDossier(value, view) {
         !time(item.firstRecordedAt) || !time(item.lastRecordedAt)) throw new Error('Institutional publication record is invalid');
       if (view === 'commission') {
         const reference = EC_REFERENCE.exec(url), documentReference = `${reference[1]}_${reference[2]}_${reference[3]}`;
-        if (!/^publication:ec:[a-f0-9]{64}$/.test(item.itemId) || item.publisherId !== 'european-commission' ||
+        // Publisher authority comes from the reviewed source envelope above.
+        // Stored publication projections omit the canonical-facts publisher field.
+        if (!/^publication:ec:[a-f0-9]{64}$/.test(item.itemId) || item.publisherId != null && item.publisherId !== 'european-commission' ||
           !Object.hasOwn(EC_DOCUMENT_TYPES, item.documentType) || item.documentType !== reference[1] || item.documentReference !== documentReference ||
           !text(item.publishedRaw, 128) || Date.parse(item.publishedRaw.trim()) !== Date.parse(item.publishedAt) ||
           !Array.isArray(item.categories) || item.categories.length > 8 || new Set(item.categories).size !== item.categories.length ||
