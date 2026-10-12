@@ -1549,3 +1549,35 @@ Original gods-eye-view/src/app/viewer.js explicitly retained preserveDrawingBuff
 our viewer omitted it. Both use demand rendering. Root announced one bounded
 change restoring that option, with cadence/data/camera unchanged. It is a causal
 comparison, not a proven fix, and requires actual visible idle/tab-return acceptance.
+
+## Nine-hour user review and revised presentation contract
+
+The user still sees black after v47, while Chrome/Edge renders the globe but is
+slow. The preservation change therefore has not passed acceptance. The supplied
+Lighthouse13.4.1 report measures performance48,32.17s main-thread work,8.29s
+blocking and24.46s interactivity for16 simultaneously restored layers. Cesium
+execution dominates. LCP is attribution, not the globe; extensions distort some
+bundle warnings but do not negate the actual scene CPU burden.
+
+Root corrected two actual GitHub Check failures (background task ownership and
+line-ending-dependent XML fixture SHA), preserving validation. Wind's incomplete
+IFS gate preserved prior assets; its schedule is now manual-only. Commit
+e50b391fd3394e4b7a84a3d909fa41cc1794dcfa passed the actual full Check38213232921
+at06:35:52Z, including installation, tests and build.
+
+Actual Cloudflare Cron executions began but fail request_failed. Missing
+global_fetch_strictly_public is a documented routing candidate; it is not offered
+by the dashboard selector, and no successful flag mutation is verified. The
+helper's configuration success is not unattended acceptance. The first supervised
+bridge stopped at06:39:10Z (360 attempts,343 successful acknowledgments, including
+unsuccessful busy skips). Root announced and started a bounded one-hour fallback
+until07:39:10Z; its first run stored four snapshots and its next acknowledgment
+was checked06:41:18.230Z. Awake-laptop ownership remains a dependency.
+
+The user now accepts accurately represented waiting and up to a minute of display
+delay for smoothness, asks for semantic icons, visual reasoning and consideration
+of a buffered server-rendered view. NEXT_PHASES.md records a hybrid plan: real
+loading stages, staged/chunked scene assembly, semantic icon batching/LOD, atomic
+dated frame commits, and a measured2D presentation fallback. Remote wallboard/
+replay is an option, not an adopted or verified GPU service. No additional renderer
+changes or performance improvement are claimed by this planning checkpoint.

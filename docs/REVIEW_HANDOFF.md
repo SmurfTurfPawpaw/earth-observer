@@ -1,4 +1,47 @@
-# Interim foundation review
+# Nine-hour foundation checkpoint
+
+As of06:42 UTC (08:42 Brussels),12October2026. The full platform objective is
+unfinished. The latest facts below supersede the earlier checkpoint retained here.
+
+Version47 succeeded06:25:55.507Z: appc7077110f870449fc265248ea3538e31da574a69,
+combined976a7e1c065563ff3db361c6b0083332e3cab9ed, deployment
+appgdep_6acc7d55e79c8191bcc346d883bb413c. Environment7/public audience2 unchanged.
+Version46 temporal restoration passed native History/reload/lens/zoom/World/Live
+and explicit invalid-startup recovery. Exact millisecond UTC/lens/rate survive;
+History reloads paused and Live resumes now.96 focused checks passed.
+
+The user's black-globe image retains controls/clock/separate2D labels. Browser
+capture shows the globe, so screenshots alone are insufficient acceptance. V47
+restored the original preserveDrawingBuffer option; the user still sees black.
+Chrome/Edge displays it, though slowly. Embedded presentation remains unresolved.
+The supplied Lighthouse report(v47,06:29:45Z) has performance48,32.17s main-thread
+work,8.29s blocking and24.46s interactivity. Cesium execution17.28s dominates;
+16 layers restore concurrently. LCP measures attribution, not globe readiness.
+Extensions distort bundle warnings but do not erase the app CPU bottleneck.
+
+[Full GitHub Check passed](https://github.com/SmurfTurfPawpaw/earth-observer/actions/runs/38213232921)
+for e50b391fd3394e4b7a84a3d909fa41cc1794dcfa at06:35:52Z: install/tests/build.
+Two stale portable checks were repaired. Wind refresh is now manual-only after
+an incomplete IFS response; strict validation and last-good assets remain.
+
+Cloudflare Free/dashboard and pinned code/configuration were verified, including
+the collect-only secret/minute cron/public URLs disabled. Actual Cron runs fail
+with request_failed; unattended collection is NOT accepted. Missing strict-public
+Worker routing is a configuration candidate; the UI did not offer that flag and
+no successful flag mutation is verified. Deployment token expires06:50Z and was
+cleared from deployment RAM. Local API helpers remain experimental/uncommitted.
+
+The first laptop bridge ended06:39:10Z(360 attempts,343 successful acknowledgments;
+unsuccessful attempts include busy skips). Root announced a bounded one-hour
+fallback until07:39:10Z, with private-memory scoped input. It requires an awake
+laptop and does not establish durable execution. Optional retention audit remains
+excluded, and Node/Python producer ownership remains open.
+
+Next gates: actual visible presentation; bounded measured scene assembly and
+continuous-render ownership; successful unattended collection/CPU/receipt proof;
+then entities/relationships, explanations, scenarios and evaluated forecasts.
+
+## Earlier 05:16 UTC checkpoint (superseded where updated above)
 
 As of 2026-10-12 05:16 UTC. The nine-hour window continues until 06:39:10 UTC
 (08:39:10 Brussels). This document is a review checkpoint, not platform completion.
