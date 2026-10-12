@@ -12,7 +12,7 @@
   <body>
     <a class="skip-link" href="#search">Skip to controls</a>
     <main id="app" aria-label="Earth Observer">
-      <div id="globe" aria-label="Interactive globe. Drag to rotate, scroll to zoom. Use the navigation buttons for keyboard controls."></div>
+      <div id="globe" role="region" aria-label="Interactive globe. Drag to rotate, scroll to zoom. Use the navigation buttons for keyboard controls."></div>
       <div id="scene-preview" hidden><img id="scene-preview-image" alt="Saved map preview" /><span>Saved view · updating</span></div>
       <header class="map-topbar">
         <div class="header-primary"><div class="app-brand"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/><path d="M3 12h18"/><path d="M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z"/></svg><h1>Earth Observer</h1></div></div>
@@ -78,7 +78,7 @@
         </div>
         <footer class="sidebar-footer"><a href="%BASE_URL%DATA_POLICY.md" target="_blank" rel="noreferrer">Source terms</a><span aria-hidden="true">·</span><a href="%BASE_URL%LICENSE.txt" target="_blank" rel="noreferrer">Code license</a><span class="footer-label">Public data</span></footer>
       </aside>
-      <div id="load-status" class="load-status" role="status" aria-live="polite" hidden><span class="loading-spinner" aria-hidden="true"></span><span id="load-status-text"></span></div>
+      <div id="load-status" class="load-status" role="status" aria-live="polite" hidden><span id="load-status-spinner" class="loading-spinner" aria-hidden="true"></span><span id="load-status-text"></span></div>
       <nav id="navigation" aria-label="Globe navigation">
 
         <button id="north" class="icon-button" type="button" title="Face north" aria-label="Face north" disabled><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 6 17-6-4-6 4 6-17Z"/><path d="M12 3v13"/></svg></button>

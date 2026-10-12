@@ -17,6 +17,8 @@ import { createLiveUpdates } from './core/live-updates.js';
 import { installWorldDossierBridge } from './core/world-dossier-bridge.js';
 import { createPlaceNavigation } from './core/workspace-focus.js';
 import { createWorkspaceRestore } from './core/workspace-restore.js';
+import { installPresentationBridge } from './core/presentation-bridge.js';
+import { createIcon } from './core/icons.js';
 import { Cartographic, Math as CesiumMath } from 'cesium';
 
 let viewer;
@@ -67,7 +69,7 @@ function stopFailedScene(error) {
 }
 
 function rememberWorkspace() {
-  if (destroyed || !viewer || !manager || workspaceRestore?.isRestoring()) return;
+  if (destroyed || !viewer || !manager || workspaceRestore && !workspaceRestore.canCheckpoint()) return;
   const view = cameraView(viewer), state = manager.getState();
   const temporal = currentWorkspaceTime();
   saveSession(view, area, undefined, temporal);
@@ -194,7 +196,24 @@ export async function start({ earlySearchIntent } = {}) {
     });
     disposers.push(() => contextRecovery.destroy());
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
-    shell = createShell(viewer, manager, { getTemporal: currentWorkspaceTime, canShare: () => !destroyed && !workspaceRestore?.isRestoring() });
+    shell = createShell(viewer, manager, { getTemporal: currentWorkspaceTime, canShare: () => !destroyed && (!workspaceRestore || workspaceRestore.canCheckpoint()) });
+    // Opt-in display path for embedded surfaces. This copies actual completed
+    // frames and leaves input/picking on Cesium; it does not simulate data.
+    const displayButton = document.createElement('button'); displayButton.type = 'button'; displayButton.className = 'icon-button'; displayButton.id = 'compatible-display';
+    displayButton.append(createIcon('imagery')); document.getElementById('header-tools').append(displayButton);
+    const describeDisplay = (active) => {
+      displayButton.setAttribute('aria-pressed', String(active));
+      displayButton.title = active ? 'Return to standard map display' : 'Try compatible map display';
+      displayButton.setAttribute('aria-label', displayButton.title);
+    };
+    const presentation = installPresentationBridge(viewer, { container: document.getElementById('globe'),
+      getSceneTime: () => viewer.earthTime.getState().at,
+      onError: () => { describeDisplay(false); shell.notify('Compatible display could not continue. The standard display has been restored.'); },
+    });
+    const toggleDisplay = () => { presentation.setEnabled(!presentation.getState().enabled); describeDisplay(presentation.getState().enabled); };
+    displayButton.addEventListener('click', toggleDisplay); describeDisplay(false);
+    if (new URLSearchParams(location.search).get('_display') === 'canvas') { presentation.setEnabled(true); describeDisplay(presentation.getState().enabled); }
+    disposers.push(() => { displayButton.removeEventListener('click', toggleDisplay); presentation.destroy(); displayButton.remove(); });
     workspaceRestore = createWorkspaceRestore({ manager, getTimeline: () => timeline, onSettled: rememberWorkspace,
       applyTemporal(temporal) {
         pendingTemporal = temporal; appliedSceneMode = temporal.mode;
@@ -263,7 +282,7 @@ export async function start({ earlySearchIntent } = {}) {
     const earlySearchReplayed = earlySearchIntent?.ready() === true;
     disposers.push(manager.subscribe(rememberWorkspace));
     disposers.push(shell.subscribePanels(handlePanel));
-    disposers.push(installScenePreview(viewer, { store, cameraView, getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
+    disposers.push(installScenePreview(viewer, { store, cameraView, getLayerParams: id => manager.getLayerParams(id), getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
     timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch,
       onContextCommit: (state) => intelligence?.commitScene(state),
       onWorkspaceCommit: () => rememberWorkspace(),

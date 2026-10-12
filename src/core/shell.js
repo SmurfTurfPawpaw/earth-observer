@@ -11,6 +11,7 @@ import { chatGPTSignInPath } from './community-policy.js';
 import { createWorldDossier } from './world-dossier.js';
 import { gdacsNoticeSelection, updateGdacsNoticeDossier } from './gdacs-dossier.js';
 import { createWorkspaceFocus } from './workspace-focus.js';
+import { preparationState, preparationLabel } from './preparation-state.js';
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -24,7 +25,7 @@ const onScreenAttribution = (value) => String(value).includes('<a') ? value : St
 
 /** The UI reflects owned requests, never elapsed-time guesses or simulated progress. */
 export function layerActivity(entry = {}) {
-  const pending = Boolean(entry.enabled && (entry.status === 'loading' || entry.refreshing));
+  const pending = Boolean(entry.enabled && (entry.status === 'queued' || entry.status === 'loading' || entry.activating || entry.refreshing));
   const firstLoad = pending && !entry.lastUpdate && !entry.refreshedAt && !(Number(entry.count) > 0);
   return { pending, firstLoad };
 }
@@ -113,7 +114,7 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
   // Keep the desktop preference intact when a narrow screen temporarily closes it.
   const uiState = readUiState(storage);
   const ledger = createCreditLedger(viewer.cesiumWidget.creditDisplay, (html, onScreen) => new Cesium.Credit(html, onScreen));
-  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, pendingLayerNames = [], keyboardNoticeAction, keyboardNoticeActionTimer;
+  let noticeTimer, activePanel = null, workspace = 'data', destroyed = false, pendingTiles = 0, layerPreparation = preparationState(), frameRendered = false, keyboardNoticeAction, keyboardNoticeActionTimer;
   const remember = () => writeUiState(storage, uiState);
   const textSizeControl = el('label', 'text-size-control');
   const textSizeMark = el('span', '', 'Aa'); textSizeMark.setAttribute('aria-hidden', 'true');
@@ -272,14 +273,21 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
   const renderActivity = () => {
     if (destroyed) return;
     const parts = [];
-    if (pendingTiles > 0) parts.push(`Map · ${pendingTiles.toLocaleString()} tiles pending`);
-    if (pendingLayerNames.length) parts.push(pendingLayerNames.length === 1 ? `Loading ${pendingLayerNames[0]}` : `Loading ${pendingLayerNames.length} layers`);
+    if (!frameRendered) parts.push('Preparing the map');
+    else if (pendingTiles > 0) parts.push(`${pendingTiles.toLocaleString()} map tiles pending`);
+    const waiting = layerPreparation.loading + layerPreparation.queued + layerPreparation.refreshing;
+    document.getElementById('load-status-spinner').hidden = frameRendered && pendingTiles === 0 && waiting === 0;
+    if (waiting || layerPreparation.unavailable || layerPreparation.degraded) parts.push(preparationLabel(layerPreparation));
     document.getElementById('load-status').hidden = parts.length === 0;
     document.getElementById('load-status-text').textContent = parts.join(' · ');
     const count = document.getElementById('layer-loading-count');
-    count.hidden = pendingLayerNames.length === 0;
-    count.textContent = `${pendingLayerNames.length} loading`;
+    count.hidden = layerPreparation.selected === 0;
+    count.textContent = `${layerPreparation.ready}/${layerPreparation.selected} ready`;
+    count.title = preparationLabel(layerPreparation);
   };
+  if (viewer.scene.postRender) cleanup.push(viewer.scene.postRender.addEventListener(() => {
+    if (!frameRendered) { frameRendered = true; renderActivity(); }
+  }));
   if (viewer.scene.globe.tileLoadProgressEvent) cleanup.push(viewer.scene.globe.tileLoadProgressEvent.addEventListener((count) => { pendingTiles = Math.max(0, Number(count) || 0); renderActivity(); }));
   const notify = (message) => {
     if (destroyed) return;
@@ -384,13 +392,12 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
 
   const update = (state = manager.getState()) => {
     if (destroyed) return;
-    pendingLayerNames = [];
+    layerPreparation = preparationState(state);
     let enabledCount = 0;
     for (const layer of LAYERS) {
       const entry = state[layer.id] || {};
       const { row, checkbox, status, controls, options, spinner, detailStatus, placeholder } = rows.get(layer.id);
       const { pending, firstLoad } = layerActivity(entry);
-      if (pending) pendingLayerNames.push(layer.name);
       if (entry.enabled) enabledCount += 1;
       checkbox.checked = Boolean(entry.enabled); row.dataset.enabled = String(Boolean(entry.enabled)); row.dataset.status = entry.status || 'off'; row.dataset.loading = String(pending);
       spinner.hidden = !pending; row.setAttribute('aria-busy', String(pending));
@@ -406,7 +413,10 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
       const ageLabel = Number.isFinite(ageMs) && ageMs >= 60000 ? `Data ${Math.round(ageMs / 60000)} min old` : '';
       const compact = [cached.label, freshness, `${count.toLocaleString()} records`, source].filter(Boolean).join(' · ');
       const summary = [compact, archived ? '' : observedLabel, archived ? '' : ageLabel, refreshLabel, cached.detail, entry.error, entry.coverage].filter(Boolean).join(' · ');
-      status.textContent = firstLoad ? `${entry.refreshing ? 'Fetching data' : 'Preparing layer'}…` : entry.error ? 'Source unavailable · details below' : entry.enabled ? compact : source;
+      status.textContent = entry.enabled && entry.status === 'paused' ? entry.timelinePaused ? 'Live layer paused in History' : 'Paused while this tab is hidden'
+        : entry.enabled && entry.status === 'queued' ? 'Queued · waiting for a loading slot'
+        : firstLoad ? `${entry.refreshing ? 'Fetching data' : 'Preparing layer'}…`
+        : entry.error ? entry.settledEnabled ? 'Showing retained data · refresh unavailable' : 'Source unavailable · details below' : entry.enabled ? compact : source;
       detailStatus.textContent = firstLoad ? [status.textContent, source, layer.description].join(' · ') : entry.enabled || entry.error ? [summary, layer.description].filter(Boolean).join(' · ') : source;
       status.title = detailStatus.textContent; placeholder.hidden = !firstLoad;
       if (entry.enabled && !creditItems.has(layer.id)) {
@@ -422,13 +432,13 @@ export function createShell(viewer, manager, { getTemporal = () => viewer.earthT
       if (!entry.enabled && mounted.has(layer.id)) { mounted.get(layer.id)(); mounted.delete(layer.id); controls.replaceChildren(); }
       options.hidden = !entry.enabled && !entry.error;
     }
-    const activeCount = document.getElementById('layer-active-count'); activeCount.textContent = enabledCount; activeCount.title = `${enabledCount} active layers`;
+    const activeCount = document.getElementById('layer-active-count'); activeCount.textContent = enabledCount; activeCount.title = `${enabledCount} selected layers`;
     document.getElementById('clear-layers').disabled = enabledCount === 0;
     for (const [category, { count }] of groups) {
       const categoryLayers = LAYERS.filter((layer) => layer.category === category);
       const active = categoryLayers.filter((layer) => state[layer.id]?.enabled).length;
       count.textContent = active ? `${active} / ${categoryLayers.length}` : String(categoryLayers.length);
-      count.title = `${active} active of ${categoryLayers.length} layers`;
+      count.title = `${active} selected of ${categoryLayers.length} layers`;
     }
     renderActivity();
     commandPalette?.refresh();

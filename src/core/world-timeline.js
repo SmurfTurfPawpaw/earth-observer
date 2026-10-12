@@ -3,6 +3,7 @@ import { createSceneClock } from './scene-clock.js';
 import { worldTime } from './world-identity.js';
 import { createWorldSceneController } from './world-scene-controller.js';
 import { workspaceTime } from './navigation-state.js';
+import { createMapBillboard } from './map-symbols.js';
 
 const stamp = (value) => { try { return worldTime(value); } catch { return null; } };
 /** datetime-local omits zero seconds; its calendar is explicitly interpreted as UTC. */
@@ -76,7 +77,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   const commitWorkspace = reason => { if (!destroyed) void onWorkspaceCommit({ ...getContextState(), reason }); };
   const userIntent = reason => { if (!destroyed) onWorkspaceIntent({ reason }); };
   const commitContext = reason => { if (!destroyed) { void onContextCommit({ ...getContextState(), reason }); commitWorkspace(reason); } };
-  const markers = new Map(), markerColor = Cesium.Color.fromCssColorString('#9ddcc9'), markerOutline = Cesium.Color.fromCssColorString('#17212c');
+  const markers = new Map(), markerColor = Cesium.Color.fromCssColorString('#9ddcc9');
   function clearMarkers() {
     renderedMarkers = '';
     if (!markers.size) return;
@@ -112,7 +113,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
           revision, sourceRecordId: recordId, eventId: id };
         const entity = viewer.entities.add({ id: `history:${id}`, name: item.title || `Magnitude ${magnitude(item)} earthquake`,
           position: Cesium.Cartesian3.fromDegrees(longitude(item), latitude(item), 0),
-          point: { pixelSize: 7, color: markerColor, outlineColor: markerOutline, outlineWidth: 1.5 },
+          billboard: createMapBillboard('seismic', { color: markerColor }),
           properties: { source: 'USGS', observedAt, url: item.url || item.source.url, usgsId: recordId.slice(5), mag: magnitude(item), time: Date.parse(observedAt),
             _worldScene: context, ...(item.eventTime ? { _worldEvent: item } : {}) } });
         markers.set(id, { entity, revision, context }); changed = true;

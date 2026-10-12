@@ -51,6 +51,8 @@ h2 { font-size: calc(18px * var(--reading-scale, 1)); line-height: 1.35; font-we
 .muted { color: var(--muted); font-size: calc(12px * var(--reading-scale, 1)); line-height: 1.65; }
 #app { height: 100dvh; min-height: 300px; position: relative; isolation: isolate; --workspace-bottom: calc(var(--credit-height) + var(--dock-height) + 24px); }
 #globe { position: absolute; inset: 0; }
+.earth-presentation-bridge { z-index: 1; }
+#globe .cesium-selection-wrapper { z-index: 3; }
 #globe .cesium-widget, #globe canvas { touch-action: none; }
 #globe .cesium-selection-wrapper svg { fill: var(--accent); stroke: var(--canvas); stroke-width: 1px; }
 #scene-preview { position: absolute; inset: 0; pointer-events: none; z-index: 1; background: var(--canvas); }

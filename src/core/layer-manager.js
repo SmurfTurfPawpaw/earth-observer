@@ -5,6 +5,7 @@ import { validateArea } from './local-area.js';
 import { pluginRevision } from './live-updates.js';
 
 export const STORAGE_KEY = 'earth-observer:layers:v1';
+export const LAYER_ACTIVATION_LIMITS = Object.freeze({ concurrent: 2 });
 const clone = (value) => JSON.parse(JSON.stringify(value ?? {}));
 const aborted = (error) => error?.name === 'AbortError';
 // These adapters select genuine provider frames against the shared scene
@@ -31,14 +32,18 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
   const fetchImpl = options.fetchImpl || ((...args) => fetch(...args));
   const schedule = options.setInterval || globalThis.setInterval;
   const unschedule = options.clearInterval || globalThis.clearInterval;
+  const scheduleAdmission = options.setTimeout || globalThis.setTimeout;
+  const cancelAdmissionTimer = options.clearTimeout || globalThis.clearTimeout;
   const entries = new Map(catalog.map((meta) => [meta.id, {
     meta, requested: false, enabled: false, initialized: false,
     status: 'disabled', error: null, module: null, loading: null,
-    queue: Promise.resolve(), revision: 0, controller: new AbortController(),
+    queue: Promise.resolve(), revision: 0, controller: new AbortController(), admission: null, activating: false,
     timer: null, refreshing: false, refreshedAt: null, params: clone(meta.defaults), urls: new Set(), browserCache: null, browserCachedAt: null, revalidated: false, preparedDirty: false, preparedRevision: undefined,
   }]));
   const listeners = new Set([onStateChange]);
   let servicesPromise, services, destroyed = false, publishQueued = false, timelinePaused = false;
+  let admissionTimer, activeAdmissions = 0;
+  const admissions = [], catalogOrder = new Map(catalog.map((meta, index) => [meta.id, index]));
   let localArea = validateArea(options.localArea);
   const historySuspends = (entry) => timelinePaused && !OBSERVED_FRAME_LAYERS.has(entry.meta.id);
   const stateEntry = (entry) => {
@@ -49,6 +54,8 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       timelinePaused: historySuspends(entry),
       sceneMode: timelinePaused ? 'history' : 'live',
       status: entry.status === 'ready' && stats.loading ? 'loading' : entry.status,
+      queued: entry.status === 'queued',
+      activating: entry.activating,
       count: Number.isFinite(stats.count) ? stats.count : 0,
       lastUpdate: stats.lastUpdate ?? null,
       refreshedAt: entry.refreshedAt,
@@ -113,7 +120,38 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     entry.controller = new AbortController();
   }
   function updateActiveServices() {
-    services?.setActiveServices?.([...new Set([...entries].flatMap(([id, entry]) => !historySuspends(entry) && entry.requested ? requiredServices(id) : []))]);
+    services?.setActiveServices?.([...new Set([...entries].flatMap(([id, entry]) => !historySuspends(entry) && entry.requested && (entry.enabled || entry.activating) ? requiredServices(id) : []))]);
+  }
+  function cancelAdmission(entry) {
+    const job = entry.admission;
+    if (!job) return;
+    entry.admission = null;
+    const index = admissions.indexOf(job); if (index !== -1) admissions.splice(index, 1);
+    if (!admissions.length && admissionTimer !== undefined) { cancelAdmissionTimer(admissionTimer); admissionTimer = undefined; }
+    job.resolve(null);
+  }
+  const admissionPriority = entry => entry.meta.id === 'earthquakes' ? -2 : entry.meta.id === 'gdacs-notices' ? -1 : catalogOrder.get(entry.meta.id);
+  function armAdmissions() {
+    if (destroyed || admissionTimer !== undefined || activeAdmissions >= LAYER_ACTIVATION_LIMITS.concurrent || !admissions.length) return;
+    // One admission per task gives input/rendering a turn between layer starts.
+    admissionTimer = scheduleAdmission(() => {
+      admissionTimer = undefined;
+      if (destroyed || !admissions.length || activeAdmissions >= LAYER_ACTIVATION_LIMITS.concurrent) return;
+      admissions.sort((a, b) => admissionPriority(a.entry) - admissionPriority(b.entry));
+      const job = admissions.shift(), entry = job.entry;
+      entry.admission = null;
+      if (job.revision !== entry.revision || !entry.requested || historySuspends(entry) || documentRef?.hidden) job.resolve(null);
+      else {
+        activeAdmissions++; let released = false;
+        job.resolve(() => { if (released) return; released = true; activeAdmissions--; armAdmissions(); });
+      }
+      armAdmissions();
+    }, 0);
+  }
+  function admitActivation(entry, revision) {
+    if (destroyed || revision !== entry.revision || !entry.requested || historySuspends(entry) || documentRef?.hidden) return Promise.resolve(null);
+    entry.status = 'queued'; publish();
+    return new Promise(resolve => { const job = { entry, revision, resolve }; entry.admission = job; admissions.push(job); armAdmissions(); });
   }
   async function prepareServices(id) {
     const names = requiredServices(id);
@@ -209,8 +247,13 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       viewer.scene?.requestRender?.(); publish(); return true;
     }
     if (documentRef?.hidden) { entry.status = 'paused'; publish(); return false; }
+    const release = await admitActivation(entry, revision);
+    if (!release) return false;
+    if (destroyed || revision !== entry.revision || !entry.requested || historySuspends(entry) || documentRef?.hidden) { release(); return false; }
+    entry.activating = true;
     entry.status = 'loading'; entry.error = null; publish();
     try {
+      updateActiveServices();
       const module = await ensureModule(id);
       if (destroyed || revision !== entry.revision) return false;
       if (!entry.initialized) {
@@ -224,8 +267,13 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       if (destroyed || revision !== entry.revision) { await module.disable?.(viewer); return false; }
       entry.enabled = true; entry.status = 'ready';
       if (entry.refreshing) entry.revalidated = true;
-      await refresh(id);
+      const refreshed = await refresh(id);
       if (revision !== entry.revision) return false;
+      if (!refreshed) {
+        let stats = {}; try { stats = module.getStats?.() || {}; } catch { /* No retained display proof. */ }
+        const failure = entry.error || stats.error || stats.lastError;
+        if (failure && !(Number(stats.count) > 0 || stats.lastUpdate != null)) throw new Error(String(failure));
+      }
       armTimer(id, entry); viewer.scene?.requestRender?.(); publish(); return true;
     } catch (error) {
       stopTimer(entry);
@@ -236,12 +284,12 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
       }
       try { if (entry.initialized) await entry.module?.destroy?.(viewer); } catch { /* retain the original error */ }
       entry.initialized = false; entry.module = null;
-      entry.enabled = false; entry.requested = false;
+      entry.enabled = false;
       updateActiveServices();
       entry.status = aborted(error) ? 'disabled' : 'error';
       entry.error = aborted(error) ? null : error.message || 'Layer could not start';
       persist(); publish(); return false;
-    }
+    } finally { entry.activating = false; release(); updateActiveServices(); publish(); }
   }
   function setEnabled(id, enabled) {
     const entry = requireEntry(id);
@@ -249,11 +297,12 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     const next = Boolean(enabled);
     if (entry.requested === next && entry.enabled === next && entry.status !== 'error') return entry.queue.then(() => true);
     entry.requested = next;
-    updateActiveServices();
+    cancelAdmission(entry); updateActiveServices();
     const revision = ++entry.revision;
     stopTimer(entry); restartRequestLifetime(entry);
     entry.module?.cancelPendingRestore?.({ origin: 'user', reason: 'visibility changed' });
     entry.module?.cancelPendingTrackingRestore?.({ origin: 'user', reason: 'visibility changed' });
+    entry.status = next ? historySuspends(entry) || documentRef?.hidden ? 'paused' : 'queued' : entry.initialized ? 'disabling' : 'disabled';
     persist(); publish();
     entry.queue = entry.queue.catch(() => {}).then(() => reconcile(id, revision));
     return entry.queue;
@@ -265,9 +314,11 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     if (timelinePaused === next) return Promise.all([...entries.values()].map((entry) => entry.queue));
     timelinePaused = next; updateActiveServices();
     for (const [id, entry] of entries) {
+      cancelAdmission(entry);
       const revision = ++entry.revision;
       stopTimer(entry); restartRequestLifetime(entry); entry.revalidated = false;
       // This transition preserves requested intent and never writes preferences.
+      if (entry.requested) entry.status = historySuspends(entry) || documentRef?.hidden ? 'paused' : 'queued';
       entry.queue = entry.queue.catch(() => {}).then(() => reconcile(id, revision));
     }
     publish();
@@ -305,6 +356,7 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
     updateActiveServices();
     for (const [id, entry] of entries) {
       stopTimer(entry);
+      if (documentRef?.hidden) { cancelAdmission(entry); if (entry.requested && !entry.enabled) entry.status = 'paused'; }
       entry.controller.abort();
       if (!documentRef?.hidden) entry.controller = new AbortController();
       if (!historySuspends(entry) && !documentRef?.hidden && entry.enabled) {
@@ -328,9 +380,10 @@ export function createLayerManager(viewer, onStateChange = () => {}, options = {
   async function destroy() {
     if (destroyed) return;
     destroyed = true;
+    if (admissionTimer !== undefined) cancelAdmissionTimer(admissionTimer); admissionTimer = undefined;
     unsubscribeCache?.();
     documentRef?.removeEventListener?.('visibilitychange', visibilityChanged);
-    for (const entry of entries.values()) { ++entry.revision; stopTimer(entry); entry.controller.abort(); }
+    for (const entry of entries.values()) { ++entry.revision; cancelAdmission(entry); stopTimer(entry); entry.controller.abort(); entry.status = 'disabled'; }
     for (const entry of entries.values()) {
       await Promise.allSettled([entry.queue, entry.loading].filter(Boolean));
       try { await entry.module?.destroy?.(viewer); } catch (error) { console.error(error); }

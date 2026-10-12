@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { inLocalArea, validateArea } from '../../core/local-area.js';
+import { createMapBillboard } from '../../core/map-symbols.js';
 import {
   EARTHQUAKE_OVERLAY_SOURCE_ID,
   EARTHQUAKE_OVERLAY_COHORT_LIMIT,
@@ -106,13 +107,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
               new Cesium.Entity({
                 id,
                 position,
-                point: {
-                  pixelSize: 11,
-                  color,
-                  outlineColor: Cesium.Color.fromCssColorString('#17212c'),
-                  outlineWidth: 2,
-                  heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-                },
+                billboard: createMapBillboard('seismic', { color, heightReference: Cesium.HeightReference.CLAMP_TO_GROUND }),
                 properties: facts,
               }) });
             overlayEntries.push(
@@ -144,7 +139,7 @@ export function createEarthquakesLayer({ source, overlayHost } = {}) {
                 if (!entity.properties.hasProperty(key)) entity.properties.addProperty(key, value);
                 else entity.properties[key] = value;
               }
-              if (!previous || previous.depth !== next.record.depth) entity.point.color = next.color;
+              if (!previous || previous.depth !== next.record.depth) entity.billboard.color = next.color;
             }
             publishedRows = new Map([...wanted].map(([id, next]) => [id, next.record]));
           } finally { entities.resumeEvents(); }

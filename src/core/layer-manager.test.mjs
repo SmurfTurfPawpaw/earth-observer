@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLayerManager, STORAGE_KEY } from './layer-manager.js';
+import { createLayerManager, STORAGE_KEY, LAYER_ACTIVATION_LIMITS } from './layer-manager.js';
 
 const catalog = [{ id: 'test', defaults: { mode: 'safe' } }];
-const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+const microtasks = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+const settle = async () => { await microtasks(); await new Promise(resolve => setTimeout(resolve, 0)); await microtasks(); };
 function environment(createLayer, overrides = {}) {
   const timers = new Map();
   let timerId = 0;
@@ -226,6 +227,9 @@ test('failed partial initialization is destroyed and a later retry creates a fre
   });
   assert.equal(await env.manager.setEnabled('test', true), false);
   assert.equal(env.manager.getState().test.status, 'error');
+  assert.equal(env.manager.getState().test.enabled, true, 'Unavailable activation preserves the explicit requested choice');
+  assert.equal(env.manager.getState().test.settledEnabled, false);
+  assert.equal(JSON.parse(env.saved.get(STORAGE_KEY)).layers.test.enabled, true);
   assert.match(env.manager.getState().test.error, /Startup failed/);
   assert.ok(calls.includes('destroy'));
   assert.equal(await env.manager.setEnabled('test', true), true);
@@ -345,4 +349,96 @@ test('changing the local area cancels pending data and queues its replacement ev
   blocked.resolve(); await enabling; await settle();
   assert.equal(updates, 2); assert.deepEqual(area, { lat: 50, lon: 4, radiusKm: 10 });
   assert.equal(env.manager.getState().test.refreshing, false); await env.manager.destroy();
+});
+
+function stagedEnvironment(t) {
+  const ids = ['satellites', 'earthquakes', 'wind', 'gdacs-notices', 'flights'], starts = [], turns = new Map(), calls = [];
+  const gates = new Map(ids.map(id => [id, Promise.withResolvers()])); let sequence = 0, active = 0, maximum = 0;
+  const env = environment(async id => { starts.push(id); return { ...engine(calls), updateInterval: 0,
+    async update() { active++; maximum = Math.max(maximum, active); try { await gates.get(id).promise; } finally { active--; } },
+  }; }, { catalog: ids.map(id => ({ id, defaults: {} })), layerServiceRequirements: () => [],
+    setTimeout: callback => { turns.set(++sequence, callback); return sequence; }, clearTimeout: id => turns.delete(id) });
+  const turn = async () => { await microtasks(); const [id, callback] = turns.entries().next().value || []; if (callback) { turns.delete(id); callback(); } await microtasks(); return Boolean(callback); };
+  const finish = async () => { for (const gate of gates.values()) gate.resolve(); for (let i = 0; i < ids.length * 3; i++) { await microtasks(); if (!await turn() && !turns.size) break; } };
+  t.after(async () => { for (const gate of gates.values()) gate.resolve(); await env.manager.destroy(); });
+  return { ...env, ids, starts, turns, gates, turn, finish, get active() { return active; }, get maximum() { return maximum; } };
+}
+
+test('all restored choices persist before staged starts; two physical activations hold their slots through initial data work and core sources start first', async t => {
+  const env = stagedEnvironment(t), restoration = env.manager.restore(env.ids);
+  assert.deepEqual(env.starts, []);
+  assert.ok(Object.values(env.manager.getState()).every(state => state.enabled && state.queued && !state.settledEnabled));
+  const saved = JSON.parse(env.saved.get(STORAGE_KEY)); assert.ok(env.ids.every(id => saved.layers[id].enabled));
+  assert.equal(await env.turn(), true); assert.deepEqual(env.starts, ['earthquakes']);
+  assert.equal(await env.turn(), true); assert.deepEqual(env.starts, ['earthquakes', 'gdacs-notices']);
+  assert.equal(env.active, LAYER_ACTIVATION_LIMITS.concurrent); assert.equal(await env.turn(), false);
+  assert.equal(env.manager.getState().satellites.status, 'queued');
+  env.gates.get('earthquakes').resolve(); await microtasks(); assert.equal(await env.turn(), true);
+  assert.deepEqual(env.starts, ['earthquakes', 'gdacs-notices', 'satellites']);
+  assert.ok(env.maximum <= LAYER_ACTIVATION_LIMITS.concurrent);
+  await env.finish(); await restoration;
+  assert.deepEqual(env.starts, ['earthquakes', 'gdacs-notices', 'satellites', 'wind', 'flights']);
+  assert.ok(Object.values(env.manager.getState()).every(state => state.enabled && state.settledEnabled && !state.queued && !state.activating));
+});
+
+test('a newer restore and explicit disable cancel queued admissions before any construction without releasing an unsettled physical slot', async t => {
+  const env = stagedEnvironment(t), first = env.manager.restore(env.ids); await env.turn();
+  assert.deepEqual(env.starts, ['earthquakes']);
+  const latest = env.manager.restore(['wind']), disable = env.manager.setEnabled('wind', false);
+  await microtasks(); assert.equal(env.active, 1, 'Abort intent cannot count ignored asynchronous work as already retired');
+  env.gates.get('earthquakes').resolve(); await env.finish(); await Promise.all([first, latest, disable]);
+  assert.deepEqual(env.starts, ['earthquakes']);
+  assert.ok(Object.values(env.manager.getState()).every(state => !state.enabled && !state.settledEnabled));
+  assert.ok(Object.values(JSON.parse(env.saved.get(STORAGE_KEY)).layers).every(state => !state.enabled));
+});
+
+test('History preserves every requested layer without activation and cancels a queued return to Live; destroy settles queued callers without new work', async t => {
+  const env = stagedEnvironment(t); await env.manager.setTimelineMode('history'); await env.manager.restore(env.ids);
+  assert.equal(env.starts.length, 0); assert.equal(env.turns.size, 0);
+  assert.ok(Object.values(env.manager.getState()).every(state => state.enabled && state.timelinePaused && state.status === 'paused'));
+  const saved = env.saved.get(STORAGE_KEY), live = env.manager.setTimelineMode('live'); await microtasks();
+  const history = env.manager.setTimelineMode('history'); await microtasks(); await env.turn(); await Promise.all([live, history]);
+  assert.equal(env.starts.length, 0); assert.equal(env.saved.get(STORAGE_KEY), saved);
+  const again = env.manager.setTimelineMode('live'); await microtasks(); const stopped = env.manager.destroy();
+  assert.equal(env.turns.size, 0); await Promise.all([again, stopped]); assert.equal(env.starts.length, 0);
+});
+
+test('hiding before admission cancels the queued starts and returns visible intent through the same bounded gate', async t => {
+  const env = stagedEnvironment(t), restoration = env.manager.restore(env.ids); await microtasks();
+  env.document.hidden = true; env.visibility(); await restoration;
+  assert.equal(env.turns.size, 0); assert.equal(env.starts.length, 0);
+  assert.ok(Object.values(env.manager.getState()).every(state => state.enabled && !state.queued && state.status === 'paused'));
+  env.document.hidden = false; env.visibility(); await env.finish(); await microtasks();
+  assert.deepEqual(env.starts.slice(0, 2), ['earthquakes', 'gdacs-notices']);
+  assert.ok(Object.values(env.manager.getState()).every(state => state.enabled && state.settledEnabled));
+});
+
+test('an unavailable layer keeps its selection and does not retry or starve the next admission until a new explicit action', async t => {
+  // Update failures preserve dated/last-known engines; initialization failure
+  // exercises the admission cleanup and retained explicit choice contract.
+  let attempts = 0;
+  const broken = environment(async id => ({ ...engine([]), init() { if (id === 'earthquakes') { attempts++; throw new Error('TEST ONLY initialization unavailable'); } }, updateInterval: 0 }),
+    { catalog: [{ id: 'earthquakes', defaults: {} }, { id: 'gdacs-notices', defaults: {} }], layerServiceRequirements: () => [] });
+  t.after(() => broken.manager.destroy());
+  await broken.manager.restore(['earthquakes', 'gdacs-notices']);
+  assert.equal(broken.manager.getState().earthquakes.status, 'error'); assert.equal(broken.manager.getState().earthquakes.enabled, true);
+  assert.equal(broken.manager.getState()['gdacs-notices'].settledEnabled, true);
+  assert.equal(JSON.parse(broken.saved.get(STORAGE_KEY)).layers.earthquakes.enabled, true);
+  await settle(); assert.equal(broken.manager.getState().earthquakes.status, 'error'); assert.equal(attempts, 1);
+  assert.equal(await broken.manager.setEnabled('earthquakes', true), false); assert.equal(attempts, 2, 'One manual retry owns one bounded new admission');
+  assert.equal(broken.manager.getState().earthquakes.enabled, true);
+});
+
+test('initial source failure without retained data is unavailable while an existing dated display survives the same failure', async t => {
+  for (const retained of [false, true]) {
+    const calls = [], env = environment(async () => ({ ...engine(calls), update() { throw new Error('TEST ONLY initial source unavailable'); },
+      getStats() { return { count: retained ? 7 : 0, lastUpdate: retained ? 123 : null }; } }));
+    t.after(() => env.manager.destroy());
+    assert.equal(await env.manager.setEnabled('test', true), retained);
+    const state = env.manager.getState().test;
+    assert.equal(state.enabled, true); assert.equal(state.settledEnabled, retained);
+    assert.equal(state.status, retained ? 'ready' : 'error'); assert.match(state.error, /source unavailable/);
+    assert.equal(JSON.parse(env.saved.get(STORAGE_KEY)).layers.test.enabled, true);
+    assert.equal(calls.includes('destroy'), !retained, 'A retained source display is not discarded for failed revalidation');
+  }
 });

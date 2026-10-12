@@ -6,12 +6,13 @@ import { gdacsNoticeSelection } from '../../core/gdacs-dossier.js';
 import { canonicalDiscoveryRecord } from '../../core/discovery-index.js';
 import { createWorldSourceItem } from '../../core/world-model.js';
 import { worldHash } from '../../core/world-identity.js';
+import { mapSymbolImage, gdacsAlertColor } from '../../core/map-symbols.js';
 
 const AT = '2026-10-12T03:30:00.000Z', PUBLISHED = '2026-10-12T03:30:01.000Z';
-async function view({ episode = '1', unlocated = false, corrected = false, empty = false, cached = false } = {}) {
-  const record = canonicalDiscoveryRecord({ id: `gdacs:FL:1001:${episode}`, sourceId: 'gdacs', source: 'GDACS', kind: 'hazard-report', category: 'disasters',
-    title: corrected ? 'TEST ONLY corrected flood notice' : 'TEST ONLY flood notice', eventType: 'FL', alertLevel: 'Orange',
-    url: `https://www.gdacs.org/report.aspx?eventid=1001&eventtype=FL&episodeid=${episode}`, ...(unlocated ? {} : { lat: corrected ? 51 : 50, lon: 4 }),
+async function view({ episode = '1', eventType = 'FL', alertLevel = 'Orange', unlocated = false, corrected = false, empty = false, cached = false } = {}) {
+  const record = canonicalDiscoveryRecord({ id: `gdacs:${eventType}:1001:${episode}`, sourceId: 'gdacs', source: 'GDACS', kind: 'hazard-report', category: 'disasters',
+    title: corrected ? 'TEST ONLY corrected flood notice' : 'TEST ONLY flood notice', eventType, alertLevel,
+    url: `https://www.gdacs.org/report.aspx?eventid=1001&eventtype=${eventType}&episodeid=${episode}`, ...(unlocated ? {} : { lat: corrected ? 51 : 50, lon: 4 }),
     observedAt: '2026-10-11T10:00:00.000Z', eventEndAt: '2026-10-11T11:00:00.000Z', updatedAt: '2026-10-12T02:00:00.000Z', retrievedAt: AT });
   const snapshotId = await worldHash(record), item = { ...await createWorldSourceItem(record, { snapshotId, capturedAt: AT, recordedAt: PUBLISHED }),
     origin: { snapshotId: 'a'.repeat(64), firstCapturedAt: AT, firstRecordedAt: PUBLISHED, validation: 'retained-revision-index-only', bodyValidated: false } };
@@ -41,12 +42,15 @@ test('unchanged and corrected episodes preserve selectable object identity and u
   const entities = h.sources[0].entities, selected = entities.values[0], properties = selected.properties;
   entities.collectionChanged.addEventListener(Cesium.Viewer.prototype._onEntityCollectionChanged, h.viewer); h.viewer.selectedEntity = selected;
   const time = Cesium.JulianDate.now(); assert.equal(gdacsNoticeSelection(selected, time).kind, 'Flood · GDACS notice');
-  assert.equal(selected.ellipse, undefined); assert.equal(selected.point.pixelSize.getValue(time), 12); assert.equal(selected.point.disableDepthTestDistance, undefined);
+  assert.equal(selected.ellipse, undefined); assert.equal(selected.point, undefined);
+  assert.equal(selected.billboard.image.getValue(time), mapSymbolImage('flood'));
+  assert.equal(selected.billboard.disableDepthTestDistance, undefined);
   assert.equal(h.layer.getRowControls().items.length, 1); assert.match(h.layer.getRowControls().items[0].detail, /Flood.*Indicative location/);
   assert.equal(h.layer.setParams(h.layer.getRowControls().items[0].params), true, 'mapped notices also expose the existing keyboard inspection action');
   const oldNotice = properties.getValue(time)._gdacsNotice; snapshot = structuredClone(snapshot); await h.layer.update();
   assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties, properties); assert.equal(properties.getValue(time)._gdacsNotice, oldNotice);
-  snapshot = await view({ corrected: true }); await h.layer.update(); assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties, properties);
+  snapshot = await view({ corrected: true, alertLevel: 'Red' }); await h.layer.update(); assert.equal(h.viewer.selectedEntity, selected); assert.equal(selected.properties, properties);
+  assert.equal(selected.billboard.color.getValue(time).equals(Cesium.Color.fromCssColorString(gdacsAlertColor('Red'))), true);
   assert.match(gdacsNoticeSelection(selected, time).title, /corrected/); assert.equal(properties.getValue(time)._gdacsNotice.item.revision, snapshot.items[0].revision);
   assert.equal(selected.position.getValue(time).equals(Cesium.Cartesian3.fromDegrees(4, 51)), true); assert.equal(properties.hasProperty('_worldEvent'), false);
   snapshot = await view({ empty: true }); await h.layer.update(); assert.equal(h.viewer.selectedEntity, undefined); assert.equal(entities.values.length, 0);
@@ -55,14 +59,31 @@ test('unchanged and corrected episodes preserve selectable object identity and u
 
 test('unknown geometry creates no pin, can be inspected without navigation, and keeps episode identity when geometry is corrected', async () => {
   let snapshot = await view({ unlocated: true }); const h = harness({ getSnapshot: async () => snapshot }); await h.layer.update();
-  const entity = h.sources[0].entities.values[0]; assert.equal(entity.position, undefined); assert.equal(entity.point, undefined); assert.equal(entity.show, false);
+  const entity = h.sources[0].entities.values[0]; assert.equal(entity.position, undefined); assert.equal(entity.billboard, undefined); assert.equal(entity.show, false);
   assert.equal(h.layer.getStats().count, 0); assert.equal(h.layer.getStats().snapshot, false); assert.equal(h.layer.getStats().sourceAgeMs, null); assert.equal(h.layer.getStats().checkedAt, null);
   assert.match(h.layer.getRowControls().info, /1 without a location.*freshness unknown/);
   assert.equal(h.layer.setParams({ inspectItem: snapshot.items[0].itemId }), true); assert.equal(h.viewer.selectedEntity, entity);
   assert.ok(gdacsNoticeSelection(entity, Cesium.JulianDate.now()));
-  snapshot = await view(); await h.layer.update(); assert.equal(h.sources[0].entities.values[0], entity); assert.equal(h.viewer.selectedEntity, entity); assert.ok(entity.position); assert.ok(entity.point);
+  snapshot = await view(); await h.layer.update(); assert.equal(h.sources[0].entities.values[0], entity); assert.equal(h.viewer.selectedEntity, entity); assert.ok(entity.position); assert.ok(entity.billboard);
   snapshot = await view({ unlocated: true }); await h.layer.update(); assert.equal(h.sources[0].entities.values[0], entity); assert.equal(h.viewer.selectedEntity, entity); assert.equal(entity.position, undefined);
+  assert.equal(entity.billboard, undefined, 'A geometry withdrawal removes the old icon instead of leaving an invented location');
   h.layer.destroy();
+});
+
+test('each retained GDACS category uses its own shared icon without changing notice identity, evidence or indicative coordinates', async () => {
+  const types = { EQ: 'seismic', FL: 'flood', TC: 'cyclone', VO: 'volcano', WF: 'wildfire', DR: 'drought' }, images = new Set();
+  for (const [eventType, kind] of Object.entries(types)) {
+    const snapshot = await view({ eventType }), h = harness({ getSnapshot: async () => snapshot });
+    await h.layer.update(); const entity = h.sources[0].entities.values[0], time = Cesium.JulianDate.now();
+    const image = entity.billboard.image.getValue(time); images.add(image);
+    assert.equal(image, mapSymbolImage(kind)); assert.equal(entity.id, `gdacs-notice:${snapshot.items[0].itemId}`);
+    assert.equal(entity.properties.getValue(time)._gdacsNotice.item, snapshot.items[0]);
+    assert.ok(gdacsNoticeSelection(entity, time));
+    assert.equal(entity.position.getValue(time).equals(Cesium.Cartesian3.fromDegrees(4, 50)), true);
+    assert.equal(entity.billboard.heightReference.getValue(time), Cesium.HeightReference.CLAMP_TO_GROUND);
+    h.layer.destroy();
+  }
+  assert.equal(images.size, 6);
 });
 
 test('separate episodes never merge and elapsed reported to-dates do not hide retained membership', async () => {

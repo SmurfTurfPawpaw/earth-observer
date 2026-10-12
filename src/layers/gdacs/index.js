@@ -2,6 +2,7 @@ import * as Cesium from 'cesium';
 import { inLocalArea, validateArea } from '../../core/local-area.js';
 import { mappedGdacsRecord } from '../../core/gdacs-source-items.js';
 import { gdacsNoticeType } from '../../core/gdacs-dossier.js';
+import { createMapBillboard, gdacsMapSymbol, gdacsAlertColor, mapSymbolImage } from '../../core/map-symbols.js';
 
 const noticeId = item => `gdacs-notice:${item.itemId}`;
 const sourceDate = value => value ? new Date(value).toISOString().replace('T', ' ').replace('Z', ' UTC') : 'Date not reported';
@@ -20,7 +21,8 @@ export function createGdacsNoticesLayer({ source, documentRef = globalThis.docum
     try {
       for (const item of value.items) {
         const id = noticeId(item), record = item.record, mapped = mappedGdacsRecord(record), old = previous.get(id);
-        wanted.add(id); next.set(id, { revision: item.revision, version: value.version, lat: record.lat, lon: record.lon });
+        const symbol = gdacsMapSymbol(record), color = gdacsAlertColor(record.alertLevel);
+        wanted.add(id); next.set(id, { revision: item.revision, version: value.version, lat: record.lat, lon: record.lon, symbol, color });
         let entity = entities.getById(id);
         if (!entity) entity = entities.add(new Cesium.Entity({ id, name: record.title, properties: { _gdacsNotice: basis(value, item) } }));
         else if (!old || old.revision !== item.revision || old.version !== value.version) {
@@ -30,12 +32,15 @@ export function createGdacsNoticesLayer({ source, documentRef = globalThis.docum
         if (mapped) {
           if (!old || old.lat !== record.lat || old.lon !== record.lon || !entity.position)
             entity.position = Cesium.Cartesian3.fromDegrees(record.lon, record.lat);
-          if (!entity.point) entity.point = new Cesium.PointGraphics({ pixelSize: 12,
-            color: Cesium.Color.fromCssColorString('#d7b073'), outlineColor: Cesium.Color.fromCssColorString('#17212c'), outlineWidth: 2,
-            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND });
+          if (!entity.billboard) entity.billboard = createMapBillboard(symbol, {
+            color: Cesium.Color.fromCssColorString(color), heightReference: Cesium.HeightReference.CLAMP_TO_GROUND });
+          else {
+            if (!old || old.symbol !== symbol) entity.billboard.image = mapSymbolImage(symbol);
+            if (!old || old.color !== color) entity.billboard.color = Cesium.Color.fromCssColorString(color);
+          }
           entity.show = inLocalArea(record.lat, record.lon, localArea);
         } else {
-          entity.position = undefined; entity.point = undefined; entity.show = false;
+          entity.position = undefined; entity.billboard = undefined; entity.show = false;
         }
       }
       for (const entity of entities.values.slice()) if (!wanted.has(entity.id)) entities.remove(entity);

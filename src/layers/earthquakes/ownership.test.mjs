@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createEarthquakesLayer } from './index.js';
 import * as Cesium from 'cesium';
 import { depthColor } from './model.js';
+import { mapSymbolImage } from '../../core/map-symbols.js';
 function harness(source) {
   const sources = [];
   const events = [];
@@ -74,7 +75,7 @@ test('two displays own separate data sources and destruction', async () => {
   assert.equal(b.sources.length, 1);
   b.layer.destroy();
 });
-test('pixel markers retain reported positions, selectable entity identity and source properties without geographic disks or depth overrides', async () => {
+test('shared seismic icons retain reported positions, selectable entity identity and source properties without geographic disks or depth overrides', async () => {
   const rows = [row, { ...row, stableId: 'deep-large', usgsId: 'deep-large', mag: 10, depthKm: 400 }];
   const h = harness({ getSnapshot: async () => rows }); await h.layer.update(h.viewer);
   const at = Cesium.JulianDate.now(), entities = h.sources[0].entities;
@@ -82,12 +83,13 @@ test('pixel markers retain reported positions, selectable entity identity and so
     const entity = entities.getById(`earthquake:${source.stableId}`);
     assert.ok(entity instanceof Cesium.Entity, 'the renderer keeps the source entity available to Cesium picking');
     assert.equal(entity.ellipse, undefined);
-    assert.ok(entity.point instanceof Cesium.PointGraphics);
-    assert.equal(entity.point.pixelSize.getValue(at), 11, 'magnitude does not create a geographic footprint or unbounded screen marker');
-    assert.equal(entity.point.outlineWidth.getValue(at), 2);
-    assert.equal(entity.point.color.getValue(at).equals(depthColor(source.depthKm)), true);
-    assert.equal(entity.point.heightReference.getValue(at), Cesium.HeightReference.CLAMP_TO_GROUND);
-    assert.equal(entity.point.disableDepthTestDistance, undefined, 'normal globe/surface occlusion remains available');
+    assert.equal(entity.point, undefined);
+    assert.ok(entity.billboard instanceof Cesium.BillboardGraphics);
+    assert.equal(entity.billboard.image.getValue(at), mapSymbolImage('seismic'));
+    assert.equal(entity.billboard.width.getValue(at), 22, 'magnitude does not create a geographic footprint or unbounded screen marker');
+    assert.equal(entity.billboard.color.getValue(at).equals(depthColor(source.depthKm)), true);
+    assert.equal(entity.billboard.heightReference.getValue(at), Cesium.HeightReference.CLAMP_TO_GROUND);
+    assert.equal(entity.billboard.disableDepthTestDistance, undefined, 'normal globe/surface occlusion remains available');
     assert.equal(entity.position.getValue(at).equals(Cesium.Cartesian3.fromDegrees(source.lon, source.lat)), true);
     assert.deepEqual(entity.properties.getValue(at), { usgsId: source.usgsId, mag: source.mag, place: source.place, time: source.time, depth: source.depthKm });
   }
@@ -110,7 +112,7 @@ test('unchanged refresh preserves the picked object and property bag; corrected 
   assert.equal(staleAtCorrection, false); assert.equal(bag.hasProperty('_worldEvent'), false);
   assert.equal(bag.mag.getValue(at), 5.2); assert.equal(bag.place.getValue(at), 'Corrected fixture place');
   assert.equal(selected.position.getValue(at).equals(Cesium.Cartesian3.fromDegrees(31, row.lat)), true);
-  assert.equal(selected.point.color.getValue(at).equals(depthColor(400)), true);
+  assert.equal(selected.billboard.color.getValue(at).equals(depthColor(400)), true);
   rows = []; await h.layer.update(h.viewer); assert.equal(h.viewer.selectedEntity, undefined);
   assert.equal(changes.flatMap(change => change.removed).length, 1); h.layer.destroy();
 });

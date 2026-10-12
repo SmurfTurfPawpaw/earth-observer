@@ -7,6 +7,7 @@ import { worldHash } from './world-model.js';
 import { WORLD_SCENE_SCOPE } from './world-scene-controller.js';
 import { Entity } from 'cesium';
 import { createWorkspaceRestore } from './workspace-restore.js';
+import { mapSymbolImage } from './map-symbols.js';
 
 class Element {
   constructor(tag, ownerDocument) { this.tagName = tag; this.ownerDocument = ownerDocument; this.children = []; this.listeners = new Map(); this.attributes = {}; this.dataset = {}; this._text = ''; }
@@ -184,10 +185,16 @@ test('calendar uses origin coverage across years, retains UTC through renewal, a
   assert.ok(!elements(summary).some((element) => ['button', 'select', 'input'].includes(element.tagName)));
   assert.equal(slider.min, String(Date.parse(baseRange.from) / 1000));
   await timeline.seek(beforeMidnight); assert.equal(f.sceneClock.getState().at, beforeMidnight); assert.equal(f.entities.size, 1);
+  const firstMarker = [...f.entities][0], firstBillboard = firstMarker.billboard;
+  assert.equal(firstMarker.point, undefined); assert.equal(firstBillboard.image.getValue(), mapSymbolImage('seismic'));
   assert.equal([...f.entities][0].properties.time, Date.parse(old.originAt)); assert.equal([...f.entities][0].properties._worldScene.mode, 'reconstruction');
   rate.value = '60'; rate.trigger('change'); play.trigger('click'); await settle(); const transferred = requests.length;
+  const playingMarker = [...f.entities].find(entity => entity.id === firstMarker.id), playingBillboard = playingMarker.billboard;
   f.timing.advance(600); for (const frame of f.frameCallbacks) frame();
   assert.equal(f.entities.size, 2, 'Native presentation frames apply exact origin membership before the next one-second label tick');
+  assert.equal([...f.entities].find(entity => entity.id === playingMarker.id), playingMarker);
+  assert.equal(playingMarker.billboard, playingBillboard, 'A playback frame keeps the unchanged historical revision and icon without remounting');
+  assert.equal([...f.entities][1].billboard.image.getValue(), firstBillboard.image.getValue(), 'New origins reuse the shared seismic atlas image');
   assert.equal(requests.length, transferred, 'Presentation frames cannot fetch');
   f.timing.advance(400); await settle();
   assert.equal(f.sceneClock.getState().at, '2025-06-02T00:00:50.000Z'); assert.equal(f.entities.size, 2); assert.equal(date.value, '2025-06-02T00:00:50');
