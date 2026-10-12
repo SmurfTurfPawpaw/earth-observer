@@ -16,7 +16,6 @@ import { createTimeline } from './core/timeline.js';
 import { createLiveUpdates } from './core/live-updates.js';
 import { installWorldDossierBridge } from './core/world-dossier-bridge.js';
 import { createPlaceNavigation } from './core/workspace-focus.js';
-import { createReportDossierController } from './core/report-dossier.js';
 import { Cartographic, Math as CesiumMath } from 'cesium';
 
 let viewer;
@@ -124,7 +123,14 @@ async function handlePanel({ panel, open }) {
       document.getElementById('news-status').hidden = true;
       intelligence = createPluginDossierPanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, subscribeUpdates: updates.subscribe,
         createFeed: async (container) => {
-          const { createIntelligencePanel } = await import('./core/intelligence.js');
+          const [{ createIntelligencePanel }, { createReportDossierController }] = await Promise.all([
+            import('./core/intelligence.js'), import('./core/report-dossier.js'),
+          ]);
+          if (destroyed) throw new Error('The workspace is closed.');
+          reportDossiers ||= createReportDossierController({ fetchImpl: cachedFetch,
+            getScene: () => viewer.earthTime.getState(), getSelection: () => viewer.selectedEntity,
+            getNavigationKey: () => JSON.stringify(cameraView(viewer)),
+            onOpen(event) { navigatePlace({ lat: event.place.lat, lon: event.place.lon }); shell.openWorldReport(event); }, onError: shell.notify });
           return createIntelligencePanel({ container, fetchImpl: cachedFetch, store,
             subscribeUpdates: updates.subscribe,
             onStatus: () => {},
@@ -175,11 +181,7 @@ export async function start() {
       },
     });
     disposers.push(() => worldDossiers.destroy());
-    reportDossiers = createReportDossierController({ fetchImpl: cachedFetch,
-      getScene: () => viewer.earthTime.getState(), getSelection: () => viewer.selectedEntity,
-      getNavigationKey: () => JSON.stringify(cameraView(viewer)),
-      onOpen(event) { navigatePlace({ lat: event.place.lat, lon: event.place.lon }); shell.openWorldReport(event); }, onError: shell.notify });
-    disposers.push(() => reportDossiers.destroy());
+    disposers.push(() => reportDossiers?.destroy());
     const basemapButton = document.getElementById('toggle-basemap');
     describeBasemap = () => {
       const state = viewer.earthBasemap?.getState();

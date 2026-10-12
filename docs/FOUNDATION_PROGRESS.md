@@ -550,7 +550,7 @@ It remains local until job subjects, hosted retention and resource isolation
 pass their own gates. Broader corroborated stories, entity relations, evaluated
 future analysis, demand-driven discovery and global history remain incomplete.
 
-### Exact report inspection and diagnostic package — local, 01:00 UTC
+### Exact report inspection and diagnostic package — local, 00:57 UTC
 
 The Current feeds USGS action now resolves the exact displayed factual revision
 through stored world detail and opens the existing dossier. A source-context
@@ -582,3 +582,8 @@ The next publication excludes unfinished archive and document-runtime work.
 Those packages retain separate atomic bootstrap, resource and durable admission
 gates. This avoids making a working report interaction depend on unproved history
 maintenance or labeling staged extraction as hosted investigation.
+
+The first exact build exposed a 21 KB increase in the initial map module from
+eager report-code imports. Publication is held while that controller moves into
+the optional Current feeds import boundary. The next exact artifact must prove
+the delivery change; no initial-build size is represented as a live improvement.
