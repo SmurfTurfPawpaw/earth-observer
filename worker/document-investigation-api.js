@@ -1,9 +1,10 @@
 import { claimDocumentInvestigation, retainDocumentRaw, completeDocumentInvestigation,
-  failDocumentInvestigation, readDocumentStatus, readDocumentAnalysis } from './document-investigations.js';
+  failDocumentInvestigation, readDocumentStatus, readDocumentAnalysis, readDocumentOriginal, DOCUMENT_LIMITS } from './document-investigations.js';
 import { pluginBytesDigest } from '../src/core/plugin-evidence.js';
 
 export const DOCUMENT_PRODUCER_PATH = '/api/document-investigations/producer';
 export const DOCUMENT_PUBLIC_PATH = '/api/documents/ec-statement-26-2127';
+export const DOCUMENT_ORIGINAL_PATH = `${DOCUMENT_PUBLIC_PATH}/original`;
 export const DOCUMENT_API_LIMITS = Object.freeze({ bodyBytes: 768 * 1024, responseBytes: 256 * 1024,
   deadlineMs: 15000, skewMs: 30000, requests: 60, nonceEntries: 64 });
 const UTF8 = new TextEncoder(), HEX = /^[a-f0-9]{64}$/, KEY = /^[A-Za-z0-9_-]{43,128}$/;
@@ -53,11 +54,35 @@ function action(value) {
  * other providers, register URLs, or alter incident publications. */
 export function createDocumentInvestigationApiHandler({now=Date.now,claim=claimDocumentInvestigation,retain=retainDocumentRaw,
   complete=completeDocumentInvestigation,fail=failDocumentInvestigation,status=readDocumentStatus,read=readDocumentAnalysis,
+  original=readDocumentOriginal,
   deadlineMs=DOCUMENT_API_LIMITS.deadlineMs}={}) {
   if(!Number.isInteger(deadlineMs)||deadlineMs<1||deadlineMs>DOCUMENT_API_LIMITS.deadlineMs)throw new TypeError('Use a bounded document API deadline');
   const states=new WeakMap();let windowAt=-Infinity,requests=0;
   return async (request,env={},ctx={})=>{
     const url=new URL(request.url);
+    if(url.pathname===DOCUMENT_ORIGINAL_PATH) {
+      if(request.method!=='GET')return json({available:false,error:'Method Not Allowed'},405,{allow:'GET'});
+      const receipt=url.searchParams.get('receipt');
+      if(url.search.length>160||url.searchParams.size!==1||url.searchParams.getAll('receipt').length!==1||
+          !/^document-raw:[a-f0-9]{64}$/.test(receipt||''))
+        return json({available:false,error:'Use one retained original receipt'},400);
+      const controller=new AbortController(),cancel=()=>controller.abort();
+      if(request.signal.aborted)cancel();else request.signal.addEventListener('abort',cancel,{once:true});
+      const timer=setTimeout(cancel,deadlineMs);
+      try {
+        controller.signal.throwIfAborted();
+        const result=await abortable(original(env,{receipt},{signal:controller.signal}),controller.signal);
+        if(result.configured===false)return json({available:false,error:'Stored document original unavailable'},503);
+        if(!result.available)return json({available:false,error:'Completed document original not found'},404);
+        if(!(result.bytes instanceof Uint8Array)||result.bytes.byteLength<8||result.bytes.byteLength>DOCUMENT_LIMITS.rawBytes)
+          throw Error('Original response budget');
+        return new Response(result.bytes,{headers:{'content-type':'application/pdf','content-length':String(result.bytes.byteLength),
+          'cache-control':'no-store','x-content-type-options':'nosniff',
+          'content-security-policy':"default-src 'none'; sandbox; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          'content-disposition':'attachment; filename="STATEMENT_26_2127_EN.pdf"'}});
+      }catch(error){return json({available:false,error:error instanceof TypeError?'Invalid original receipt':'Stored document original unavailable'},error instanceof TypeError?400:503);}
+      finally{clearTimeout(timer);request.signal.removeEventListener('abort',cancel);}
+    }
     if(url.pathname===DOCUMENT_PUBLIC_PATH) {
       if(request.method!=='GET')return json({available:false,error:'Method Not Allowed'},405,{allow:'GET'});
       if(url.search.length>100||[...url.searchParams.keys()].some(key=>key!=='knownAt'||url.searchParams.getAll(key).length!==1))

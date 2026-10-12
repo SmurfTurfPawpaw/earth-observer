@@ -70,13 +70,26 @@ test('metadata correction preserves first raw basis; earlier analysis remains in
 test('retained newer failed body remains visible as prior attributed analysis without claiming current compatibility', async t => {
   const { f, payload } = await payloadFixture(t); f.advance(DOCUMENT_POLICY.checkMs + 1);
   const job = (await claim(f.env, { workerId: 'test-only-ui', claimId: (++serial).toString(16).padStart(32, '0') }, { now: f.now })).job;
-  await retain(f.env, { ...lease(job), acquiredAt: f.stamp(), rawBytes: syntheticPdf('B') }, { now: f.now });
+  const newer = await retain(f.env, { ...lease(job), acquiredAt: f.stamp(), rawBytes: syntheticPdf('B') }, { now: f.now });
   await fail(f.env, { ...lease(job), errorCode: 'extractor_failed' }, { now: f.now });
   const prior = await read(f.env, {}, { now: f.now }); assert.equal(prior.latestBodyMatches, false);
-  const u = ui(async () => Response.json(prior)); await u.controller.open({ item: payload.content.basis.item });
+  const calls = [], u = ui(async url => { calls.push(url); return Response.json(prior); }); await u.controller.open({ item: payload.content.basis.item });
   assert.match(visibleText(u.container), /newer PDF body was retained/);
   assert.equal(elements(u.container).filter(el => el.className === 'document-statement').length, 4);
   assert.doesNotMatch(visibleText(u.container), /SHA-256|Analysis receipt/);
+  const retainedUrl = `${DOCUMENT_DOSSIER_URL}/original?receipt=${encodeURIComponent(payload.content.rawReceipt.id)}`;
+  const references = elements(u.container).filter(el => el.className === 'document-citation');
+  assert.equal(references.length, 4);
+  for (const [index, link] of references.entries()) {
+    assert.equal(link.textContent, `Retained PDF · page ${prior.content.statements[index].citation.page}`);
+    assert.equal(link.href, `${retainedUrl}#page=${prior.content.statements[index].citation.page}`);
+    assert.equal(new URL(link.href, 'https://giovannicallebaut.com').searchParams.get('receipt'), payload.content.rawReceipt.id);
+    assert.notEqual(new URL(link.href, 'https://giovannicallebaut.com').searchParams.get('receipt'), newer.receipt.id);
+    assert.match(link.attributes['aria-label'], /Retained original PDF, page 1, text characters/);
+  }
+  assert.equal(elements(u.container).find(el => el.tagName === 'a' && el.textContent === 'Download retained original').href, retainedUrl);
+  assert.equal(elements(u.container).find(el => el.tagName === 'a' && el.textContent === 'Publisher PDF').href, prior.content.source.downloadUrl);
+  assert.deepEqual(calls, [DOCUMENT_DOSSIER_URL], 'rendering links never downloads a retained or publisher PDF');
   assert.equal(u.container.querySelector('.plugin-evidence').open, false); u.controller.destroy();
 });
 
@@ -90,9 +103,23 @@ test('fixed source, receipt binding, text hashes and exact whole-sentence offset
     p => { p.content.extraction.pages[0].textSha256 = 'f'.repeat(64); },
     p => { p.content.statements[0].predicate = 'causes-sanctions'; },
     p => { p.content.statements[3].temporal.anchor = p.content.source.publishedAt; },
-    p => { p.content.rawReceipt.recordedAt = '2026-10-12T06:00:00.000Z'; }
+    p => { p.content.rawReceipt.recordedAt = '2026-10-12T06:00:00.000Z'; },
+    p => { p.receipt.rawReceiptId = p.content.rawReceipt.id = `document-raw:${'a'.repeat(64)}?foreign=1`; }
   ]) { const value = structuredClone(payload); mutate(value); await resign(value); await assert.rejects(normalizeDocumentDossier(value), /incompatible/); }
   const altered = structuredClone(payload); altered.content.attribution += ' altered'; await assert.rejects(normalizeDocumentDossier(altered), /incompatible/);
+});
+
+test('a new completed body edition changes retained citation links to its own raw receipt without eager PDF delivery', async t => {
+  const { f, payload: first } = await payloadFixture(t); let current = first;
+  const calls = [], u = ui(async url => { calls.push(url); return Response.json(current); });
+  await u.controller.open({ item: first.content.basis.item });
+  const oldLink = elements(u.container).find(el => el.className === 'document-citation').href;
+  f.advance(DOCUMENT_POLICY.checkMs + 1); current = (await publish(f, 'B')).payload;
+  assert.notEqual(current.content.rawReceipt.id, first.content.rawReceipt.id); await u.controller.refresh();
+  const newLink = elements(u.container).find(el => el.className === 'document-citation').href;
+  assert.notEqual(newLink, oldLink); assert.equal(new URL(newLink, 'https://giovannicallebaut.com').searchParams.get('receipt'), current.receipt.rawReceiptId);
+  assert.equal(new URL(oldLink, 'https://giovannicallebaut.com').searchParams.get('receipt'), first.receipt.rawReceiptId);
+  assert.deepEqual(calls, [DOCUMENT_DOSSIER_URL, DOCUMENT_DOSSIER_URL]); u.controller.destroy();
 });
 
 test('document delivery is lazy, fixed stored-only, cached and preserves disclosure on operational checks', async t => {

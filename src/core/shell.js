@@ -208,7 +208,7 @@ export function createShell(viewer, manager) {
   });
   cleanup.push(() => workspaceFocus.destroy());
   const placeSearch = document.getElementById('search');
-  placeSearch.placeholder = 'Supported places or coordinates';
+  placeSearch.placeholder = 'Place or coordinates';
   placeSearch.title = 'Choose a supported place from the suggestions, or enter latitude, longitude.';
   const placeSearchLabel = document.querySelector('label[for="search"]');
   if (placeSearchLabel) placeSearchLabel.textContent = 'Find supported places or coordinates';

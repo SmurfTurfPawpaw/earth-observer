@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { claimDocumentInvestigation as claim,retainDocumentRaw as retain,completeDocumentInvestigation as complete,
   failDocumentInvestigation as fail,readDocumentStatus as status,readDocumentAnalysis as read,DOCUMENT_POLICY } from './document-investigations.js';
+import { readDocumentOriginal as original } from './document-investigations.js';
 import { documentFixture,syntheticPdf,syntheticAnalysis } from './document-investigation-fixture.mjs';
 
 let claimSerial=0;
@@ -149,4 +150,49 @@ test('warm idle and completed-history delivery use bounded indexed work rather t
   const plans=f.activity.sql.filter(row=>row.sql.includes('FROM earth_document_publications p')).flatMap(row=>f.sqlite.prepare('EXPLAIN QUERY PLAN '+row.sql).all(...row.values));
   assert.ok(plans.some(row=>row.detail.includes('earth_document_publications_known')));
   assert.equal(plans.some(row=>/SCAN p\b/.test(row.detail)),false);
+});
+
+test('original download requires complete admission and preserves exact historical PDF bytes after a body change',async t=>{
+  const f=await documentFixture(t);await f.source();const ja=await start(f),a=await raw(f,ja);
+  f.reset();const privateRaw=await original(f.env,{receipt:a.result.receipt.id});
+  assert.equal(privateRaw.available,false);assert.equal(privateRaw.status,'not-found');assert.equal(f.activity.objects.length,0);
+  await finish(f,ja,a);f.advance(DOCUMENT_POLICY.checkMs+1);const jb=await start(f),b=await raw(f,jb,'B');
+  f.reset();const retainedA=await original(f.env,{receipt:a.result.receipt.id});
+  assert.equal(retainedA.available,true);assert.deepEqual(retainedA.bytes,a.bytes);
+  assert.equal(retainedA.receipt.recordedAt,a.result.receipt.recordedAt);
+  assert.equal((await original(f.env,{receipt:b.result.receipt.id})).available,false,'a newer raw body is private until its analysis completes');
+  assert.equal(f.activity.providers.length,0);assert.equal(f.activity.sql.filter(row=>row.write).length,0);
+  assert.equal(f.activity.objects.filter(row=>row.operation==='put').length,0);
+  const plans=f.activity.sql.filter(row=>row.sql.includes('SELECT r.* FROM earth_document_raw_receipts r'))
+    .flatMap(row=>f.sqlite.prepare('EXPLAIN QUERY PLAN '+row.sql).all(...row.values));
+  assert.ok(plans.some(row=>row.detail.includes('receipt_id=?')),'exact raw receipt lookup uses its primary key');
+  assert.equal(plans.some(row=>/SCAN [rp]\b/.test(row.detail)),false,'complete admission is searched within the fixed indexed job');
+  await finish(f,jb,b);f.reset();
+  assert.deepEqual((await original(f.env,{receipt:a.result.receipt.id})).bytes,a.bytes);
+  assert.deepEqual((await original(f.env,{receipt:b.result.receipt.id})).bytes,b.bytes);
+  assert.equal(f.activity.sql.filter(row=>row.write).length,0);assert.equal(f.activity.providers.length,0);
+});
+
+test('original download refuses malformed, foreign, forged-key, oversized and corrupted evidence without acquisition',async t=>{
+  const f=await documentFixture(t);await f.source();const job=await start(f),pdf=await raw(f,job);await finish(f,job,pdf);
+  const receipt=pdf.result.receipt.id,row=f.sqlite.prepare('SELECT * FROM earth_document_raw_receipts WHERE receipt_id=?').get(receipt);
+  f.reset();
+  for(const input of [{receipt:'bad'},{receipt:receipt.toUpperCase()},{receipt,sourceUrl:'https://evil.test/pdf'}])
+    await assert.rejects(original(f.env,input),TypeError);
+  assert.equal(f.activity.sql.length,0);assert.equal(f.activity.objects.length,0);
+  assert.equal((await original(f.env,{receipt:`document-raw:${'f'.repeat(64)}`})).available,false);
+  f.sqlite.prepare('UPDATE earth_document_raw_receipts SET job_id=? WHERE receipt_id=?').run(`document:${'a'.repeat(64)}`,receipt);
+  assert.equal((await original(f.env,{receipt})).available,false);f.sqlite.prepare('UPDATE earth_document_raw_receipts SET job_id=? WHERE receipt_id=?').run(row.job_id,receipt);
+  f.reset();f.sqlite.prepare('UPDATE earth_document_raw_receipts SET raw_key=? WHERE receipt_id=?').run('arbitrary/object',receipt);
+  await assert.rejects(original(f.env,{receipt}),{code:'evidence_digest_mismatch'});assert.equal(f.activity.objects.length,0);
+  f.sqlite.prepare('UPDATE earth_document_raw_receipts SET raw_key=?,raw_bytes=? WHERE receipt_id=?').run(row.raw_key,512*1024+1,receipt);
+  await assert.rejects(original(f.env,{receipt}),{code:'evidence_digest_mismatch'});assert.equal(f.activity.objects.length,0);
+  f.sqlite.prepare('UPDATE earth_document_raw_receipts SET raw_bytes=? WHERE receipt_id=?').run(row.raw_bytes,receipt);
+  f.objects.set(row.raw_key,syntheticPdf('CORRUPTED'));
+  await assert.rejects(original(f.env,{receipt}),{code:'evidence_digest_mismatch'});
+  f.objects.set(row.raw_key,new Uint8Array(512*1024+1));
+  await assert.rejects(original(f.env,{receipt}),{code:'storage_unavailable'});
+  f.objects.delete(row.raw_key);await assert.rejects(original(f.env,{receipt}),{code:'storage_unavailable'});
+  assert.equal(f.activity.providers.length,0);assert.equal(f.activity.sql.filter(row=>row.write).length,0);
+  const missing=await documentFixture(t,{documents:false});assert.equal((await original(missing.env,{receipt})).configured,false);
 });

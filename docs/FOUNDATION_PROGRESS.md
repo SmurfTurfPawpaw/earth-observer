@@ -715,3 +715,67 @@ ceiling is also now described as global overview imagery locally; neither
 change is deployed yet. Internal compression of existing portfolio text has
 separately passed its in-memory byte/header/range contracts, but its actual
 combined build and host acceptance remain pending.
+
+## 02:05 UTC re-examination: actual document release and next stability gate
+
+Site version 35 succeeded at 2026-10-12T01:53:56.204537Z with environment revision6,
+version appgprj_6ac8f0348bd88191af3151d9d31fb388~appgver_1af3c71a6a7881918970e9f3744b90d4,
+deployment appgdep_6acc3d94bcc481919ef0e6dddad97772. Its exact combined source is
+f650959f050357a40b78551121d996e69a4c265c and application525ff626155bcfc7a9246bfe03571b955e3eb29e.
+The release archive's local SHA256 is254c19e43fa64b545392f0454d06c7de00ed337d216c90868137b377a1f4c5e9.
+Actual combined Worker source is55,936,528 bytes/gzip40,699,388, compared with
+59,896,398/gzip41,093,270 in v34. Net source reduction is3,959,870 bytes while adding
+the optional document module. Portfolio GET remains200 and the exact combined
+routing/compression/anonymous-session/archive/scene/research/locked-MCP gate passed.
+This is actual host admission, not proof of universally faster requests or GPU work.
+
+Migration0010 applied; the distinct document capability is active. One actual
+supervised fixed-PDF producer cycle returned published at01:54:39.890Z. The original
+66,354-byte PDF SHA remains6c486947e47760f7b9b0950ef221dd93e9e71038cad1974c41b18e70b4913f42.
+Raw receipt document-raw:bba28d3ab5a8f01a7f8f5a3e481f35baa69e733bb922e2c57602329e6e3ba8f5
+records acquisition01:54:34.459Z and actual database retention01:54:36.171Z.
+Complete analysis document-analysis:2e2bd4f06da8a0b83925ddca068eb7ad144a75b2b56248b7f3e338c8339b2670
+published01:54:39.881Z. Source publication remainsOctober9 12:14:20Z; its own metadata
+retention remains00:38:19.033Z. Public knowledge cutoffs just before raw retention
+and just before analysis publication return no complete analysis. The exact
+publication cutoff selects it with no later operational check state. Four page1
+citations have code-point ranges[328,412),[142,233),[234,327),[589,682).
+Stored native execution reports24,018,944 process/39,079,936 aggregate peak committed
+bytes and zero active processes after cleanup; these are producer-reported native
+counters, not remote hardware attestation. A second real cycle at01:56:55.180Z made
+one hosted action, zero publisher requests and returned not-due. Next body check
+is07:54:39.881Z, beyond this review window; no permanent producer timer is implied.
+
+Actual browser inspection rendered four source-attributed statements and separate
+date evidence. Camera stayed4.079°S/136.263°E/90km; continuous UTC kept ticking.
+Back restored the original Inspect button's focus and one unchanged publication list.
+At390×844, clientWidth=scrollWidth=390; Context bottom642, dock top660, credits68px,
+citation targets44px, statement type14px/23.8px line-height. The mobile overlap is
+resolved. Screenshot published-foundation-v35-document-mobile.png exposed excessive
+parent controls: no statement was visible before scrolling. The next local package
+adds focused reading presentation and a bounded taller mobile sheet, then restores
+the source controls on Back. Root announced this design correction before coding.
+
+Archive116 independently advanced complete coverage through01:36:20.241Z. Two
+bounded knowledge cutoffs locate publication in(01:41,01:42] UTC. Public metadata
+does not expose that receipt's exact chunk/count, so no exact clock or count is
+invented. The temporary bridge remains healthy and still ends06:39:10Z.
+
+Fork main now includes GDELT producer recovery2ea01427ad90e29750eccdef901a614b23e80db6.
+Actual owner run38193595256 recovered the mature01:45 release from future-advertised
+02:00 and one older gap; two ZIPs used5,335,187 compressed/16,538,495 expanded bytes
+and yielded249,301 prepared bytes. Stored API adopted thirteen actual batches by
+01:55:38.226Z, retaining their dates. Earlier snapshotCheckedAt was not new-source
+evidence. A separate local fixture exposed old HTTP200 overwrite of newer reader
+state. The next stability gate adds monotonic admission and actual R2 versioned CAS;
+no production regression is claimed from that fixture. This gate precedes wider
+collection and does not change legacy cadence30 schema compatibility.
+
+A second foundation correction is local: citations to mutable publisher URLs alone
+cannot verify earlier retained bodies. The stored-only original reader admits only
+fixed raw receipts referenced by complete analyses, verifies unchanged bytes/SHA,
+and delivers a fixed attachment with a stricter sandbox policy. It has23 focused
+lane/API checks; actual mounted runtime/cross-policy verification passed15 checks.
+No new migration is needed. Public download/reading-mode acceptance awaits release.
+First-visitor and historian agents now run separate synthetic journeys; demand stays
+off and their observations cannot become real popularity or confidence evidence.

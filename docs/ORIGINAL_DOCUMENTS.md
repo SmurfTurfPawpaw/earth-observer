@@ -1,9 +1,9 @@
 # Original-document investigation
 
-The local integration includes the durable document lane, actual Drizzle migration
+Site version35 includes the durable document lane, actual Drizzle migration
 `0010_document_investigations.sql`, mounted routes and a one-cycle supervised
-producer. A distinct secret is configured for the next deployment. Production
-migration, actual raw/analysis admission and reader acceptance are pending; no
+producer. Environment revision6 supplies a distinct scoped secret. The production
+migration, one actual raw/analysis admission and public reader are verified; no
 permanent producer timer is installed. The fixed policy is `ec-statement-pdf-v1`,
 Commission document `statement_26_2127`. Source attribution does not turn
 institutional statements into independently verified external facts.
@@ -14,7 +14,27 @@ does not acquire a PDF or start producer work. Four attributed statements expose
 page/code-point citations, with source and knowledge clocks under one disclosure.
 Back preserves the publication list and focus. Metadata/body mismatch remains
 readable with an explicit notice; source switch, hide and destroy cancel late work.
-The focused UI package passed 28 checks; hosted reader acceptance is still pending.
+The initial UI package passed28 checks and actual hosted inspection rendered all
+four statements while preserving camera/UTC. The mobile spacing correction passed
+actual390×844 geometry. A focused mobile reading presentation is local for the next
+package because repeated parent controls push statements below the fold.
+
+The local followup original route is
+`/earth/api/documents/ec-statement-26-2127/original?receipt=document-raw:<SHA256>`.
+The receipt digest identifies a fixed job/body, not the raw PDF SHA by itself.
+Only raw receipts linked to completed analyses are public. The stored reader verifies
+exact receipt/key/length/SHA and returns unchanged PDF bytes as a fixed attachment,
+with a stricter sandbox policy enforced alongside the application policy. It never
+fetches the publisher. Citations link this retained edition; Publisher PDF remains
+separate because that URL can change. The followup has23 lane/API checks and15
+mounted-runtime checks. Actual public download acceptance awaits deployment.
+
+Version35 actual raw retention is2026-10-12T01:54:36.171Z and analysis publication
+is01:54:39.881Z. Source publication/metadata retention keep their original dates.
+Knowledge cutoffs before completion correctly exclude it; exact completion selects
+it. A repeat cycle returned not-due with zero publisher requests. Its next six-hour
+body check is07:54:39.881Z. Detailed receipt/resource/browser evidence is recorded
+in FOUNDATION_PROGRESS.md; local and deployed corrections remain distinguished.
 
 ## Existing dependencies and extraction
 

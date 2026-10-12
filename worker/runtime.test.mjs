@@ -86,6 +86,15 @@ test('actual generated document migration adds only four tables and mounted path
   f.advance(1000); const complete = await completeDocumentInvestigation(f.env, { ...lease, rawReceiptId: raw.receipt.id, ...await syntheticAnalysis(bytes) }, { now: f.now });
   assert.equal(complete.stored, true);
   const current = await (await runtime.fetch(request(publicPath), f.env)).json(); assert.equal(current.receipt.id, complete.receipt.id);
+  const original = await runtime.fetch(request(publicPath + '/original?receipt=' + encodeURIComponent(raw.receipt.id)), f.env);
+  assert.equal(original.status, 200);
+  assert.deepEqual(new Uint8Array(await original.arrayBuffer()), bytes);
+  const policies = original.headers.get('content-security-policy').split(',').map(policy => policy.trim());
+  assert.equal(policies.length, 2, 'the stricter leaf policy and global application policy must both survive mounting');
+  assert.ok(policies.some(policy => policy.includes("default-src 'none'") && /(?:^|;)\s*sandbox\s*(?:;|$)/.test(policy)));
+  assert.ok(policies.some(policy => policy.includes("default-src 'self'") && policy.includes("object-src 'none'")));
+  assert.match(original.headers.get('content-disposition'), /^attachment;/);
+  assert.equal(original.headers.get('x-content-type-options'), 'nosniff');
   const historical = await (await runtime.fetch(request(publicPath + '?knownAt=' + encodeURIComponent(rawAt)), f.env)).json(); assert.equal(historical.available, false);
   assert.equal(fetches, 0); assert.equal(cacheCalls, 0); assert.equal(f.activity.providers.length, 0);
 });

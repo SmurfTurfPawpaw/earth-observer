@@ -366,3 +366,24 @@ export async function readDocumentAnalysis(env,{knownAt=null}={}, {now=Date.now,
   }
   return base({status:'unavailable',available:false,knownAt,errorCode:'document-edition-changed',explanation:'Complete analysis changed during delivery; retry the stored view.'});
 }
+
+/** Download one immutable original behind a complete fixed-subject analysis.
+ * Raw-only admissions stay private. The receipt, not the mutable publisher URL
+ * or current work pointer, identifies the historical bytes. No acquisition. */
+export async function readDocumentOriginal(env,input,{signal}={}) {
+  closed(input,['receipt']);
+  if(!RAW.test(input.receipt)) throw new TypeError('Use one retained document receipt');
+  if(!await schema(env)) return {schemaVersion:1,configured:false,status:'unavailable',available:false};
+  const jobId=await fixedJob,db=primary(env);
+  const raw=(await rows(db,`SELECT r.* FROM earth_document_raw_receipts r
+    WHERE r.receipt_id=? AND r.job_id=? AND EXISTS(SELECT 1 FROM earth_document_publications p
+      WHERE p.job_id=r.job_id AND p.raw_receipt_id=r.receipt_id AND p.raw_sha256=r.raw_sha256)`,[input.receipt,jobId],signal))[0];
+  if(!raw) return base({status:'not-found',available:false});
+  if(!DIGEST.test(raw.raw_sha256)||!Number.isSafeInteger(raw.raw_bytes)||raw.raw_bytes<8||raw.raw_bytes>DOCUMENT_LIMITS.rawBytes||
+      raw.raw_key!==`documents/${POLICY.id}/raw/${raw.raw_sha256}`||!stamp(raw.acquired_at)||!stamp(raw.recorded_at)||
+      raw.receipt_id!==`document-raw:${await pluginFactsDigest([jobId,raw.raw_sha256])}`) throw fail('evidence_digest_mismatch');
+  const bytes=await objectBytes(env,raw.raw_key,DOCUMENT_LIMITS.rawBytes,raw.raw_sha256,signal);
+  if(bytes.byteLength!==raw.raw_bytes||!/^%PDF-1\.[0-7]/.test(new TextDecoder().decode(bytes.subarray(0,8))))
+    throw fail('evidence_digest_mismatch');
+  return base({status:'available',available:true,receipt:rawView(raw),bytes});
+}

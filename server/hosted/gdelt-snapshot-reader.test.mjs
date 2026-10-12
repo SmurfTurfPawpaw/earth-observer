@@ -4,6 +4,8 @@ import { createGdeltSnapshotReader, validateGdeltSnapshot, GDELT_SNAPSHOT_URL, G
 import { gdeltQueryUrl } from './gdelt-query.js';
 import { normalizeGdelt } from './intelligence-sources.js';
 import { intelligenceProxy } from './intelligence.js';
+import { createProviderStore } from '../../worker/storage.js';
+import { createGkgSnapshot, gkgTopicReport } from './gdelt-gkg.js';
 
 const CLOCK = Date.parse('2026-10-11T10:00:00Z');
 const filters = (category = 'all', values = {}) => ({ category, country: '', countryName: '', q: '', ...values });
@@ -186,7 +188,7 @@ test('shared lease reload cannot replace a newer source generation with a recent
     }, fetchImpl: async () => { requests++; return Response.json(fixture()); } });
   await read(filters()); clock += 60000;
   const retained = await read(filters());
-  assert.equal(requests, 1); assert.equal(gets, 2);
+  assert.equal(requests, 1); assert.equal(gets, 3, 'Restore, post-response admission read, and shared-owner read are bounded separately');
   assert.equal(retained.state.generatedAt, new Date(CLOCK).toISOString());
   assert.equal(retained.state.snapshotCheckedAt, new Date(CLOCK).toISOString());
   assert.ok(retained.indexRecords.every((record) => record.retrievedAt === new Date(CLOCK).toISOString()));
@@ -239,7 +241,7 @@ test('cold readers coalesce persisted restore and cache failures never reject su
     fetchImpl: async () => { calls++; throw new Error('Must use fresh persisted snapshot'); } });
   const visitors = [cold(filters()), cold(filters('economy'))]; gate.resolve();
   assert.ok((await Promise.all(visitors)).every((value) => value.state.status === 'ready'));
-  assert.equal(calls, 1); assert.equal(gets, 2);
+  assert.equal(calls, 1); assert.equal(gets, 3, 'Warm admission rereads before writing, then cold visitors share one restore');
   const broken = createGdeltSnapshotReader({ now: () => CLOCK, store: { get() { throw new Error('Unavailable'); }, put() { throw new Error('Full'); } },
     fetchImpl: async () => Response.json(fixture()) });
   assert.equal((await broken(filters())).state.status, 'ready');
@@ -251,12 +253,12 @@ test('never-settling optional storage reads cannot prevent shared release recove
     store: { get() { gets++; return new Promise(() => {}); } },
     fetchImpl: async (url) => { requests++; assert.equal(url, GDELT_SNAPSHOT_URL); return Response.json(fixture()); } });
   const results = await Promise.all(Array.from({ length: 8 }, () => read(filters())));
-  assert.equal(gets, 1); assert.equal(requests, 1);
+  assert.equal(gets, 2, 'One bounded restore plus one bounded admission reread'); assert.equal(requests, 1);
   for (const result of results) {
     assert.equal(result.state.status, 'ready'); assert.equal(result.indexSource.generation, new Date(CLOCK).toISOString());
     assert.equal(result.indexRecords.length, 3);
   }
-  await read(filters('economy')); assert.equal(gets, 1); assert.equal(requests, 1);
+  await read(filters('economy')); assert.equal(gets, 2, 'One bounded restore plus one bounded admission reread'); assert.equal(requests, 1);
 });
 
 test('never-settling optional storage writes release coalesced callers with unchanged source dates', { timeout: 1000 }, async () => {
@@ -306,4 +308,187 @@ test('public intelligence uses schedule-only by default while unavailable snapsh
   const live = await fallback('/?category=geopolitics');
   assert.equal(live.value.sources[0].mode, 'live-fallback'); assert.equal(live.value.sources[0].status, 'ready');
   await fallback('/?category=economy&q=shipping'); assert.equal(liveRequests, 1, 'live fallback preserves provider-wide request spacing');
+});
+
+function providerBucket() {
+  const objects = new Map(); let serial = 0;
+  const snapshotKey = 'providers/gdelt%3Asnapshot.json';
+  const bucket = {
+    objects, snapshotKey, snapshotWrites: 0, beforeSnapshotPut: null,
+    async get(key) {
+      const record = objects.get(key);
+      return record ? { etag: record.etag, json: async () => JSON.parse(record.body) } : null;
+    },
+    async put(key, body, options = {}) {
+      if (key === snapshotKey && bucket.beforeSnapshotPut) await bucket.beforeSnapshotPut(options);
+      const prior = objects.get(key);
+      if (options.onlyIf?.get?.('if-none-match') === '*' && prior || options.onlyIf?.etagMatches && options.onlyIf.etagMatches !== prior?.etag) return null;
+      const record = { etag: String(++serial), body, options };
+      objects.set(key, record); if (key === snapshotKey) bucket.snapshotWrites++;
+      return record;
+    },
+  };
+  return bucket;
+}
+const retainedEntry = (clock, etag = '"retained"') => ({ acquiredAt: clock, checkedAt: clock, etag, snapshot: fixture(clock) });
+
+test('older HTTP 200 retains newer local facts, validator and receipt clocks while recording a failed attempt', async () => {
+  let clock = CLOCK, requests = 0, saved, writes = 0;
+  const read = createGdeltSnapshotReader({ now: () => clock,
+    store: { async get() { return structuredClone(saved); }, async put(_key, value) { writes++; saved = structuredClone(value); } },
+    fetchImpl: async (_url, options) => {
+      requests++;
+      if (requests === 1) return Response.json(fixture(), { headers: { etag: '"newer"' } });
+      assert.equal(options.headers['If-None-Match'], '"newer"', 'An older response cannot poison the next conditional request');
+      return requests === 2 ? Response.json(fixture(CLOCK - 900000), { headers: { etag: '"older"' } }) : new Response(null, { status: 304 });
+    } });
+  const first = await read(filters()), receipt = structuredClone(saved);
+  clock += 61000;
+  const rejected = await read(filters());
+  assert.equal(rejected.state.status, 'stale'); assert.match(rejected.state.reason, /Older scheduled release response rejected/);
+  assert.equal(rejected.state.lastAttemptAt, new Date(clock).toISOString()); assert.equal(rejected.state.retryAt, clock + 300000);
+  for (const field of ['generatedAt', 'retrievedAt', 'snapshotRetrievedAt', 'snapshotCheckedAt']) assert.equal(rejected.state[field], first.state[field]);
+  assert.deepEqual(rejected.indexRecords, first.indexRecords); assert.deepEqual(saved, receipt); assert.equal(writes, 1);
+  await read(filters('economy')); assert.equal(requests, 2, 'All filters share the failed attempt backoff');
+  clock = rejected.state.retryAt;
+  const checked = await read(filters());
+  assert.equal(checked.state.retryAt, null); assert.equal(checked.state.snapshotCheckedAt, new Date(clock).toISOString());
+  assert.equal(checked.state.snapshotRetrievedAt, first.state.snapshotRetrievedAt); assert.equal(saved.etag, '"newer"');
+});
+
+test('a delayed older response adopts the newer authoritative R2 receipt without writing or refreshing it', async () => {
+  let clock = CLOCK; const bucket = providerBucket(), store = createProviderStore({ EARTH_STORE: bucket });
+  await store.put('gdelt:snapshot', retainedEntry(CLOCK - 120000, '"seed"'));
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  const one = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl: async (_url, options) => {
+    assert.equal(options.headers['If-None-Match'], '"seed"'); started.resolve(); await release.promise;
+    return Response.json(fixture(CLOCK - 60000), { headers: { etag: '"delayed-old"' } });
+  } });
+  const delayed = one(filters()); await started.promise;
+  // Controlled wall-clock advance expires the shared attempt reservation without a real network wait.
+  clock += 61000;
+  const two = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl: async () => Response.json(fixture(clock), { headers: { etag: '"winner"' } }) });
+  const winner = await two(filters()), receipt = await store.get('gdelt:snapshot'), writes = bucket.snapshotWrites;
+  clock += 1000; release.resolve(); const rejected = await delayed;
+  assert.equal(rejected.state.status, 'stale'); assert.match(rejected.state.reason, /Older scheduled release response rejected/);
+  assert.deepEqual(rejected.indexRecords, winner.indexRecords);
+  for (const field of ['generatedAt', 'retrievedAt', 'snapshotRetrievedAt', 'snapshotCheckedAt']) assert.equal(rejected.state[field], winner.state[field]);
+  assert.deepEqual(await store.get('gdelt:snapshot'), receipt); assert.equal(bucket.snapshotWrites, writes);
+});
+
+test('R2 compare-and-write closes the admission read/write race and adopts a competing newer receipt', async () => {
+  let clock = CLOCK; const bucket = providerBucket(), store = createProviderStore({ EARTH_STORE: bucket });
+  await store.put('gdelt:snapshot', retainedEntry(CLOCK - 60000));
+  let winner;
+  bucket.beforeSnapshotPut = async options => {
+    bucket.beforeSnapshotPut = null; assert.equal(typeof options.onlyIf.etagMatches, 'string');
+    clock += 1000; winner = retainedEntry(clock, '"competing-newer"');
+    assert.equal(await store.putIfVersion('gdelt:snapshot', winner, options.onlyIf.etagMatches), true);
+  };
+  const read = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl: async () => Response.json(fixture(CLOCK), { headers: { etag: '"candidate"' } }) });
+  const result = await read(filters());
+  assert.equal(result.state.generatedAt, winner.snapshot.generatedAt); assert.equal(result.state.snapshotRetrievedAt, new Date(winner.acquiredAt).toISOString());
+  assert.equal(result.state.snapshotCheckedAt, new Date(winner.checkedAt).toISOString()); assert.equal(result.state.status, 'stale');
+  assert.match(result.state.reason, /Older scheduled release response rejected/); assert.deepEqual(await store.get('gdelt:snapshot'), winner);
+  assert.equal(bucket.snapshotWrites, 2, 'Seed and winner commit; rejected candidate cannot write');
+});
+
+test('a delayed 304 cannot restamp a concurrently advanced R2 generation or its original retrieval', async () => {
+  let clock = CLOCK; const bucket = providerBucket(), store = createProviderStore({ EARTH_STORE: bucket });
+  await store.put('gdelt:snapshot', retainedEntry(CLOCK - 60000, '"request-entity"'));
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  const read = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl: async (_url, options) => {
+    assert.equal(options.headers['If-None-Match'], '"request-entity"'); started.resolve(); await release.promise;
+    return new Response(null, { status: 304 });
+  } });
+  const pending = read(filters()); await started.promise;
+  clock += 1000; const retained = retainedEntry(clock, '"new-entity"'), version = (await store.getVersioned('gdelt:snapshot')).version;
+  assert.equal(await store.putIfVersion('gdelt:snapshot', retained, version), true);
+  clock += 1000; release.resolve(); const result = await pending;
+  assert.match(result.state.reason, /Older scheduled release response rejected/);
+  assert.equal(result.state.snapshotCheckedAt, new Date(retained.checkedAt).toISOString());
+  assert.equal(result.state.snapshotRetrievedAt, new Date(retained.acquiredAt).toISOString());
+  assert.deepEqual(await store.get('gdelt:snapshot'), retained); assert.equal(bucket.snapshotWrites, 2);
+});
+
+test('a 304 with an obsolete same-generation validator preserves the newer retained edition exactly', async () => {
+  let clock = CLOCK; const bucket = providerBucket(), store = createProviderStore({ EARTH_STORE: bucket });
+  const initial = retainedEntry(CLOCK - 60000, '"old-validator"'); await store.put('gdelt:snapshot', initial);
+  const read = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl: async (_url, options) => {
+    assert.equal(options.headers['If-None-Match'], initial.etag);
+    const version = (await store.getVersioned('gdelt:snapshot')).version;
+    const newerCheck = { ...initial, etag: '"new-validator"', acquiredAt: CLOCK, checkedAt: CLOCK };
+    assert.equal(await store.putIfVersion('gdelt:snapshot', newerCheck, version), true);
+    clock += 1000; return new Response(null, { status: 304 });
+  } });
+  const result = await read(filters()), saved = await store.get('gdelt:snapshot');
+  assert.match(result.state.reason, /validator superseded/); assert.equal(result.state.snapshotCheckedAt, new Date(CLOCK).toISOString());
+  assert.equal(saved.etag, '"new-validator"'); assert.equal(saved.acquiredAt, CLOCK); assert.equal(saved.checkedAt, CLOCK); assert.equal(bucket.snapshotWrites, 2);
+});
+
+test('timed-out R2 write requires readback and its late conditional completion cannot overwrite a new winner', { timeout: 1000 }, async () => {
+  let clock = CLOCK; const bucket = providerBucket(), store = createProviderStore({ EARTH_STORE: bucket });
+  const seed = retainedEntry(CLOCK - 60000); await store.put('gdelt:snapshot', seed);
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  bucket.beforeSnapshotPut = async () => { bucket.beforeSnapshotPut = null; started.resolve(); await release.promise; };
+  const read = createGdeltSnapshotReader({ now: () => clock, store, storageTimeoutMs: 10,
+    fetchImpl: async () => Response.json(fixture(CLOCK), { headers: { etag: '"uncertain"' } }) });
+  const pending = read(filters()); await started.promise; const unconfirmed = await pending;
+  assert.equal(unconfirmed.state.status, 'stale'); assert.match(unconfirmed.state.reason, /storage confirmation unavailable/);
+  assert.equal(unconfirmed.state.generatedAt, seed.snapshot.generatedAt); assert.equal(unconfirmed.state.snapshotRetrievedAt, new Date(seed.acquiredAt).toISOString());
+  assert.equal(unconfirmed.state.snapshotCheckedAt, new Date(seed.checkedAt).toISOString());
+  clock += 1000; const winner = retainedEntry(clock, '"new-winner"'), version = (await store.getVersioned('gdelt:snapshot')).version;
+  assert.equal(await store.putIfVersion('gdelt:snapshot', winner, version), true);
+  release.resolve(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(await store.get('gdelt:snapshot'), winner); assert.equal(bucket.snapshotWrites, 2, 'Late expired-version CAS does not commit');
+});
+
+test('exact readback can confirm a committed R2 write whose acknowledgement timed out', { timeout: 1000 }, async () => {
+  const bucket = providerBucket(), real = createProviderStore({ EARTH_STORE: bucket }); let attempts = 0;
+  const store = { ...real, async putIfVersion(...args) { attempts++; assert.equal(await real.putIfVersion(...args), true); return new Promise(() => {}); } };
+  const read = createGdeltSnapshotReader({ now: () => CLOCK, store, storageTimeoutMs: 10,
+    fetchImpl: async () => Response.json(fixture(), { headers: { etag: '"confirmed"' } }) });
+  const result = await read(filters());
+  assert.equal(result.state.status, 'ready'); assert.equal(result.state.retryAt, null); assert.equal(attempts, 1);
+  const saved = await real.get('gdelt:snapshot'); assert.equal(saved.acquiredAt, CLOCK); assert.equal(saved.checkedAt, CLOCK); assert.equal(saved.etag, '"confirmed"');
+  assert.equal(result.state.generatedAt, saved.snapshot.generatedAt); assert.equal(bucket.snapshotWrites, 1);
+});
+
+test('an expired R2 snapshot can be replaced conditionally by newly validated source bytes', async () => {
+  const bucket = providerBucket(), store = createProviderStore({ EARTH_STORE: bucket });
+  await store.put('gdelt:snapshot', retainedEntry(CLOCK - 86400001));
+  const read = createGdeltSnapshotReader({ now: () => CLOCK, store, fetchImpl: async () => Response.json(fixture()) });
+  const result = await read(filters()); assert.equal(result.state.status, 'ready'); assert.equal(result.state.generatedAt, fixture().generatedAt);
+  assert.equal((await store.get('gdelt:snapshot')).snapshot.generatedAt, result.state.generatedAt); assert.equal(bucket.snapshotWrites, 2);
+});
+
+test('production GKG older-generation rejection preserves actual batch coverage and topic evidence', async () => {
+  let clock = CLOCK, calls = 0;
+  const snapshot = (generated, batch, label) => {
+    const retrievedAt = new Date(generated).toISOString();
+    const report = gkgTopicReport({ url: `https://publisher.example/${label}`, themes: ['ARMEDCONFLICT'], mentionedCountries: ['BE'], batch, retrievedAt, category: 'geopolitics' });
+    return createGkgSnapshot({ generatedAt: retrievedAt, reports: [report], processedBatches: [{ id: batch, retrievedAt, rows: 1, matchedRecords: 1 }] });
+  };
+  const newer = snapshot(CLOCK, '20261011094500', 'newer-topic'), older = snapshot(CLOCK - 600000, '20261011093000', 'older-topic');
+  const bucket = providerBucket(), store = createProviderStore({ EARTH_STORE: bucket });
+  const read = createGdeltSnapshotReader({ now: () => clock, store, fetchImpl: async () => Response.json(++calls === 1 ? newer : older, { headers: { etag: calls === 1 ? '"gkg-newer"' : '"gkg-older"' } }) });
+  const first = await read(filters()), receipt = await store.get('gdelt:snapshot'); clock += 61000;
+  const retained = await read(filters());
+  assert.equal(retained.state.mode, 'scheduled-gkg'); assert.equal(retained.state.windowEnd, '2026-10-11T09:45:00.000Z');
+  assert.deepEqual(retained.state.processedBatches, first.state.processedBatches); assert.deepEqual(retained.records, first.records);
+  assert.equal(retained.records[0].url, 'https://publisher.example/newer-topic'); assert.equal(retained.records[0].retrievedAt, newer.generatedAt);
+  assert.deepEqual(await store.get('gdelt:snapshot'), receipt); assert.equal(bucket.snapshotWrites, 1);
+});
+
+test('unreadable versioned storage cannot promote a network response as a confirmed acquisition', { timeout: 1000 }, async () => {
+  const seed = retainedEntry(CLOCK - 60000); let versionedReads = 0, writes = 0;
+  const store = { async get() { return seed; }, getVersioned() { versionedReads++; return new Promise(() => {}); },
+    async putIfVersion() { writes++; return true; } };
+  const read = createGdeltSnapshotReader({ now: () => CLOCK, store, storageTimeoutMs: 10,
+    fetchImpl: async () => Response.json(fixture()) });
+  const result = await read(filters());
+  assert.equal(result.state.status, 'stale'); assert.match(result.state.reason, /storage confirmation unavailable/);
+  assert.equal(result.state.generatedAt, seed.snapshot.generatedAt); assert.equal(result.state.snapshotCheckedAt, new Date(seed.checkedAt).toISOString());
+  assert.equal(result.state.snapshotRetrievedAt, new Date(seed.acquiredAt).toISOString()); assert.equal(result.state.lastAttemptAt, new Date(CLOCK).toISOString());
+  assert.equal(versionedReads, 1); assert.equal(writes, 0);
 });

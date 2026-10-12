@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash,createHmac } from 'node:crypto';
-import { createDocumentInvestigationApiHandler,DOCUMENT_PRODUCER_PATH,DOCUMENT_PUBLIC_PATH,documentProducerMessage } from './document-investigation-api.js';
+import { createDocumentInvestigationApiHandler,DOCUMENT_PRODUCER_PATH,DOCUMENT_PUBLIC_PATH,DOCUMENT_ORIGINAL_PATH,documentProducerMessage } from './document-investigation-api.js';
 import { createDocumentInvestigationProducer,DOCUMENT_PRODUCER_URL } from '../scripts/document-investigation-producer.mjs';
 import { documentFixture,syntheticPdf,syntheticAnalysis } from './document-investigation-fixture.mjs';
 import { EC_DOCUMENT_POLICY as P } from '../src/core/document-evidence.js';
@@ -81,4 +81,44 @@ test('producer and real scoped handler agree on admission/readback/unchanged bod
   const recovered=await producer.oneCycle();assert.equal(recovered.status,'published');assert.equal(sourceCalls,1);assert.equal(extractions,1);assert.equal(journal,null);
   f.advance(6*3600000+1);const unchanged=await producer.oneCycle();assert.equal(unchanged.status,'checked');assert.equal(sourceCalls,2);assert.equal(extractions,1);
   assert.ok(operations.includes('status'));assert.equal(Number(f.sqlite.prepare('SELECT COUNT(*) AS n FROM earth_document_publications').get().n),1);
+});
+
+test('exact original GET serves unchanged PDF only after complete admission with attachment and sandbox headers',async t=>{
+  const f=await documentFixture(t);await f.source();const handler=createDocumentInvestigationApiHandler({now:f.now});
+  const env={...f.env,EARTH_DOCUMENT_PRODUCER_KEY:KEY};
+  const claimed=await json(await handler(signed(claimBody(),f.now),env)),job=claimed.value.job,pdf=syntheticPdf('A');
+  const retained=await json(await handler(signed({schemaVersion:1,operation:'raw',jobId:job.jobId,fence:job.fence,
+    leaseToken:job.leaseToken,acquiredAt:f.stamp(),rawPdfBase64:Buffer.from(pdf).toString('base64')},f.now),env));
+  const url='https://document.test'+DOCUMENT_ORIGINAL_PATH+'?receipt='+encodeURIComponent(retained.value.receipt.id);
+  f.reset();assert.equal((await handler(new Request(url),f.env)).status,404);assert.equal(f.activity.objects.length,0);
+  await handler(signed({schemaVersion:1,operation:'complete',jobId:job.jobId,fence:job.fence,leaseToken:job.leaseToken,
+    rawReceiptId:retained.value.receipt.id,...await syntheticAnalysis(pdf)},f.now),env);
+  f.reset();const response=await handler(new Request(url),f.env);
+  assert.equal(response.status,200);assert.deepEqual(new Uint8Array(await response.arrayBuffer()),pdf);
+  assert.equal(response.headers.get('content-type'),'application/pdf');assert.equal(response.headers.get('content-length'),String(pdf.byteLength));
+  assert.equal(response.headers.get('content-disposition'),'attachment; filename="STATEMENT_26_2127_EN.pdf"');
+  assert.match(response.headers.get('content-security-policy'),/default-src 'none'; sandbox;/);
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff');assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.equal(f.activity.providers.length,0);assert.equal(f.activity.sql.filter(row=>row.write).length,0);
+  assert.equal(f.activity.objects.filter(row=>row.operation==='put').length,0);
+  const key=[...f.objects.keys()].find(key=>key.includes('/raw/')&&key.startsWith('documents/'));
+  f.objects.set(key,syntheticPdf('CORRUPTED'));assert.equal((await handler(new Request(url),f.env)).status,503);
+  assert.equal(f.activity.providers.length,0);
+});
+
+test('original download has a closed receipt query, bounded delivery and cancellation before stored I/O',async()=>{
+  let reads=0;const receipt=`document-raw:${'a'.repeat(64)}`,base='https://document.test'+DOCUMENT_ORIGINAL_PATH;
+  const handler=createDocumentInvestigationApiHandler({original:async()=>{reads++;return {configured:true,available:true,bytes:new Uint8Array(512*1024+1)};}});
+  for(const query of ['', '?receipt=bad', '?receipt='+receipt+'&receipt='+receipt, '?receipt='+receipt+'&knownAt=2026-10-12T00:00:00.000Z',
+    '?source=https://evil.test/pdf', '?receipt='+receipt.toUpperCase()])
+    assert.equal((await handler(new Request(base+query),{})).status,400);
+  assert.equal((await handler(new Request(base+'?receipt='+receipt,{method:'POST'}),{})).status,405);assert.equal(reads,0);
+  assert.equal((await handler(new Request(base+'?receipt='+receipt),{})).status,503,'oversized original cannot leave the handler');
+  const cancelled=new AbortController();cancelled.abort();const before=reads;
+  assert.equal((await handler(new Request(base+'?receipt='+receipt,{signal:cancelled.signal}),{})).status,503);assert.equal(reads,before);
+  let receivedSignal;
+  const timed=createDocumentInvestigationApiHandler({deadlineMs:10,original:async(env,input,{signal})=>{
+    receivedSignal=signal;return new Promise(()=>{});
+  }});
+  assert.equal((await timed(new Request(base+'?receipt='+receipt),{})).status,503);assert.equal(receivedSignal.aborted,true);
 });

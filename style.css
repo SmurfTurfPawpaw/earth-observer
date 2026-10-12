@@ -322,6 +322,7 @@ details[open] > summary > .summary-chevron, #sources[open] > summary > .ui-icon:
 .plugin-publication h4 a { display: block; min-height: 44px; }
 .document-statement { color: var(--text); font-size: calc(14px * var(--reading-scale, 1)); line-height: 1.7; margin: 10px 0; }
 .document-citation { display: inline-flex; align-items: center; min-height: 44px; font-size: calc(12px * var(--reading-scale, 1)); }
+#news-panel:has(.plugin-document:not([hidden])) .panel-content > .panel-note { display: none; }
 .plugin-hash { color: var(--muted); font-size: calc(12px * var(--reading-scale, 1)); line-height: 1.7; overflow-wrap: anywhere; }
 .plugin-refresh { margin: 10px 0; min-height: 44px; font-size: calc(12px * var(--reading-scale, 1)); padding: 8px 12px; }
 
@@ -433,6 +434,7 @@ details[open] > summary > .summary-chevron, #sources[open] > summary > .ui-icon:
   .rail-divider { display: none; }
   #header-tools { top: calc(var(--ui-top) + 68px); right: var(--safe-right); left: auto; max-width: calc(100% - 24px); }
   #sidebar, .side-panel { top: auto; bottom: var(--workspace-bottom); left: var(--safe-left); right: var(--safe-right); width: auto; max-width: none; height: min(42dvh, 460px); min-height: 190px; border-radius: 16px; }
+  #news-panel:has(.plugin-document:not([hidden])) { height: min(58dvh, max(190px, calc(100dvh - var(--workspace-bottom) - var(--safe-top) - 148px))); }
   #sidebar { transform: translateY(8px); }
   body.sidebar-open #sidebar { transform: none; }
   .panel-header { min-height: 62px; padding-left: 16px; }

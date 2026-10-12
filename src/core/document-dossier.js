@@ -3,6 +3,7 @@ import { pluginBytesDigest, pluginFactsDigest, pluginJson } from './plugin-evide
 import { worldTime, isWorldDigest } from './world-identity.js';
 
 export const DOCUMENT_DOSSIER_URL = '/api/documents/ec-statement-26-2127';
+const ORIGINAL_DOCUMENT_URL = `${import.meta.env?.BASE_URL || '/'}api/documents/ec-statement-26-2127/original`;
 export const DOCUMENT_DOSSIER_LIMITS = Object.freeze({ bytes: 256 * 1024, contentBytes: 96 * 1024, deadlineMs: 15000, refreshMs: 300000 });
 const UTF8 = new TextEncoder(), fixedIdentity = pluginBytesDigest(UTF8.encode(P.pageUrl));
 const rules = Object.freeze({
@@ -126,19 +127,21 @@ export function createDocumentDossier({ container, fetchImpl = globalThis.fetch,
     notice.hidden = !messages.length; notice.textContent = messages.join(' ');
     if (rendered !== signature) {
       const previousEvidence = content.querySelector?.('.plugin-evidence'), open = Boolean(previousEvidence?.open);
+      const retainedPdf = `${ORIGINAL_DOCUMENT_URL}?receipt=${encodeURIComponent(c.rawReceipt.id)}`;
       rendered = signature; fields = []; content.replaceChildren();
       content.append(link(P.title, P.pageUrl), node('p', 'plugin-note', `European Commission / European Union · Published ${display(c.source.publishedAt)}`),
         node('p', 'plugin-note', 'Attributed source statements. Independent corroboration has not been established. Source dates remain independent of globe time.'));
       for (const statement of c.statements) {
         const citation = statement.citation, rule = rules[citation.selector], card = node('article', 'plugin-publication');
         card.append(node('h4', '', rule.label), node('p', 'document-statement', citation.exact));
-        const reference = link(`PDF · page ${citation.page}`, citation.sourceUrl, 'document-citation');
+        const reference = link(`Retained PDF · page ${citation.page}`, `${retainedPdf}#page=${citation.page}`, 'document-citation');
         reference.title = `Text characters ${citation.start}–${citation.end}, measured as Unicode code points.`;
-        reference.setAttribute('aria-label', `Original PDF, page ${citation.page}, text characters ${citation.start} to ${citation.end}`); card.append(reference);
+        reference.setAttribute('aria-label', `Retained original PDF, page ${citation.page}, text characters ${citation.start} to ${citation.end}`); card.append(reference);
         if (rule.kind === 'source-relative-time-assertion') card.append(node('p', 'plugin-note', 'Six months is the source’s relative duration; its start and legal applicability dates remain unspecified.'));
         content.append(card);
       }
-      const evidence = node('details', 'plugin-evidence'); evidence.open = open; evidence.append(node('summary', '', 'Source, dates and citation evidence'), link('Read the original PDF', P.downloadUrl));
+      const evidence = node('details', 'plugin-evidence'); evidence.open = open; evidence.append(node('summary', '', 'Source, dates and citation evidence'),
+        link('Download retained original', retainedPdf), link('Publisher PDF', P.downloadUrl));
       const facts = node('dl', 'plugin-facts');
       for (const [label, getter] of [['Source published', p => display(p.content.source.publishedAt)], ['Source date as supplied', p => p.content.source.publishedRaw], ['Publication metadata retained', p => display(p.knowledge.metadataRecordedAt)],
         ['Original PDF observed', p => display(p.content.rawReceipt.acquiredAt)], ['Original PDF first retained', p => display(p.knowledge.documentRecordedAt)],

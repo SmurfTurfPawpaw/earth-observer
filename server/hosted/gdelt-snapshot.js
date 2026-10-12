@@ -65,7 +65,7 @@ export function validateGdeltSnapshot(payload, nowMs = Date.now()) {
 
 /** One shared release acquisition for every visitor filter, with optional persistent last-good state. */
 export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, store, timeoutMs = 12000, storageTimeoutMs = 1000 } = {}) {
-  let cached, pending, restoreWork, retryAt = 0, failures = 0, lastFailure = null;
+  let cached, pending, restoreWork, retryAt = 0, failures = 0, lastFailure = null, lastAttemptAt = null;
   const index = createDiscoveryIndex({ now, maxRecords: 240, maxBytes: GDELT_SNAPSHOT_MAX_BYTES });
   const storageDeadlineMs = Number.isFinite(storageTimeoutMs) ? Math.max(1, Math.min(5000, storageTimeoutMs)) : 1000;
   const optionalStorage = async (task) => {
@@ -75,13 +75,34 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
         new Promise((resolve) => { timer = setTimeout(() => resolve(null), storageDeadlineMs); })]);
     } finally { clearTimeout(timer); }
   };
-  const readSaved = () => optionalStorage(async () => {
-    const saved = await store?.get('gdelt:snapshot');
+  const versionedStore = typeof store?.getVersioned === 'function' && typeof store?.putIfVersion === 'function';
+  const validateSaved = (saved) => {
     if (!saved || !Number.isFinite(saved.acquiredAt) || saved.acquiredAt > now() + FUTURE_MS) return;
     const checkedAt = saved.checkedAt ?? saved.acquiredAt;
     if (!Number.isFinite(checkedAt) || checkedAt < saved.acquiredAt || checkedAt > now() + FUTURE_MS) return;
     return { acquiredAt: saved.acquiredAt, checkedAt, etag: safeEtag(saved.etag), snapshot: validateGdeltSnapshot(saved.snapshot, now()) };
+  };
+  const readSaved = () => optionalStorage(async () => validateSaved(await store?.get('gdelt:snapshot')));
+  const readVersioned = () => optionalStorage(async () => {
+    const saved = await store.getVersioned('gdelt:snapshot');
+    if (!saved || saved.version !== null && (typeof saved.version !== 'string' || !saved.version)) return null;
+    let entry;
+    // A validated new release may conditionally replace expired/invalid retained metadata.
+    try { entry = validateSaved(saved.value); } catch {}
+    return { version: saved.version, entry };
   });
+  const generation = (entry) => entry ? Date.parse(entry.snapshot.generatedAt) : -Infinity;
+  const adoptSaved = (saved) => {
+    if (!saved || generation(saved) < generation(cached) || generation(saved) === generation(cached) && saved.checkedAt < cached.checkedAt) return false;
+    cached = saved; return true;
+  };
+  const releaseError = (code) => Object.assign(new Error(code), { code });
+  const rejectOlder = (candidate) => {
+    if (generation(candidate) < generation(cached)) throw releaseError('older-release-response');
+    if (generation(candidate) === generation(cached) && candidate.checkedAt < cached.checkedAt) throw releaseError('older-release-check');
+  };
+  const sameSaved = (left, right) => left && right && left.acquiredAt === right.acquiredAt && left.checkedAt === right.checkedAt &&
+    left.etag === right.etag && JSON.stringify(left.snapshot) === JSON.stringify(right.snapshot);
   const restore = () => restoreWork ||= (async () => {
     const restored = await readSaved();
     // Timed-out persistence has no side effects if it eventually settles.
@@ -93,40 +114,68 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
       if (claimed === false) {
         // Another instance owns the bounded check. Reuse its completed publication when available.
         const saved = await readSaved();
-        const previousGenerated = cached ? Date.parse(cached.snapshot.generatedAt) : -Infinity;
-        if (saved && (Date.parse(saved.snapshot.generatedAt) > previousGenerated ||
-            Date.parse(saved.snapshot.generatedAt) === previousGenerated && saved.checkedAt >= (cached.checkedAt ?? cached.acquiredAt))) {
-          cached = saved; failures = 0; lastFailure = null;
-        }
+        if (adoptSaved(saved)) { failures = 0; lastFailure = null; }
         // Retry a shared-state read soon if the owner has not finished, without another network acquisition.
         retryAt = cached && now() - (cached.checkedAt ?? cached.acquiredAt) < GDELT_RELEASE_CHECK_INTERVAL_MS ? 0 : now() + 1000;
         return;
       }
-      const signal = AbortSignal.timeout(timeoutMs);
-      const etag = safeEtag(cached?.etag);
+      const signal = AbortSignal.timeout(timeoutMs), requested = cached;
+      const etag = safeEtag(requested?.etag);
+      lastAttemptAt = now();
       const response = await fetchImpl(GDELT_SNAPSHOT_URL, { signal, redirect: 'follow', headers: {
         Accept: 'application/json', 'Cache-Control': 'no-cache', ...(etag ? { 'If-None-Match': etag } : {}),
       } });
-      if (response.status === 304) {
+      const unchanged = response.status === 304;
+      let candidate;
+      if (unchanged) {
         await response.body?.cancel(); signal.throwIfAborted();
-        if (!cached || !etag) throw new Error('Unexpected unchanged release response');
-        validateGdeltSnapshot(cached.snapshot, now());
-        // Revalidation changes the check clock, never generation or retrieval provenance.
-        cached = { ...cached, checkedAt: now() };
+        if (!requested || !etag) throw new Error('Unexpected unchanged release response');
+        validateGdeltSnapshot(requested.snapshot, now());
+        candidate = { ...requested, checkedAt: now() };
       } else {
         if (!response.ok) { await response.body?.cancel(); throw new Error('Scheduled release unavailable'); }
         const payload = await readResponseJsonCapped(response, GDELT_SNAPSHOT_MAX_BYTES, signal);
         signal.throwIfAborted();
         const snapshot = validateGdeltSnapshot(payload, now()), acquiredAt = now();
-        cached = { acquiredAt, checkedAt: acquiredAt, etag: safeEtag(response.headers.get('etag')), snapshot };
+        candidate = { acquiredAt, checkedAt: acquiredAt, etag: safeEtag(response.headers.get('etag')), snapshot };
+      }
+      // Re-read after the network response: another isolate may have retained a newer release.
+      const retained = versionedStore ? await readVersioned() : { entry: await readSaved() };
+      if (versionedStore && !retained) throw releaseError('release-storage-unconfirmed');
+      adoptSaved(retained.entry); rejectOlder(candidate);
+      if (unchanged) {
+        if (cached.etag !== etag || generation(cached) !== generation(requested)) throw releaseError('superseded-release-validator');
+        // The 304 proves only its request entity. Keep that entity's original retrieval provenance.
+        candidate = { ...cached, checkedAt: Math.max(cached.checkedAt, candidate.checkedAt) };
+      }
+      signal.throwIfAborted();
+      if (versionedStore) {
+        const committed = await optionalStorage(() => store.putIfVersion('gdelt:snapshot', candidate, retained.version));
+        if (committed !== true) {
+          // Timeout is uncertain, not a failed condition. Confirm exact bytes/clocks once; never retry an unfenced write.
+          const readback = await readVersioned();
+          adoptSaved(readback?.entry);
+          if (!sameSaved(readback?.entry, candidate)) {
+            rejectOlder(candidate);
+            throw releaseError(committed === false ? 'release-storage-conflict' : 'release-storage-unconfirmed');
+          }
+        }
+        cached = candidate;
+      } else {
+        // Non-versioned stores retain the memory/read guard, but cannot promise cross-isolate atomic admission.
+        cached = candidate;
+        await optionalStorage(() => store?.put('gdelt:snapshot', candidate));
       }
       failures = 0; retryAt = 0; lastFailure = null;
-      const saved = cached;
-      await optionalStorage(() => store?.put('gdelt:snapshot', saved));
     } catch (error) {
       failures = Math.min(6, failures + 1);
       retryAt = now() + Math.min(300000 * 2 ** (failures - 1), 3600000);
-      lastFailure = error.name === 'TimeoutError' ? 'Scheduled release timed out' : 'Scheduled release unavailable or invalid';
+      lastFailure = error.code === 'older-release-response' ? 'Older scheduled release response rejected; newer retained snapshot preserved' :
+        error.code === 'older-release-check' ? 'Earlier scheduled release check rejected; newer retained snapshot preserved' :
+        error.code === 'superseded-release-validator' ? 'Scheduled release validator superseded; retained snapshot preserved' :
+        error.code === 'release-storage-conflict' ? 'Scheduled release changed during conditional storage; acquisition not confirmed' :
+        error.code === 'release-storage-unconfirmed' ? 'Scheduled release storage confirmation unavailable' :
+        error.name === 'TimeoutError' ? 'Scheduled release timed out' : 'Scheduled release unavailable or invalid';
     }
   }
   return async (filters) => {
@@ -157,6 +206,7 @@ export function createGdeltSnapshotReader({ fetchImpl = fetch, now = Date.now, s
       retrievedAt: cached ? gkg ? cached.snapshot.coverage.processedBatches.at(-1).retrievedAt : new Date(Math.min(...categories.map((key) => Date.parse(cached.snapshot.categories[key].retrievedAt)))).toISOString() : null,
       snapshotRetrievedAt: cached ? new Date(cached.acquiredAt).toISOString() : null,
       snapshotCheckedAt: cached ? new Date(cached.checkedAt ?? cached.acquiredAt).toISOString() : null,
+      lastAttemptAt: lastAttemptAt === null ? null : new Date(lastAttemptAt).toISOString(),
       ageMs, sourceAgeMs, refreshIntervalMs: GDELT_RELEASE_CHECK_INTERVAL_MS, sourceCadenceMs: 900000, retryAt: retryAt || null, coverage, filtersAppliedLocally: local,
       ...(batchCoverage ? { processedBatches: batchCoverage.processedBatches, sampleGaps: batchCoverage.sampleGaps, windowStart: batchCoverage.windowStart, windowEnd: batchCoverage.windowEnd, countryMeaning: 'country-mentioned' } : {}),
       ...(batchCoverage?.catchup ? { catchup: batchCoverage.catchup } : {}),

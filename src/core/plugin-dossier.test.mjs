@@ -410,11 +410,16 @@ test('Inspect document is fixed-item-only and lazy; Back preserves the publicati
   await f.panel.select('commission'); assert.equal(imports, 0); assert.equal(f.requests.length, 0); await f.panel.open();
   const buttons = elements(f.container).filter(el => el.tagName === 'button' && el.textContent === 'Inspect document'); assert.equal(buttons.length, 1); assert.equal(imports, 0);
   const article = buttons[0].parentElement, evidence = elements(article).find(el => el.className === 'plugin-item-evidence'); evidence.open = true;
+  const nav = elements(f.container).find(el => el.className === 'context-navigation'), source = elements(f.container).find(el => el.className === 'context-source');
+  const title = elements(f.container).find(el => el.className === 'plugin-title'), subtitle = elements(f.container).find(el => el.className === 'plugin-subtitle');
+  assert.equal(Boolean(nav.hidden), false); assert.equal(source.hidden, false);
   f.panel.setSceneMode('history'); buttons[0].trigger('click');
   await waitFor(() => elements(f.container).filter(el => el.className === 'document-statement').length === 4, 'the retained original examination');
   assert.equal(imports, 1); assert.equal(f.requests.length, 2); assert.equal(f.requests[1][0], '/api/documents/ec-statement-26-2127');
   assert.match(visibleText(f.container), /Attributed source statements/); assert.match(visibleText(f.container), /Source dates remain independent of globe time/);
   const documentHost = elements(f.container).find(el => el.className === 'plugin-document');
+  assert.equal(nav.hidden, true); assert.equal(source.hidden, true); assert.equal(title.hidden, true); assert.equal(subtitle.hidden, true);
+  assert.equal(Boolean(elements(f.container).find(el => el.className === 'plugin-refresh' && el.textContent === 'Refresh stored examination').hidden), false);
   assert.equal(f.documentRef.activeElement.textContent, 'Back to publications');
   const proof = elements(documentHost).find(el => el.className === 'plugin-evidence'); proof.open = true;
   f.emit(update(publications(), 1)); assert.equal(f.requests.length, 2);
@@ -425,6 +430,8 @@ test('Inspect document is fixed-item-only and lazy; Back preserves the publicati
   elements(documentHost).find(el => el.tagName === 'button' && el.textContent === 'Back to publications').trigger('click');
   await waitFor(() => f.requests.length === 4, 'the invalidated stored publication list'); await f.panel.open();
   assert.equal(documentHost.hidden, true); assert.equal(evidence.open, true); assert.equal(f.documentRef.activeElement, buttons[0]);
+  assert.equal(nav.hidden, false); assert.equal(source.hidden, false); assert.equal(title.hidden, false); assert.equal(subtitle.hidden, false);
+  assert.equal(title.textContent, 'European Commission publications'); assert.equal(subtitle.textContent, 'Original publication metadata · European Commission / European Union');
   assert.equal(stored.activity.providers.length, 0, 'public UI reads do not acquire');
   buttons[0].trigger('click'); await f.panel.open(); assert.equal(imports, 1); assert.equal(f.requests.length, 4, 'the same document reuses its bounded memory cache');
   f.panel.destroy(); assert.equal(f.timers.size, 0);

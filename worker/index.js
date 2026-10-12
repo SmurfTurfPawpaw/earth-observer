@@ -23,7 +23,12 @@ import { createDocumentInvestigationApiHandler } from './document-investigation-
 
 const secured = (response) => {
   const headers = new Headers(response.headers);
-  for (const [name, value] of Object.entries(DOCUMENT_HEADERS)) headers.set(name, value);
+  for (const [name, value] of Object.entries(DOCUMENT_HEADERS)) {
+    // Enforce the application policy alongside a stricter reviewed leaf policy.
+    // Replacing it would discard the sandbox on retained original attachments.
+    if (name.toLowerCase() === 'content-security-policy' && headers.has(name)) headers.append(name, value);
+    else headers.set(name, value);
+  }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers,
     ...(headers.has('content-encoding') ? { encodeBody: 'manual' } : {}) });
 };

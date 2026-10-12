@@ -308,6 +308,8 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
   }
   function documentPresentation() {
     const active = Boolean(documentSelection); content.hidden = active; documentHost.hidden = !active; status.hidden = active;
+    nav.hidden = title.hidden = subtitle.hidden = active;
+    sourceField.hidden = active || PURPOSES[purposeFor(view)].views.length < 2;
     refresh.textContent = active ? 'Refresh stored examination' : 'Refresh stored context';
     if (active) { title.textContent = 'Source document'; subtitle.textContent = 'Original PDF · European Commission / European Union'; }
     else if (view !== 'feeds') {

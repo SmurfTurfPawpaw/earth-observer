@@ -5,6 +5,21 @@ export function createProviderStore(env = {}) {
   if (bucket?.get && bucket?.put) return {
     async get(key) { const object = await bucket.get(objectKey(key)); return object ? object.json() : null; },
     put: (key, value) => bucket.put(objectKey(key), JSON.stringify(value), { httpMetadata: { contentType: 'application/json' } }),
+    async getVersioned(key) {
+      const object = await bucket.get(objectKey(key));
+      if (!object) return { value: null, version: null };
+      if (typeof object.etag !== 'string' || !object.etag) throw new Error('Missing provider object version');
+      return { value: await object.json(), version: object.etag };
+    },
+    async putIfVersion(key, value, version) {
+      if (version !== null && (typeof version !== 'string' || !version)) throw new Error('Invalid provider object version');
+      const saved = await bucket.put(objectKey(key), JSON.stringify(value), {
+        onlyIf: version === null ? new Headers({ 'if-none-match': '*' }) : { etagMatches: version },
+        httpMetadata: { contentType: 'application/json' },
+      });
+      // A literal null is a failed condition; an absent result is not proof of a commit.
+      return saved === null ? false : saved && typeof saved.etag === 'string' && saved.etag ? true : undefined;
+    },
     async claim(key, at, wait) {
       const path = objectKey(`attempt:${key}`), previous = await bucket.get(path);
       const value = previous ? await previous.json() : null;
