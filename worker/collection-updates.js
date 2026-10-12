@@ -36,7 +36,6 @@ function rowRevision(row, kind = 'collection') {
   if (row.revision !== value.revision) throw new Error('Stored collection revision is invalid');
   return value;
 }
-const primary = (db) => typeof db.withSession === 'function' ? db.withSession('first-primary') : db;
 const missingPluginTable = error => typeof error?.message === 'string' &&
   /^(?:D1_ERROR:\s*)?no such table: (?:main\.)?earth_plugin_(?:state|captures)(?:: SQLITE_ERROR)?$/.test(error.message);
 
@@ -77,14 +76,15 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     let acceptsFallback = true; const deadline = now() + readTimeoutMs;
     try {
       const rows = await bounded(async () => {
-        const session = primary(db);
-        try { return await session.prepare(SELECT_ALL).bind().all(); }
+        // D1's base binding routes every query to primary. Avoid allocating a
+        // session per tick; one reused first-primary session could use replicas.
+        try { return await db.prepare(SELECT_ALL).bind().all(); }
         catch (error) {
           if (!acceptsFallback || signal.aborted || now() >= deadline || !missingPluginTable(error)) throw error;
           // Exceptional incomplete-schema compatibility costs two queries in the
           // shared read slot; normal delivery costs one. Recheck every slot so a
           // completed migration recovers without restarting an isolate.
-          countQuery(); return session.prepare(SELECT_LEGACY).bind().all();
+          countQuery(); return db.prepare(SELECT_LEGACY).bind().all();
         }
       }, signal, () => {
         if (state.readToken === token) state.readToken = null;
@@ -117,7 +117,7 @@ export function createCollectionUpdates({ now = Date.now, schedule = setTimeout,
     if (!configured(env)) return { configured: false, stored: false };
     const db = env.EARTH_DB;
     await bounded(() => db.prepare(UPSERT).bind(id, incoming.collectedAt, incoming.inputDigest, incoming.recordCount, incoming.revision).run());
-    const current = rowRevision(await bounded(() => primary(db).prepare(SELECT).bind(id).first()), kind);
+    const current = rowRevision(await bounded(() => db.prepare(SELECT).bind(id).first()), kind);
     if (!current) throw new Error('Durable collection revision is unavailable');
     const state = stateFor(db); remember(state, current, kind); state.loaded = true; state.unavailable = false;
     return { configured: true, stored: true, superseded: current.revision !== incoming.revision, ...current };

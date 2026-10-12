@@ -112,7 +112,7 @@ test('independent isolate factories observe durable latest data and reconnect al
   assert.equal((await nextEvent(client.reader)).value.revision, initial.revision);
   const later = await writer.publishCollectionRevision(env, input(1000, 'c')); await clock.advance(1000);
   assert.equal((await nextEvent(client.reader)).value.revision, later.revision);
-  assert.ok(db.counters.primary >= 3);
+  assert.equal(db.counters.primary, 0); assert.ok(db.counters.reads >= 3);
   await client.reader.cancel(); await flush();
   const resumed = connect(createCollectionUpdates(clock), env, { headers: { 'last-event-id': initial.revision } }); await flush();
   assert.equal((await nextEvent(resumed.reader)).value.revision, later.revision);
@@ -231,8 +231,9 @@ test('fixed typed receipts join collection delivery in one indexed query shared 
   for (const client of clients) client.abort.abort(); await flush(); assert.equal(clock.tasks.size, 0);
 });
 
-test('scientific notifications expose only the completed current head, ignore operational fences and preserve equal-time reversions',async t=>{
+test('base-binding scientific notifications allocate no sessions, expose only completed heads and preserve equal-time reversions',async t=>{
   const db=await database(t),clock=scheduler(),channel=createCollectionUpdates(clock),env={EARTH_DB:db};
+  db.withSession=()=>{db.counters.primary++;throw Error('TEST ONLY forbidden per-read session allocation');};
   const source={pluginId:'usgs-live-day-m2-5-v1',scopeId:'usgs-live-day-m2-5-v1'};
   const a=retainedPlugin(db,source),client=connect(channel,env);t.after(()=>client.abort.abort());await flush();
   assert.deepEqual((await nextEvent(client.reader,'plugin')).value,a);
@@ -250,6 +251,7 @@ test('scientific notifications expose only the completed current head, ignore op
   const resumed=connect(createCollectionUpdates(clock),env,{headers:{'last-event-id':`plugin:${source.pluginId}:${a.fence}:${a.receiptId}`}});
   t.after(()=>resumed.abort.abort());await flush();assert.deepEqual((await nextEvent(resumed.reader,'plugin')).value,again);
   assert.notEqual(again.receiptId,unpromoted.receiptId);resumed.abort.abort();await flush();assert.equal(clock.tasks.size,0);
+  assert.equal(db.counters.primary,0,'completed head delivery and reconnect must never allocate or reuse a session');
 });
 
 test('operational checks are quiet; A/B/A receipt fences remain distinct and reconnect replays the current receipt', async t => {

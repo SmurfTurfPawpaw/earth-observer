@@ -1073,3 +1073,81 @@ hidden, disabled and historical states. There is no direct USGS browser fallback
 Explicitly unknown/non-earthquake scientific types cannot acquire earthquake proof;
 absent legacy fields retain existing admission. These changes still require the
 exact committed build, save, deployment and mounted browser/source/stream acceptance.
+
+## 03:23 UTC: v39 published and stored browser delivery verified
+
+Application fb1d7e60887b5e67cbebf0a6bc9f71405226ea20 and combined source
+1c7d762600ccae701253da362c29fdb7850f7dcb passed the exact combined gate and
+3,049 portfolio assertions. Saved Site version 39 deployed successfully at
+03:15:15.086Z as appgdep_6acc50a3cd0081918ebbd14232c3a910, environment revision 7.
+Local archive SHA256: 2ad604d1225c40d0e313c97ec5c5cc594c52e6aa7850a938ea099d106683b3ee.
+The automatic hosted collector Actions schedule was removed; short manual
+verification remains. This does not deploy the missing permanent minute runtime.
+
+At 03:19:14.687–03:19:16.800Z, two fixed public reads returned a 20,872-byte
+scientific cohort and 2,185 stream bytes. The current stream and source reader
+cited the same complete receipt, fence 5 and factual digest. Its factual edition
+was published at 03:00:40.190Z while the latest successful source check was
+03:17:57.539Z and the provider generation was 03:17:09Z. These clocks demonstrate
+why repeated checks must not manufacture new facts. Exact bodies and metadata are
+in ignored .qa/v39-hosted-delivery-proof.json.
+
+The actual browser loaded main-DumJqr1R.js and requested the mounted stored
+earthquake endpoint, with no observed all_day.geojson request. Membership changed
+from 49 to 48 during observation, and the selected report us6000u1iz remained open
+through subsequent stored refreshes. The viewed screenshot
+qa-artifacts/published-foundation-v39-stored-report.png was embedded in commentary.
+This establishes source delivery and selection continuity, not a startup or GPU
+latency benchmark or a cache-before-network timing measurement.
+
+Browser review also exposed a presentation seam: live cohort stats used a field
+the generic shell interprets as historical, producing "Archived", and a coverage
+object became "[object Object]". The next package sets current snapshot=false,
+keeps structured cohortCoverage separately and uses readable coverage text.
+Provider generation is labelled "Source generated", never event "Observed" time.
+Eleven focused selection/ownership checks passed after that local correction.
+
+## 03:41 UTC: continuous stream memory failure found; release held
+
+The actual v39 host sample returned four /earth/api/updates exceededMemory
+outcomes between 03:31:13.687Z and 03:32:58.964Z. Wall times were 30,382–32,545 ms,
+with 20–25 ms CPU; paired error messages reported Worker exceeded memory limit.
+Ordinary earthquake reads and collector requests in the same sample succeeded.
+This overturns any interpretation that the short 03:19 stream proof established
+continuous stream reliability. No full request headers or visitor query data are
+included in the recorded sanitized summary.
+
+Read-only code review found bounded stream state and no obvious growing record
+array. Two hypotheses are being tested rather than presented as established
+causes: the eager embedded asset footprint, and per-poll D1 session allocation.
+The next package is held for asset loading and primary-read improvements plus
+actual hosted multi-lifetime stream acceptance. GDACS and private retention work
+remain local until this gate passes. Permanent unattended acquisition remains
+an independent unresolved deployment dependency.
+
+## 03:47 UTC: narrow memory package prepared
+
+Both reviewed static producers now emit lazy base64 accessors. Payload bytes,
+ETags, MIME, dates, range behavior and the existing 8 MiB decode budgets remain
+unchanged. Portfolio check-only validation passed 3,049 assertions across 119
+files, without writing output. Two Earth asset checks use an isolated actual
+producer fixture and prove cold HEAD/304 do not access the encoded payload,
+while identity/gzip and binary GETs remain exact.
+
+Independent fresh Node 24 VM processes over exact v39 code and equivalent lazy
+producer output measured post-GC import heap 58.42 to 6.31 MiB; after eleven
+local document, gzip, narration and range requests, heap was 60.86 to 14.44 MiB.
+RSS and source-backed external memory remain distinct; external memory was about
+109 MiB and visited literal strings can accumulate. These local measurements
+do not prove the hosted memory limit or explain every stream failure.
+
+The SSE reader now uses base-binding primary queries without allocating a new
+session on each tick. It does not reuse a first-primary session, which would
+allow subsequent queries to use replicas. All thirteen focused stream checks
+passed, including current complete-head delivery, fencing and reconnect with
+session allocation forbidden. Lifetimes, query admission, queue limits and
+cancellation behavior remain unchanged. Hosted multi-lifetime evidence is pending.
+
+Primary references: [D1 sessions](https://developers.cloudflare.com/d1/worker-api/d1-database/),
+[D1 implementation](https://github.com/cloudflare/workerd/blob/main/src/cloudflare/internal/d1-api.ts),
+and [Worker isolate limits](https://developers.cloudflare.com/workers/platform/limits/).

@@ -27,6 +27,13 @@ async function walk(directory, relative = '') {
 }
 await walk('dist');
 if (!assets[prefix + 'index.html']) throw new Error('Missing application document');
+// Evaluate payload literals only when a GET reaches the existing bounded decode cache.
+// Metadata, original hashes and encoded bytes remain identical to the reviewed build.
+const assetLiteral = '{' + Object.entries(assets).map(([route, asset]) => {
+  const { base64, ...metadata } = asset;
+  return JSON.stringify(route) + ':{' + JSON.stringify(metadata).slice(1, -1)
+    + ',get base64(){return ' + JSON.stringify(base64) + '}}';
+}).join(',') + '}';
 await mkdir('worker-dist', { recursive: true });
-await writeFile('worker-dist/assets.js', `// Generated only from public production build.\nexport default ${JSON.stringify(assets)};\n`);
+await writeFile('worker-dist/assets.js', `// Generated only from public production build.\nexport default ${assetLiteral};\n`);
 console.log(JSON.stringify({ assets: Object.keys(assets).length, rawBytes, embeddedBytes, prefix }));

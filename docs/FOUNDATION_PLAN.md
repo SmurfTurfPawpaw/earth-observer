@@ -239,3 +239,49 @@ receipt admission and two unattended checks, then release the stored-only client
 Re-examine permanent trigger support against actual declared host capabilities; a
 temporary supervised producer does not satisfy browser/laptop-independent collection.
 These gates take priority over adding unrelated providers, predictions or UI motion.
+
+## 03:26 UTC dependency reassessment
+
+The exact live earthquake browser scope is now centrally retained and served in
+v39, with actual source/stream and selection evidence. Finish the prepared narrow
+GDACS notice slice using its existing retained cohort, independent indicative
+location contract and current-only display. Gate its source clocks, edition
+integrity, cancellation and actual hosted selection before considering it shipped.
+Correct the current-feed Archived/coverage presentation seam in the same package.
+
+After that slice, prioritize operating ownership and measured retention over new
+feeds. A fresh Sites owner inspection confirms available cloud-task creation and
+no existing schedules, but supplies no verified minute-run guarantee. Provisioned
+MCP connection metadata likewise does not establish an authenticated owner writer.
+The missing permanent minute runner remains explicit; do not substitute an AI job,
+visitor request, waitUntil chain or production Actions loop without its service
+contract and operating evidence.
+
+Retained source and plugin histories are append-only. Content deduplication does
+not bound their growth, and recent manifest caps do not delete historical objects.
+Measure only bounded indexed owner-access accounting before changing retention.
+Separate referenced logical bytes from actual unique object storage and orphan
+objects; no destructive expiry or guessed free-storage promise. Existing finite
+historical query gates limit work honestly, not prove unlimited two-year coverage
+for every source. These findings reorder the following phases and their acceptance
+criteria; they do not reduce the intended past/current/future platform scope.
+
+## 03:41 UTC dependency reassessment: stream memory gate
+
+Actual deployed v39 worker logs show four update-stream invocations ending with
+exceededMemory at 03:31:13–03:32:58Z, after approximately 30–33 seconds. Successful
+short source/stream reads do not establish a reliable continuous connection. Hold
+the next release until this failure is addressed and a deployed stream is observed
+across multiple complete lifetimes and reconnects, with overlapping host logs.
+
+The combined worker embeds approximately 55 MB of encoded asset literals. A local
+Node experiment using lazy accessors reduced post-GC heap usage substantially;
+that is evidence for an asset-loading improvement, not proof of a Cloudflare fix.
+Implement the narrow asset-producer change while preserving portfolio bytes,
+metadata, range, HEAD and conditional response behavior. Separately remove
+unnecessary per-poll D1 session allocation using base-binding primary reads;
+do not reuse a first-primary session and silently relax read freshness.
+
+Keep stream cancellation, bounded admission, buffering and retention intact.
+Do not shorten the stream lifetime and call the underlying memory problem solved.
+Gate subsequent GDACS and private retention activation on deployed evidence.
