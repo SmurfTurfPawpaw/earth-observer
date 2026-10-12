@@ -147,7 +147,7 @@ body.side-panel-open #navigation { right: calc(var(--safe-right) + var(--dossier
 .timeline-summary[aria-expanded="true"] .timeline-chevron { transform: rotate(180deg); }
 .timeline-readout { position: absolute; left: 16px; right: 294px; top: 10px; height: 44px; display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; }
 summary::-webkit-details-marker { display: none; }
-.timeline-clock { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-clock { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-time-labels { display: flex; flex: 1; flex-direction: column; justify-content: center; min-width: 0; gap: 2px; }
 .timeline-current-scope { color: var(--muted); font-size: 10px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .timeline-mode { color: var(--accent); font-weight: 550; }
@@ -301,6 +301,8 @@ details[open] > summary > .summary-chevron, #sources[open] > summary > .ui-icon:
 .plugin-title { font-size: calc(20px * var(--reading-scale, 1)); line-height: 1.4; margin: 0 0 6px; font-weight: 550; letter-spacing: -.35px; }
 .plugin-subtitle, .plugin-note, .plugin-status, .plugin-publication-date { color: var(--muted); font-size: calc(12px * var(--reading-scale, 1)); line-height: 1.7; margin: 8px 0 14px; overflow-wrap: anywhere; }
 .plugin-status { min-height: 20px; }
+.plugin-status:empty { display: none; }
+.context-source + .plugin-note:not([hidden]) { color: var(--text); font-size: calc(13px * var(--reading-scale, 1)); font-variant-numeric: tabular-nums; }
 .plugin-year { margin: 18px 0; }
 .plugin-year h4, .plugin-publication h4 { font-size: calc(15px * var(--reading-scale, 1)); line-height: 1.6; margin: 0 0 8px; font-weight: 550; }
 .plugin-total { font-size: calc(26px * var(--reading-scale, 1)); line-height: 1.4; font-variant-numeric: tabular-nums; letter-spacing: -.6px; margin: 8px 0 18px; }

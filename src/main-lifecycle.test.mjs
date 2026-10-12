@@ -10,16 +10,16 @@ const modules = {
   './core/viewer.js': 'export function createGlobeViewer(){if(globalThis.fixture.startupError)throw globalThis.fixture.startupError;return globalThis.fixture.viewer;}',
   './core/layer-manager.js': 'export const STORAGE_KEY="layers"; export function createLayerManager(){return globalThis.fixture.manager;}',
   './core/catalog.js': 'export const LAYERS=[{id:"earthquakes"},{id:"flights"}];',
-  './core/shell.js': 'export function createShell(){return globalThis.fixture.shell;}',
+  './core/shell.js': 'export function createShell(viewer,manager,options){globalThis.fixture.shellOptions=options;return globalThis.fixture.shell;}',
   './core/navigation.js': `export function setCameraView(viewer,view){globalThis.fixture.cameraWrites.push(view);globalThis.fixture.onCamera?.();}
     export function cameraView(){return {lat:50,lon:4,alt:90000,heading:0,pitch:-90,roll:0};}
-    export function serializeViewHash(){return "layers=earthquakes";}
+    export function serializeViewHash(view,ids,params,temporal){globalThis.fixture.serialized.push({view,ids,params,temporal});return "layers=earthquakes";}
     export function parseViewHash(){return {view:{lat:0,lon:0,alt:18000000}};}
     export function installNavigation(viewer,options){globalThis.fixture.navigation=options;return ()=>{};}`,
   './core/browser-store.js': 'export function createBrowserStore(){return {};}',
   './core/cached-fetch.js': 'export function createCachedFetch(){return {destroy(){globalThis.fixture.calls.push("fetch:stop");}};}',
-  './core/session.js': `export const SESSION_KEY="session"; export function initialWorkspace(){return globalThis.fixture.initial;}
-    export function loadSession(){return null;} export function saveSession(){globalThis.fixture.sessionSaves++;}
+  './core/session.js': `export const SESSION_KEY="session"; export function initialWorkspace(){if(globalThis.fixture.initialError)throw globalThis.fixture.initialError;return globalThis.fixture.initial;}
+    export function loadSession(){return null;} export function saveSession(view,area,storage,temporal){globalThis.fixture.sessionSaves++;globalThis.fixture.savedTemporal.push(temporal);}
     export function safeStorage(){return {removeItem(){globalThis.fixture.preferenceRemovals++;}};}
     export function locateVisitor(){globalThis.fixture.geoCalls++;return globalThis.fixture.geo.promise;}`,
   './core/local-area.js': `export function validateArea(area){return area;} export function localCameraView(area){return {...area,alt:30000};}
@@ -29,7 +29,10 @@ const modules = {
   './core/basemap-coverage.js': 'export function streetMapCoverageNotice(){return "Available";}',
   './core/globe-framing.js': 'export function recoverInitialCameraView(viewer,view){return {view,recovered:false};}',
   './core/timeline.js': `export function createTimeline(options){globalThis.fixture.timeOptions=options;return {
-    live(){},destroy(){globalThis.fixture.calls.push("timeline:stop");}};}`,
+    getContextState(){return {...globalThis.fixture.temporal};},
+    prepareRestore(value){globalThis.fixture.temporal={...value,playing:false};},
+    restore(value){globalThis.fixture.timelineRestores.push(value);globalThis.fixture.temporal={...value,playing:false};return Promise.resolve(false);},cancelRestore(){},
+    live(){globalThis.fixture.temporal={mode:"live"};},destroy(){globalThis.fixture.calls.push("timeline:stop");}};}`,
   './core/live-updates.js': `export function createLiveUpdates(){return {subscribe(){return ()=>{};},start(){globalThis.fixture.streamActive=true;},
     destroy(){globalThis.fixture.calls.push("updates:stop");globalThis.fixture.streamActive=false;}};}`,
   './core/world-dossier-bridge.js': 'export function installWorldDossierBridge(){return {refresh(){},destroy(){globalThis.fixture.calls.push("dossiers:stop");}};}',
@@ -56,41 +59,46 @@ function event() {
     emit(...args) { for (const fn of [...callbacks]) fn(...args); }, callbacks };
 }
 async function fixture({ automatic = false, permission = Promise.resolve({ state: 'granted' }), closeGate, restorationGate,
-  intentFactory, startupError, hidden = false } = {}) {
+  intentFactory, startupError, initialError, modeGate, hidden = false, temporal = { mode: 'live' } } = {}) {
   const f = { calls: [], cameraWrites: [], layerRestores: [], sessionSaves: 0, preferenceRemovals: 0, geoCalls: 0,
-    geo: Promise.withResolvers(), initial: { view: { lat: 50, lon: 4, alt: 90000 }, area: null, layers: ['earthquakes'], requestLocation: automatic },
-    timers: new Map(), nextTimer: 0, streamActive: false, rafActive: true, clockActive: true, viewerDestroyed: false, logs: [], startupError };
+    geo: Promise.withResolvers(), initial: { view: { lat: 50, lon: 4, alt: 90000 }, temporal, area: null, layers: ['earthquakes'], requestLocation: automatic },
+    timers: new Map(), nextTimer: 0, streamActive: false, rafActive: true, clockActive: true, viewerDestroyed: false, logs: [], startupError,
+    temporal: { mode: 'live' }, serialized: [], savedTemporal: [], restoreModes: [], timelineRestores: [], initialError, replaced: [] };
   const nodes = new Map();
   const node = id => {
     if (!nodes.has(id)) {
       const element = new EventTarget(); element.hidden = id === 'error'; element.disabled = false;
-      element.setAttribute = () => {}; element.textContent = ''; element.value = '10'; nodes.set(id, element);
+      element.setAttribute = () => {}; element.textContent = ''; element.value = '10'; element.children = [];
+      element.append = child => element.children.push(child); element.remove = () => {}; nodes.set(id, element);
     }
     return nodes.get(id);
   };
   const document = new EventTarget(); document.hidden = hidden; document.getElementById = node;
+  document.createElement = () => new EventTarget();
   document.querySelector = node;
   const window = new EventTarget();
   const canvas = new EventTarget(), renderError = event(), postRender = event();
   let loop = false;
   f.viewer = { scene: { canvas, renderError, postRender, requestRender() {} },
     earthBasemap: { setMode() {}, getState: () => ({ mode: 'map', status: 'ready' }), ready: Promise.resolve() },
-    earthTime: { sceneClock: { destroy() { if (!f.clockActive) return; f.calls.push('clock:stop'); f.clockActive = false; } }, getState: () => ({ mode: 'live' }) },
+    earthTime: { sceneClock: { destroy() { if (!f.clockActive) return; f.calls.push('clock:stop'); f.clockActive = false; } }, getState: () => f.temporal,
+      pause() {}, setCoverage() {}, setTime(at) { f.temporal = at ? { mode: 'history', at } : { mode: 'live' }; }, setRate(rate) { f.temporal.rate = rate; } },
     isDestroyed: () => f.viewerDestroyed,
     get useDefaultRenderLoop() { return loop; }, set useDefaultRenderLoop(value) { assert.equal(f.viewerDestroyed, false, 'Disposed viewer resumed'); loop = value; },
     destroy() { f.calls.push('viewer:destroy'); f.viewerDestroyed = true; f.viewer.earthTime.sceneClock.destroy(); } };
   const requested = { earthquakes: { enabled: true }, flights: { enabled: false } };
   const modulesById = Object.fromEntries(Object.keys(requested).map(id => [id, { disable() { f.calls.push(`${id}:stop`); if (id === 'flights') f.rafActive = false; } }]));
   f.manager = { getState: () => requested, getLayerParams: () => ({}), setLocalArea(value) { f.area = value; },
-    restore(ids) { f.layerRestores.push(ids); return restorationGate?.promise || Promise.resolve(); }, subscribe: () => () => {}, preload: () => Promise.resolve(),
+    restore(ids) { f.layerRestores.push(ids); f.restoreModes.push(f.temporal.mode); return restorationGate?.promise || Promise.resolve(); },
+    subscribe(listener) { f.managerSubscriber = listener; return () => {}; }, preload: () => Promise.resolve(),
     getLayer: id => modulesById[id], isTimelinePaused: () => false, requestRefresh() {},
-    async setTimelineMode(mode) { f.calls.push(`mode:${mode}`); },
+    async setTimelineMode(mode) { f.calls.push(`mode:${mode}`); if (f.calls.filter(call => call.startsWith('mode:')).length === 1 && modeGate) await modeGate.promise; },
     destroy() { f.calls.push('manager:destroy'); f.timers.clear(); return closeGate?.promise ?? Promise.resolve(); } };
   f.shell = { setLocalStatus(text) { f.localStatus = text; }, notify(text) { f.calls.push(`notice:${text}`); },
     subscribePanels: () => () => {}, closeSidebar() {}, closeNews() {}, destroy() { f.calls.push('shell:stop'); } };
   const location = { href: 'https://example.com/earth/#layers=earthquakes', hash: '#layers=earthquakes', reload() { f.calls.push('reload'); } };
   const context = { fixture: f, document, window, navigator: { permissions: { query: () => permission } }, location,
-    history: { replaceState() {} }, performance: { mark() {} }, URL, Event, CustomEvent, AbortController, DOMException,
+    history: { replaceState(_state, _title, url) { f.replaced.push(url); } }, performance: { mark() {} }, URL, URLSearchParams, Event, CustomEvent, AbortController, DOMException,
     setTimeout(fn, delay) { const id = ++f.nextTimer; f.timers.set(id, { fn, delay }); return id; }, clearTimeout(id) { f.timers.delete(id); },
     console: { error: (...args) => f.logs.push(args) }, queueMicrotask };
   vm.runInNewContext(await bundle, context);
@@ -184,4 +192,64 @@ test('startup failure disposes pending search without readiness, and hidden read
   await failed.context.application.destroy(); assert.equal(cleaned, 1);
   const hidden = await fixture({ automatic: true, hidden: true, intentFactory: () => ({ ready() { return false; }, destroy() {} }) });
   assert.equal(hidden.f.geoCalls, 0); assert.equal(hidden.f.viewer.useDefaultRenderLoop, false); await hidden.context.application.destroy();
+});
+
+test('real main restores History before enabling layers and preserves exact time on camera/layer/committed edits without writing on ticks', async () => {
+  const temporal = { mode: 'history', at: '2025-11-15T12:00:00.123Z', lens: 'known-then', rate: 86400 }, restorationGate = Promise.withResolvers();
+  const u = await fixture({ temporal, restorationGate });
+  assert.equal(u.f.restoreModes[0], 'history'); assert.equal(u.f.sessionSaves, 0, 'Intermediate startup publications cannot replace the incoming URL');
+  assert.equal(u.f.shellOptions.canShare(), false, 'Share cannot sample intermediate restored layer intent');
+  u.f.navigation.onViewChange({ lat: 50, lon: 4, alt: 90000 }); u.f.managerSubscriber(); assert.equal(u.f.sessionSaves, 0);
+  restorationGate.resolve(); await u.starting; assert.equal(u.f.sessionSaves, 1); assert.equal(u.f.savedTemporal[0].at, temporal.at);
+  assert.equal(u.f.shellOptions.canShare(), true); assert.equal(u.f.shellOptions.getTemporal().at, temporal.at);
+  assert.equal(u.f.serialized[0].temporal.lens, temporal.lens); assert.equal(u.f.serialized[0].temporal.rate, temporal.rate);
+  u.f.temporal = { ...u.f.temporal, at: '2025-11-15T12:00:00.456Z' };
+  u.f.navigation.onViewChange({ lat: 51, lon: 4, alt: 90000 }); u.f.managerSubscriber();
+  assert.equal(u.f.serialized.at(-1).temporal.at, '2025-11-15T12:00:00.456Z');
+  const writes = u.f.sessionSaves; await u.flush(); assert.equal(u.f.sessionSaves, writes, 'No clock subscriber performs persistence');
+  u.f.timeOptions.onWorkspaceCommit(); assert.equal(u.f.sessionSaves, writes + 1);
+  await u.context.application.destroy(); u.f.timeOptions.onWorkspaceCommit(); assert.equal(u.f.sessionSaves, writes + 1);
+  assert.equal(u.f.shellOptions.canShare(), false);
+});
+
+test('actual hashchange ownership rejects stale History→Live→History completion and terminal callbacks cannot restore again', async () => {
+  const first = { mode: 'history', at: '2025-11-15T12:00:00.123Z', lens: 'known-then', rate: 86400 }, restorationGate = Promise.withResolvers();
+  const u = await fixture({ temporal: first, restorationGate });
+  u.f.initial = { ...u.f.initial, view: { lat: 20, lon: 4, alt: 90000 }, temporal: { mode: 'live' }, layers: [] };
+  u.context.location.hash = '#v=3&lat=20&layers='; u.window.dispatchEvent(new Event('hashchange')); await u.flush();
+  const latest = { ...first, at: '2025-11-16T12:00:00.456Z', lens: 'reconstruction', rate: 60 };
+  u.f.initial = { ...u.f.initial, view: { lat: 30, lon: 4, alt: 90000 }, temporal: latest };
+  u.context.location.hash = '#v=4&mode=history&at=2025-11-16T12%3A00%3A00.456Z&lens=reconstruction&rate=60';
+  u.window.dispatchEvent(new Event('hashchange')); await u.flush(); assert.equal(u.f.sessionSaves, 0);
+  restorationGate.resolve(); await u.starting; await u.flush();
+  assert.equal(u.f.sessionSaves, 1); assert.equal(u.f.savedTemporal[0].at, latest.at); assert.equal(u.f.savedTemporal[0].lens, latest.lens);
+  assert.equal(u.f.cameraWrites.at(-1).lat, 30); assert.equal(u.f.temporal.playing, false);
+  const restores = u.f.layerRestores.length, writes = u.f.sessionSaves;
+  await u.context.application.destroy(); u.window.dispatchEvent(new Event('hashchange')); await u.flush();
+  assert.equal(u.f.layerRestores.length, restores); assert.equal(u.f.sessionSaves, writes);
+});
+
+test('a newer explicit timeline intent owns the scene before an old mode barrier resolves or rejects', async () => {
+  for (const reject of [false, true]) {
+    const modeGate = Promise.withResolvers(), old = { mode: 'history', at: '2025-11-15T12:00:00.123Z', lens: 'known-then', rate: 86400 };
+    const u = await fixture({ temporal: old, modeGate }); assert.equal(u.f.timelineRestores.length, 0);
+    u.f.timeOptions.onWorkspaceIntent({ reason: 'seek' });
+    const chosen = { ...old, at: '2025-11-16T12:00:00.456Z', lens: 'reconstruction' }; u.f.temporal = chosen;
+    u.f.timeOptions.onWorkspaceCommit();
+    if (reject) modeGate.reject(new Error('Obsolete disable failed')); else modeGate.resolve();
+    await u.starting; assert.equal(u.f.timelineRestores.length, 0); assert.equal(u.f.temporal.at, chosen.at);
+    assert.equal(u.f.viewerDestroyed, false); assert.equal(u.node('error').hidden, true); assert.equal(u.f.savedTemporal.at(-1).at, chosen.at);
+    await u.context.application.destroy();
+  }
+});
+
+test('invalid temporal startup exposes explicit Live recovery without initializing facts or deleting saved preferences', async () => {
+  const error = new Error('Future History is unavailable. Choose an earlier UTC or Live.'); error.code = 'EARTH_WORKSPACE_INVALID';
+  const u = await fixture({ initialError: error }); await u.starting;
+  assert.equal(u.f.cameraWrites.length, 0); assert.equal(u.f.layerRestores.length, 0); assert.equal(u.f.timelineRestores.length, 0);
+  assert.equal(u.node('#error h2').textContent, 'Workspace could not restore');
+  const recover = u.node('error').children.find(child => child.id === 'recover-live-workspace'); assert.equal(recover.textContent, 'Return to Live');
+  assert.equal(u.f.replaced.length, 0); recover.dispatchEvent(new Event('click'));
+  assert.equal(u.f.serialized.at(-1).temporal.mode, 'live'); assert.equal(u.f.replaced.length, 1); assert.equal(u.f.calls.at(-1), 'reload');
+  assert.equal(u.f.preferenceRemovals, 0); recover.dispatchEvent(new Event('click')); assert.equal(u.f.replaced.length, 1);
 });

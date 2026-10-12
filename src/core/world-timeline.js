@@ -2,6 +2,7 @@ import * as Cesium from 'cesium';
 import { createSceneClock } from './scene-clock.js';
 import { worldTime } from './world-identity.js';
 import { createWorldSceneController } from './world-scene-controller.js';
+import { workspaceTime } from './navigation-state.js';
 
 const stamp = (value) => { try { return worldTime(value); } catch { return null; } };
 /** datetime-local omits zero seconds; its calendar is explicitly interpreted as UTC. */
@@ -18,7 +19,7 @@ const magnitude = (item) => item.magnitude ?? item.reportedFacts?.magnitude;
 const sourceId = (item) => item.sourceRecordId || item.evidence?.sourceRecordId;
 
 /** One calm calendar; frame-local origin filtering never fetches source data. */
-export function createTimeline({ container, viewer, fetchImpl, onTimeChange = () => {}, onContextCommit = () => {}, onNavigate,
+export function createTimeline({ container, viewer, fetchImpl, onTimeChange = () => {}, onContextCommit = () => {}, onWorkspaceCommit = () => {}, onWorkspaceIntent = () => {}, onNavigate,
   documentRef = container?.ownerDocument || globalThis.document, setTimeoutImpl = globalThis.setTimeout,
   clearTimeoutImpl = globalThis.clearTimeout, now = Date.now, monotonicNow,
   windowRef = documentRef?.defaultView || globalThis.window } = {}) {
@@ -72,7 +73,9 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   if (fallbackClock && viewer.earthTime.getState().mode === 'history') fallbackClock.seek(viewer.earthTime.getState().at);
   const setTime = (at) => { viewer.earthTime.setTime(at); fallbackClock?.setTime(at); };
   const getContextState = () => ({ ...sceneTime.getState(), lens: controller?.getState().lens || lens.value });
-  const commitContext = reason => { if (!destroyed) void onContextCommit({ ...getContextState(), reason }); };
+  const commitWorkspace = reason => { if (!destroyed) void onWorkspaceCommit({ ...getContextState(), reason }); };
+  const userIntent = reason => { if (!destroyed) onWorkspaceIntent({ reason }); };
+  const commitContext = reason => { if (!destroyed) { void onContextCommit({ ...getContextState(), reason }); commitWorkspace(reason); } };
   const markers = new Map(), markerColor = Cesium.Color.fromCssColorString('#9ddcc9'), markerOutline = Cesium.Color.fromCssColorString('#17212c');
   function clearMarkers() {
     renderedMarkers = '';
@@ -205,6 +208,9 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
   controller = createWorldSceneController({ fetchImpl, documentRef, windowRef, now, setTimeoutImpl, clearTimeoutImpl, onChange: render });
   async function selectTime(at, resume = false, selectedLens = lens.value, reason = 'seek') {
     const canonical = stamp(at); if (!canonical || destroyed) return false;
+    try { workspaceTime({ mode: 'history', at: canonical, lens: selectedLens, rate: sceneTime.getState().rate }); }
+    catch (error) { status.textContent = error.message; return false; }
+    if (reason !== 'restore' && (!resume || reason === 'lens')) userIntent(reason);
     const owner = ++seekOwner; playIntent = resume; selecting = true; dragging = false; sceneTime.pause?.(); clearMarkers(); controller.prepare(canonical, selectedLens);
     const currentCoverage = sceneTime.getState().coverage;
     if (currentCoverage && (canonical < currentCoverage.firstAt || canonical > currentCoverage.lastAt)) sceneTime.setCoverage?.(null);
@@ -224,7 +230,7 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     } finally { if (owner === seekOwner) { selecting = false; syncClock(); } }
   }
   const toggle = () => { syncClock(); if (container.open) void controller.open(); else if (!playIntent && !selecting) controller.close(); };
-  const drag = () => { dragging = true; playIntent = false; sceneTime.pause?.(); slider.setAttribute('aria-valuetext', utc(new Date(Number(slider.value) * 1000).toISOString())); };
+  const drag = () => { userIntent('scrub'); dragging = true; playIntent = false; sceneTime.pause?.(); slider.setAttribute('aria-valuetext', utc(new Date(Number(slider.value) * 1000).toISOString())); };
   const choose = () => { dragging = false; void selectTime(new Date(Number(slider.value) * 1000).toISOString()); };
   const step = (direction) => {
     const available = controller.getState().metadata?.coverage.availableRange; if (!available) return;
@@ -234,9 +240,10 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     void selectTime(new Date(Math.max(start, Math.min(end, current + direction * distance))).toISOString());
   };
   const previous = () => step(-1), next = () => step(1);
-  const goLive = (event) => { event?.stopPropagation?.(); ++seekOwner; playIntent = false; selecting = false; dragging = false; setTime(null); controller.live(); clearMarkers(); syncClock(); void onTimeChange({ mode: 'live', at: null }); commitContext('live'); if (!container.open) controller.close(); };
+  const goLive = (event, fromRestore = false) => { event?.stopPropagation?.(); if (!fromRestore) userIntent('live'); ++seekOwner; playIntent = false; selecting = false; dragging = false; setTime(null); controller.live(); clearMarkers(); syncClock(); void onTimeChange({ mode: 'live', at: null }); commitContext('live'); if (!container.open) controller.close(); };
   const playPause = async (event) => {
     event?.stopPropagation?.();
+    userIntent('play-pause');
     if (sceneTime.getState().playing || selecting && playIntent) {
       ++seekOwner; playIntent = false; selecting = false; sceneTime.pause?.();
       const frozen = sceneTime.getState(); if (frozen.mode === 'history') retainPausedScene(frozen.at);
@@ -249,11 +256,11 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     const state = sceneTime.getState(), at = state.mode === 'history' && state.at < available.to ? state.at : available.from;
     void selectTime(at, true);
   };
-  const changeRate = (event) => { event?.stopPropagation?.(); sceneTime.setRate?.(Number(rate.value)); };
+  const changeRate = (event) => { event?.stopPropagation?.(); userIntent('rate'); sceneTime.setRate?.(Number(rate.value)); commitWorkspace('rate'); };
   const chooseDate = () => { const at = timelineDateUtc(date.value); if (at) void selectTime(at); };
-  const changeLens = () => { if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value, 'lens'); else { controller.setLens(lens.value); commitContext('lens'); } };
+  const changeLens = () => { if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value, 'lens'); else { userIntent('lens'); controller.setLens(lens.value); commitContext('lens'); } };
   const light = () => { const enabled = !viewer.earthTime.getState().lighting; viewer.earthTime.setLighting(enabled); sunlight.setAttribute('aria-pressed', String(enabled)); };
-  const refresh = async () => { await controller.refresh(); if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value); };
+  const refresh = async () => { userIntent('refresh'); await controller.refresh(); if (sceneTime.getState().mode === 'history') void selectTime(sceneTime.getState().at, playIntent, lens.value); };
   const bindings = [[container, 'toggle', toggle], [slider, 'input', drag], [slider, 'change', choose], [date, 'change', chooseDate], [back, 'click', previous], [forward, 'click', next], [play, 'click', playPause], [rate, 'change', changeRate], [live, 'click', goLive], [lens, 'change', changeLens], [sunlight, 'click', light], [reload, 'click', refresh]];
   for (const [element, name, callback] of bindings) element.addEventListener(name, callback);
   const unsubscribeClock = fallbackClock ? fallbackClock.subscribe(syncClock) : viewer.earthTime.subscribeClock(syncClock);
@@ -263,7 +270,24 @@ export function createTimeline({ container, viewer, fetchImpl, onTimeChange = ()
     const state = sceneTime.getState(); if (!destroyed && !documentRef.hidden && state.mode === 'history' && state.playing) showMarkers(controller.frame(state.at));
   });
   render(controller.getState()); syncClock(); if (container.open) void controller.open();
-  return { getState: controller.getState, getContextState, live: goLive, seek: (at) => selectTime(at), destroy() {
+  const prepareRestore = value => {
+    if (destroyed) return false;
+    const temporal = workspaceTime(value);
+    ++seekOwner; playIntent = false; selecting = false; dragging = false; sceneTime.pause?.(); controller.close(); clearMarkers();
+    sceneTime.setCoverage?.(null); setTime(temporal.mode === 'history' ? temporal.at : null);
+    if (temporal.mode === 'history') { sceneTime.setRate?.(temporal.rate); controller.prepare(temporal.at, temporal.lens); lens.value = temporal.lens; }
+    else { controller.live(); controller.setLens('reconstruction'); lens.value = 'reconstruction'; }
+    syncClock(); return true;
+  };
+  return { getState: controller.getState, getContextState, live: goLive, seek: (at) => selectTime(at), prepareRestore,
+    restore(value, { prepared = false } = {}) {
+      if (destroyed) return Promise.resolve(false);
+      const temporal = workspaceTime(value); if (!prepared) prepareRestore(temporal);
+      if (temporal.mode === 'live') { goLive(undefined, true); return Promise.resolve(true); }
+      return selectTime(temporal.at, false, temporal.lens, 'restore');
+    },
+    cancelRestore() { if (!destroyed) { ++seekOwner; playIntent = selecting = dragging = false; sceneTime.pause?.(); controller.close(); clearMarkers(); syncClock(); } },
+    destroy() {
     if (destroyed) return; destroyed = true; ++seekOwner; sceneTime.pause?.(); controller.destroy(); clearMarkers(); unsubscribeClock?.(); unsubscribeFrame?.(); fallbackClock?.destroy();
     for (const [element, name, callback] of bindings) element.removeEventListener(name, callback);
     readout.remove?.(); transport.remove?.(); if (!existingDock) dock.replaceWith?.(container);

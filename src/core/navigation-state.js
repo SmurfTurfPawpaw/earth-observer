@@ -1,4 +1,5 @@
 import { CITY_POIS } from './cities.js';
+import { worldTime } from './world-identity.js';
 
 export const HOME_VIEW = Object.freeze({ lat: 30, lon: 12, alt: 18000000, heading: 0, pitch: -90, roll: 0 });
 const ADDED_CITIES = [
@@ -47,14 +48,50 @@ export function resolvePlace(query) {
 }
 
 const limits = { lat: [-90, 90], lon: [-180, 180], alt: [250, 50000000], heading: [0, 360], pitch: [-90, 0], roll: [-180, 180] };
+export const WORKSPACE_RATES = Object.freeze([1, 60, 3600, 86400]);
+export class WorkspaceStateError extends Error {
+  constructor(message) { super(message); this.name = 'WorkspaceStateError'; this.code = 'EARTH_WORKSPACE_INVALID'; }
+}
+export function workspaceTime(value = { mode: 'live' }, { now = Date.now() } = {}) {
+  if (value?.mode === 'live') {
+    if (value.at != null || value.lens != null || value.rate != null) throw new WorkspaceStateError('Live workspace links cannot freeze a historical time.');
+    return { mode: 'live' };
+  }
+  if (value?.mode !== 'history') throw new WorkspaceStateError('Workspace time must be Live or History.');
+  let at; try { at = worldTime(value.at); } catch { /* Report a workspace-specific failure. */ }
+  if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.at || '') || at !== value.at)
+    throw new WorkspaceStateError('History requires an exact UTC date with milliseconds.');
+  if (Date.parse(at) > now) throw new WorkspaceStateError('Future History is unavailable. Choose an earlier UTC or Live.');
+  if (!['reconstruction', 'known-then'].includes(value.lens)) throw new WorkspaceStateError('History requires Reconstruction or Platform knew then.');
+  const rate = value.rate === undefined ? 3600 : value.rate;
+  if (!WORKSPACE_RATES.includes(rate)) throw new WorkspaceStateError('History playback speed is unsupported.');
+  return { mode: 'history', at, lens: value.lens, rate };
+}
 
 /** Accept old camera links; legacy map/effect/layer tokens are intentionally ignored. */
-export function parseViewHash(hash, allowedLayerIds = []) {
+export function parseViewHash(hash, allowedLayerIds = [], options = {}) {
   const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+  if (params.getAll('v').length > 1) throw new WorkspaceStateError('Workspace link repeats v.');
+  if (params.has('v') && !['1', '2', '3', '4'].includes(params.get('v'))) throw new WorkspaceStateError('Workspace link version is unsupported.');
+  const modern = params.get('v') === '4';
+  if (modern) for (const key of ['v', ...Object.keys(limits), 'layers', 'params', 'mode', 'at', 'lens', 'rate'])
+    if (params.getAll(key).length > 1) throw new WorkspaceStateError(`Workspace link repeats ${key}.`);
+  let temporal = { mode: 'live' };
+  if (modern) {
+    const mode = params.get('mode') || 'live';
+    if (mode === 'live') {
+      if (['at', 'lens', 'rate'].some(key => params.has(key))) throw new WorkspaceStateError('Live workspace links cannot freeze a historical time.');
+    } else {
+      const rawRate = params.get('rate');
+      if (rawRate !== null && !['1', '60', '3600', '86400'].includes(rawRate)) throw new WorkspaceStateError('History playback speed is unsupported.');
+      temporal = workspaceTime({ mode, at: params.get('at'), lens: params.get('lens'), ...(rawRate === null ? {} : { rate: Number(rawRate) }) }, options);
+    }
+  }
   const view = { ...HOME_VIEW };
   for (const [key, [min, max]] of Object.entries(limits)) {
     const raw = params.get(key);
     const value = raw === null || raw.trim() === '' ? NaN : Number(raw);
+    if (modern && raw !== null && (!Number.isFinite(value) || value < min || value > max)) throw new WorkspaceStateError(`Workspace camera ${key} is invalid.`);
     if (Number.isFinite(value) && value >= min && value <= max) view[key] = value;
   }
   const layerValue = params.get('layers');
@@ -66,18 +103,22 @@ export function parseViewHash(hash, allowedLayerIds = []) {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       layerParams = Object.fromEntries(Object.entries(parsed).filter(([id, value]) => allowed.has(id) && value && typeof value === 'object' && !Array.isArray(value)));
     }
-  } catch { /* Invalid optional parameters leave the defaults intact. */ }
-  return { view, layers, layerParams };
+  } catch { if (modern) throw new WorkspaceStateError('Workspace layer parameters are malformed.'); }
+  if (modern && params.has('params') && !layerParams) throw new WorkspaceStateError('Workspace layer parameters are malformed.');
+  return { view, layers, layerParams, temporal };
 }
 
-export function serializeViewHash(view, layerIds = [], layerParams = {}) {
-  const params = new URLSearchParams({ v: '3' });
+export function serializeViewHash(view, layerIds = [], layerParams = {}, temporal = { mode: 'live' }, options = {}) {
+  const selected = workspaceTime(temporal?.mode === 'live' ? { mode: 'live' } : temporal, options);
+  const params = new URLSearchParams({ v: '4' });
   for (const key of Object.keys(limits)) {
-    const value = Number(view[key]);
+    let value = Number(view[key]);
+    if (key === 'roll' && value > 180 && value <= 360) value -= 360;
     if (!Number.isFinite(value)) continue;
     params.set(key, String(Number(value.toFixed(key === 'lat' || key === 'lon' ? 5 : key === 'alt' ? 0 : 2))));
   }
   params.set('layers', [...new Set(layerIds)].join(','));
   if (Object.keys(layerParams).length) params.set('params', JSON.stringify(layerParams));
+  if (selected.mode === 'history') for (const key of ['mode', 'at', 'lens', 'rate']) params.set(key, String(selected[key]));
   return `#${params.toString()}`;
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createBrowserStore } from './browser-store.js';
 import { createCachedFetch } from './cached-fetch.js';
 import { validateArea, inLocalArea, localCameraView } from './local-area.js';
-import { loadSession, saveSession, initialWorkspace, locateVisitor } from './session.js';
+import { loadSession, saveSession, initialWorkspace, locateVisitor, SESSION_KEY } from './session.js';
 import { normalizeEvidence } from './evidence.js';
 import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
@@ -44,6 +44,26 @@ test('shared views take priority, local sessions restore, and first visitors req
   assert.equal(initialWorkspace('', null, []).requestLocation, true);
   const result = await locateVisitor({ geolocation: { getCurrentPosition: (success) => success({ coords: { latitude: 50.85031, longitude: 4.35171, accuracy: 60 } }) } }); assert.equal(result.lat, 50.85);
   await assert.rejects(locateVisitor({ geolocation: { getCurrentPosition: (_ok, fail) => fail({ code: 1 }) } }), /not shared/);
+});
+
+test('session v3 retains paused historical UTC/lens/rate; explicit legacy and v4 time-only links outrank saved History', () => {
+  const values = new Map(), storage = { setItem: (key, value) => values.set(key, value), getItem: key => values.get(key) };
+  const options = { now: Date.parse('2026-10-12T06:00:00.000Z') }, temporal = { mode: 'history', at: '2025-11-15T12:00:00.123Z', lens: 'known-then', rate: 86400 };
+  const view = localCameraView({ lat: 50.85, lon: 4.35, radiusKm: 10 });
+  saveSession(view, null, storage, { ...temporal, playing: true }, options); const saved = loadSession(storage, options);
+  assert.equal(saved.version, 3); assert.deepEqual(saved.temporal, temporal); assert.equal(Object.hasOwn(saved.temporal, 'playing'), false);
+  assert.deepEqual(initialWorkspace('', saved, [], options).temporal, temporal);
+  for (const hash of ['#v=1&lat=4', '#v=3&layers=']) assert.deepEqual(initialWorkspace(hash, saved, [], options).temporal, { mode: 'live' });
+  const timeOnly = initialWorkspace('#v=4&mode=history&at=2025-11-14T12:00:00.456Z&lens=reconstruction&rate=60', saved, [], options);
+  assert.equal(timeOnly.requestLocation, false); assert.equal(timeOnly.temporal.at, '2025-11-14T12:00:00.456Z');
+  assert.throws(() => initialWorkspace('#v=4&mode=history&at=bad&lens=unknown', saved, [], options), /History/);
+  values.set(SESSION_KEY, JSON.stringify({ ...saved, temporal: { ...temporal, at: '2027-01-01T00:00:00.000Z' } }));
+  assert.throws(() => initialWorkspace('', loadSession(storage, options), [], options), /Saved workspace.*Future/);
+  assert.deepEqual(initialWorkspace('#v=3&layers=', loadSession(storage, options), [], options).temporal, { mode: 'live' });
+  saveSession(view, null, storage, { mode: 'live', at: temporal.at }, options);
+  assert.deepEqual(loadSession(storage, options).temporal, { mode: 'live' });
+  values.set(SESSION_KEY, JSON.stringify({ version: 2, view, area: null })); assert.deepEqual(loadSession(storage, options).temporal, { mode: 'live' });
+  saveSession({ ...view, roll: 359 }, null, storage, temporal, options); assert.equal(loadSession(storage, options).view.roll, -1);
 });
 test('local circles include nearby records across the date line and reject distant points', () => {
   const area = validateArea({ lat: 0, lon: 179.99, radiusKm: 10 });

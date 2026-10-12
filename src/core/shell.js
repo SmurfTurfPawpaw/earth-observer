@@ -93,7 +93,7 @@ export function createLiveEarthquakeDossier(selection, { documentRef = globalThi
   report.append(facts); return report;
 }
 
-export function createShell(viewer, manager) {
+export function createShell(viewer, manager, { getTemporal = () => viewer.earthTime?.getState() || { mode: 'live' }, canShare = () => true } = {}) {
   const cleanup = [];
   const rows = new Map(), mounted = new Map(), creditItems = new Map(), groups = new Map();
   const panelListeners = new Set();
@@ -298,13 +298,14 @@ export function createShell(viewer, manager) {
   };
   bind('clear-layers', clearLayers);
   const shareView = async () => {
+    if (!canShare()) { notify('The workspace is restoring. Copy its view when it is ready.'); return; }
     const state = manager.getState();
     const ids = LAYERS.filter((layer) => state[layer.id]?.enabled).map((layer) => layer.id);
     const params = Object.fromEntries(ids.map((id) => [id, manager.getLayerParams?.(id) || {}]).filter(([, value]) => Object.keys(value).length));
     const url = new URL(location.href);
-    url.hash = serializeViewHash(cameraView(viewer), ids, params);
+    url.hash = serializeViewHash(cameraView(viewer), ids, params, getTemporal());
     history.replaceState(null, '', url);
-    try { await navigator.clipboard.writeText(url.href); notify('View link copied with its camera and enabled layers.'); }
+    try { await navigator.clipboard.writeText(url.href); notify('View link copied with its camera, layers and time mode.'); }
     catch {
       const message = document.getElementById('notification');
       clearTimeout(noticeTimer); message.replaceChildren(el('span', '', 'Copy this view link: '));

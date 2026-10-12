@@ -16,6 +16,7 @@ import { createTimeline } from './core/timeline.js';
 import { createLiveUpdates } from './core/live-updates.js';
 import { installWorldDossierBridge } from './core/world-dossier-bridge.js';
 import { createPlaceNavigation } from './core/workspace-focus.js';
+import { createWorkspaceRestore } from './core/workspace-restore.js';
 import { Cartographic, Math as CesiumMath } from 'cesium';
 
 let viewer;
@@ -25,6 +26,7 @@ let destroyed = false;
 let describeBasemap = () => {};
 let contextRecovery;
 let area = null, intelligence, notebook, timeline, updates, worldDossiers, reportDossiers, navigatePlace, panelLoading = {}, locationRevision = 0, warmTimer;
+let workspaceRestore, pendingTemporal = { mode: 'live' };
 const store = createBrowserStore();
 const cachedFetch = createCachedFetch({ store });
 const disposers = [];
@@ -36,10 +38,23 @@ function showError(error) {
   document.getElementById('error').hidden = false;
   const detail = error?.message || String(error);
   const graphicsInterrupted = typeof error?.code === 'string' && error.code.startsWith('EARTH_WEBGL_');
-  document.querySelector('#error h2').textContent = graphicsInterrupted ? 'Map rendering interrupted' : 'The globe could not start';
-  document.getElementById('error-message').textContent = graphicsInterrupted ? detail : /webgl|context|gpu/i.test(detail)
+  const invalidWorkspace = error?.code === 'EARTH_WORKSPACE_INVALID';
+  document.querySelector('#error h2').textContent = invalidWorkspace ? 'Workspace could not restore' : graphicsInterrupted ? 'Map rendering interrupted' : 'The globe could not start';
+  document.getElementById('error-message').textContent = invalidWorkspace || graphicsInterrupted ? detail : /webgl|context|gpu/i.test(detail)
     ? 'WebGL could not initialize. Enable hardware acceleration in your browser, then reload. You can also try another browser.'
     : `The browser could not initialize the globe. ${detail}`;
+  document.getElementById('recover-live-workspace')?.remove();
+  if (invalidWorkspace) {
+    const recover = document.createElement('button'); recover.id = 'recover-live-workspace'; recover.type = 'button'; recover.textContent = 'Return to Live';
+    recover.addEventListener('click', () => {
+      const params = new URLSearchParams(location.hash.slice(1)); params.set('v', '3');
+      for (const key of ['mode', 'at', 'lens', 'rate']) params.delete(key);
+      const state = parseViewHash(`#${params}`, LAYERS.map(layer => layer.id));
+      const url = new URL(location.href); url.hash = serializeViewHash(state.view, state.layers || [], state.layerParams || {}, { mode: 'live' });
+      history.replaceState(null, '', url); location.reload();
+    }, { once: true });
+    document.getElementById('error').append(recover);
+  }
   console.error('Earth Observer:', error);
 }
 
@@ -52,12 +67,17 @@ function stopFailedScene(error) {
 }
 
 function rememberWorkspace() {
-  if (destroyed || !viewer || !manager) return;
+  if (destroyed || !viewer || !manager || workspaceRestore?.isRestoring()) return;
   const view = cameraView(viewer), state = manager.getState();
-  saveSession(view, area);
+  const temporal = currentWorkspaceTime();
+  saveSession(view, area, undefined, temporal);
   const ids = LAYERS.filter((layer) => state[layer.id]?.enabled).map((layer) => layer.id);
   const params = Object.fromEntries(ids.map((id) => [id, manager.getLayerParams(id)]).filter(([, value]) => Object.keys(value).length));
-  const url = new URL(location.href); url.hash = serializeViewHash(view, ids, params); history.replaceState(null, '', url);
+  const url = new URL(location.href); url.hash = serializeViewHash(view, ids, params, temporal); history.replaceState(null, '', url);
+}
+function currentWorkspaceTime() {
+  const state = timeline?.getContextState() || viewer?.earthTime.getState();
+  return state?.mode === 'history' ? { ...state, lens: state.lens || pendingTemporal.lens || 'reconstruction' } : { mode: 'live' };
 }
 function setArea(value) {
   area = validateArea(value); manager.setLocalArea(area);
@@ -94,15 +114,8 @@ async function locate({ automatic = false } = {}) {
   }
 }
 async function restoreView(state) {
-  if (destroyed) return;
-  setArea(state.area);
-  const restored = recoverInitialCameraView(viewer, state.view);
-  setCameraView(viewer, restored.view);
-  if (restored.recovered) shell.notify('The saved camera pointed away from Earth. Its view has been restored.');
-  if (state.layerParams) {
-    for (const [id, params] of Object.entries(state.layerParams)) manager.setLayerParams?.(id, params);
-  }
-  await manager.restore(state.layers ?? (state.requestLocation ? ['earthquakes'] : undefined));
+  if (destroyed) return false;
+  return workspaceRestore.restore(state);
 }
 
 function warmTools() {
@@ -133,7 +146,7 @@ async function handlePanel({ panel, open }) {
       document.querySelector('#news-panel .panel-note').hidden = true;
       document.getElementById('news-status').hidden = true;
       intelligence = createPluginDossierPanel({ container: document.getElementById('news-content'), fetchImpl: cachedFetch, subscribeUpdates: updates.subscribe,
-        getScene: () => timeline?.getContextState() || { ...viewer.earthTime.getState(), lens: 'reconstruction' },
+        getScene: currentWorkspaceTime,
         createFeed: async (container) => {
           const [{ createIntelligencePanel }, { createReportDossierController }] = await Promise.all([
             import('./core/intelligence.js'), import('./core/report-dossier.js'),
@@ -152,7 +165,7 @@ async function handlePanel({ panel, open }) {
           });
         },
       });
-      void intelligence.commitScene(timeline?.getContextState() || { ...viewer.earthTime.getState(), lens: 'reconstruction' });
+      void intelligence.commitScene(currentWorkspaceTime());
     } else {
       const { createEvidenceNotebook } = await import('./core/evidence.js');
       if (destroyed) return;
@@ -169,6 +182,7 @@ export async function start({ earlySearchIntent } = {}) {
   disposers.push(() => earlySearchIntent?.destroy());
   try {
     const initial = initialWorkspace(location.hash, loadSession(), LAYERS.map((layer) => layer.id));
+    let appliedSceneMode = initial.temporal?.mode || 'live'; pendingTemporal = initial.temporal || { mode: 'live' };
     viewer = createGlobeViewer({
       container: document.getElementById('globe'),
       creditContainer: document.getElementById('credits'),
@@ -180,7 +194,21 @@ export async function start({ earlySearchIntent } = {}) {
     });
     disposers.push(() => contextRecovery.destroy());
     manager = createLayerManager(viewer, () => {}, { fetchImpl: cachedFetch, localArea: initial.area });
-    shell = createShell(viewer, manager);
+    shell = createShell(viewer, manager, { getTemporal: currentWorkspaceTime, canShare: () => !destroyed && !workspaceRestore?.isRestoring() });
+    workspaceRestore = createWorkspaceRestore({ manager, getTimeline: () => timeline, onSettled: rememberWorkspace,
+      applyTemporal(temporal) {
+        pendingTemporal = temporal; appliedSceneMode = temporal.mode;
+        if (timeline) timeline.prepareRestore(temporal);
+        else { viewer.earthTime.pause?.(); viewer.earthTime.setCoverage?.(null); viewer.earthTime.setTime?.(temporal.mode === 'history' ? temporal.at : null);
+          if (temporal.mode === 'history') viewer.earthTime.setRate?.(temporal.rate); }
+        if (temporal.mode === 'history') { shell.closeNews(); viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }
+        intelligence?.setSceneMode(temporal.mode);
+      },
+      applyArea: setArea,
+      applyCamera(view) { const restored = recoverInitialCameraView(viewer, view); setCameraView(viewer, restored.view);
+        if (restored.recovered) shell.notify('The saved camera pointed away from Earth. Its view has been restored.'); },
+    });
+    disposers.push(() => workspaceRestore.destroy());
     navigatePlace = createPlaceNavigation({ viewer, cancelLocation() { ++locationRevision; document.getElementById('locate').disabled = false; }, closeSidebar: shell.closeSidebar });
     updates = createLiveUpdates();
     disposers.push(() => updates.destroy());
@@ -236,9 +264,10 @@ export async function start({ earlySearchIntent } = {}) {
     disposers.push(manager.subscribe(rememberWorkspace));
     disposers.push(shell.subscribePanels(handlePanel));
     disposers.push(installScenePreview(viewer, { store, cameraView, getState: () => ({ ...manager.getState(), timelinePaused: manager.isTimelinePaused() }) }));
-    let appliedSceneMode = 'live';
     timeline = createTimeline({ container: document.getElementById('earth-timeline'), viewer, fetchImpl: cachedFetch,
       onContextCommit: (state) => intelligence?.commitScene(state),
+      onWorkspaceCommit: () => rememberWorkspace(),
+      onWorkspaceIntent: () => workspaceRestore.cancel({ cancelScene: false }),
       async onTimeChange(state) {
         if (destroyed) return;
         const changed = appliedSceneMode !== state.mode;
@@ -297,9 +326,11 @@ export async function start({ earlySearchIntent } = {}) {
     const hashchange = () => {
       // Document anchors (for example the search skip link) do not replace a shared view.
       const params = new URLSearchParams(location.hash.slice(1));
-      if (location.hash && !['v', 'lat', 'lon', 'layers'].some((key) => params.has(key))) return;
+      if (location.hash && !['v', 'lat', 'lon', 'layers', 'mode', 'at', 'lens', 'rate'].some((key) => params.has(key))) return;
       ++locationRevision;
-      restoreView(initialWorkspace(location.hash, loadSession(), LAYERS.map((layer) => layer.id))).catch((error) => { if (!destroyed) shell.notify(error.message || 'The shared view could not be restored.'); });
+      workspaceRestore.cancel();
+      try { void restoreView(initialWorkspace(location.hash, loadSession(), LAYERS.map((layer) => layer.id))).catch((error) => { if (!destroyed) shell.notify(error.message || 'The shared view could not be restored.'); }); }
+      catch (error) { shell.notify(`Workspace link could not restore: ${error.message}`); }
     };
     window.addEventListener('hashchange', hashchange);
     disposers.push(() => window.removeEventListener('hashchange', hashchange));

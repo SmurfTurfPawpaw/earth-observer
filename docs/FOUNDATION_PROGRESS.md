@@ -1476,3 +1476,42 @@ NEXT_PHASES.md now includes temporal workspace persistence as an explicit gate,
 keeps proposed relationship/scenario MCP operations future-facing, and bounds
 baseline coverage to admitted sources. STREAM_CAPACITY.md records the model and
 its assumptions; it is not a 300-client load test or a verified free allowance.
+
+## 05:22 UTC: free collector account authorization and setup gate
+
+The user authorized creating a free Cloudflare account if it supports the narrow
+minute collector. Current official limits admit five cron triggers/account,
+100,000 requests/day and 10 ms CPU per Free cron invocation; one minute cadence
+models 1,440 invocations/day. This supports trying the tiny signer, not moving
+the observed higher-CPU managed Site collector or promising cost/CPU acceptance.
+
+Root opened the official signup form and rejected optional cookies. No email,
+password, terms acceptance, CAPTCHA completion or account-creation submission
+was performed. The browser redirected through an account dashboard error and a
+Google login error; this does not prove account creation or working authorization.
+Credentials and legally binding signup require the user's browser handoff. No
+Cloudflare worker, cron, auth token, account secret or billing option was created.
+
+In parallel the temporal workspace contract is being implemented by the map
+agent, with independent read-only review. It remains local until exact codec,
+ordering, cancellation and actual hosted History/reload/Live acceptance pass.
+
+## 06:05 UTC: temporal workspace release admission and Cloudflare handoff
+
+The user completed Cloudflare sign-in. Root observed Workers Free in the actual
+account, created the earth-observer-collector HelloWorld shell, and confirmed no
+custom domain or zone route on its dashboard. The embedded editor was read-only
+to supported input controls. No collector code, HMAC or cron is active there yet.
+The user completed the prepared short-lived account Workers Scripts Edit token
+and explicitly authorized private-memory API deployment. It grants account-wide
+Worker-script editing, not just this script; DNS/storage/billing grants are absent.
+No token is stored in repository files, environment variables or chat output.
+
+The temporal workspace slice passed independent final review and 77 focused
+runtime/codec/session/restore/timeline/dossier checks. Earlier cancellation races
+were fixed before release admission. One v4 codec now retains exact UTC, lens and
+rate across camera/layer/session/share writers. History reloads paused; Live has
+no frozen timestamp. Future or malformed history fails with explicit recovery.
+Publication cards remove redundant idle status and reference text while keeping
+source attribution and evidence, and selected UTC has stronger visual weight.
+Actual hosted acceptance follows deployment; these checks do not establish it.

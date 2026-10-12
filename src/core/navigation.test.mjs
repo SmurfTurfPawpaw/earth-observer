@@ -29,6 +29,31 @@ test('share links round-trip enabled layers and filter unknown parameters', () =
   assert.deepEqual(parseViewHash('#layers=', ['wind']).layers, []);
 });
 
+test('v4 workspace links round-trip millisecond History, both evidence lenses and supported rates while Live never freezes UTC', () => {
+  const options = { now: Date.parse('2026-10-12T06:00:00.000Z') }, at = '2025-11-15T12:00:00.123Z';
+  for (const lens of ['reconstruction', 'known-then']) for (const rate of [1, 60, 3600, 86400]) {
+    const temporal = { mode: 'history', at, lens, rate };
+    const hash = serializeViewHash(HOME_VIEW, [], { wind: { height: 10 } }, temporal, options);
+    assert.deepEqual(parseViewHash(hash, ['wind'], options).temporal, temporal);
+    assert.deepEqual(parseViewHash(hash, ['wind'], options).layers, []);
+    assert.deepEqual(parseViewHash(hash, ['wind'], options).layerParams, { wind: { height: 10 } });
+  }
+  const live = serializeViewHash(HOME_VIEW, ['wind'], {}, { mode: 'live', at, lens: 'known-then', rate: 60 }, options);
+  assert.equal(new URLSearchParams(live.slice(1)).has('at'), false); assert.deepEqual(parseViewHash(live, ['wind'], options).temporal, { mode: 'live' });
+  for (const v of ['1', '2', '3']) assert.deepEqual(parseViewHash(`#v=${v}&lat=50&mode=history&at=${at}&lens=known-then`, [], options).temporal, { mode: 'live' });
+  assert.equal(parseViewHash(serializeViewHash({ ...HOME_VIEW, roll: 359 }), [], options).view.roll, -1, 'Equivalent Cesium roll stays valid in the camera contract');
+});
+
+test('v4 invalid temporal or repeated fields fail clearly instead of becoming a different saved scene', () => {
+  const options = { now: Date.parse('2026-10-12T06:00:00.000Z') }, base = '#v=4&mode=history&at=2025-11-15T12:00:00.123Z&lens=known-then';
+  for (const hash of [base + '&at=2025-11-15T13:00:00.123Z', base + '&lens=reconstruction', base + '&rate=01',
+    base.replace('known-then', 'forecast'), base.replace('2025-11-15T12:00:00.123Z', '2025-11-15T12:00:00Z'),
+    base.replace('2025-11-15T12:00:00.123Z', '2025-02-30T12:00:00.123Z'), base.replace('2025-', '2027-'),
+    base.replace('mode=history', 'mode=live'), base + '&lat=bad', base + '&params=%7Bbad', '#v=3&v=4&mode=history'])
+    assert.throws(() => parseViewHash(hash, [], options), /Workspace|workspace|History|historical|speed|UTC|Future/);
+  assert.throws(() => serializeViewHash(HOME_VIEW, [], {}, { mode: 'forecast' }, options), /Workspace time/);
+});
+
 test('coordinate search checks both ranges and keeps latitude-longitude order', () => {
   assert.deepEqual(resolvePlace('50.85, 4.35'), { name: '50.8500, 4.3500', lat: 50.85, lon: 4.35 });
   assert.equal(resolvePlace('91, 4.35'), null);

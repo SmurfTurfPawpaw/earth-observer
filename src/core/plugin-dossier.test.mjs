@@ -501,7 +501,8 @@ test('Commission publications lazily preserve actual source metadata, visible at
   assert.ok(!feedEvidence.open); feedEvidence.open = true;
   assert.match(visibleText(feedEvidence), /European Commission \/ European Union · publication metadata only; document body language is unknown/);
   feedEvidence.open = false;
-  assert.match(visibleText(f.container), /Published 2026-10-09 12:14:20 UTC/); assert.match(visibleText(f.container), /Statement · statement_26_2127/);
+  assert.match(visibleText(f.container), /Statement · Published 2026-10-09 12:14:20 UTC/);
+  assert.doesNotMatch(visibleText(f.container), /statement_26_2127/, 'technical document reference stays behind evidence');
   assert.doesNotMatch(visibleText(f.container), /SHA-256|RSS GUID|POLICY_AREA|Raw publication date|independent corroboration/);
   const article = elements(f.container).find(el => el.className === 'plugin-publication' && el.textContent.includes('statement_26_2127'));
   const proof = elements(article).find(el => el.className === 'plugin-item-evidence'); assert.ok(!proof.open); proof.open = true;

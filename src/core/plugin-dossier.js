@@ -297,8 +297,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
       const list = node('div', 'plugin-publications');
       for (const item of payload.items) {
         const article = node('article', 'plugin-publication'), heading = node('h4'); heading.append(link(item.title, item.url)); article.append(heading);
-        article.append(node('p', 'plugin-publication-date', `Published ${displayTime(item.publishedAt)}`));
-        if (view === 'commission') article.append(node('p', 'plugin-note', `${EC_DOCUMENT_TYPES[item.documentType]} · ${item.documentReference}`));
+        article.append(node('p', 'plugin-publication-date', `${view === 'commission' ? `${EC_DOCUMENT_TYPES[item.documentType]} · ` : ''}Published ${displayTime(item.publishedAt)}`));
         if (view === 'commission' && item.url === INSPECTABLE_DOCUMENT && item.documentReference === 'statement_26_2127' && item.documentType === 'statement') {
           const inspect = node('button', 'plugin-refresh', 'Inspect document'); inspect.type = 'button';
           inspect.disabled = mode === 'history';
@@ -332,6 +331,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     }
   }
   function presentation() {
+    subtitle.title = institutional(view) ? 'Institution-wide publications, filtered by the selected time. Camera position does not make these local incident reports.' : '';
     const purpose = purposeFor(view), sources = PURPOSES[purpose].views;
     for (const [id, button] of buttons) button.setAttribute('aria-pressed', String(id === purpose));
     sourceField.hidden = sources.length < 2; sourceSelect.setAttribute('aria-label', purpose === 'publications' ? 'Publication source' : 'Context source');
@@ -400,7 +400,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
     if (institutional(view) && !contextTime.available) { render({ available: false, explanation: contextTime.explanation }); status.textContent = 'Historical source context unavailable'; return Promise.resolve(false); }
     const key = keyFor(view), saved = cached(key), frozen = { ...contextTime };
     const isDirty = saved?.dirty || (!(institutional(view) && frozen.knownAt) && dirty.has(view));
-    if (!force && !isDirty && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? 'Retained source context' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
+    if (!force && !isDirty && saved && now() - saved.at < PLUGIN_DOSSIER_LIMITS.refreshMs) { render(saved.payload); status.textContent = saved.payload.available ? '' : 'Source artifact unavailable'; arm(); return Promise.resolve(true); }
     const selected = view, owner = ++generation, initialUpdate = updates.get(view), controller = new AbortController(), signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]);
     followupRequested = false;
     request = controller; stopTimer(); refresh.disabled = true; dossierHost.setAttribute('aria-busy', 'true'); status.textContent = saved ? 'Checking stored updates · previous context remains available…' : 'Loading stored source context…';
@@ -412,7 +412,7 @@ export function createPluginDossierPanel({ container, createFeed, subscribeUpdat
         if (destroyed || !opened || documentRef.hidden || selected !== view || owner !== generation || key !== keyFor(view)) return false;
         retain(key, { payload, at: now(), bytes: body.bytes, view: selected, context: frozen, dirty: false });
         if (updates.get(selected) === initialUpdate || updates.get(selected)?.receiptId === payload.receipt?.id) dirty.delete(selected);
-        render(payload); status.textContent = payload.available ? 'Retained source context' : 'Source artifact unavailable'; return true;
+        render(payload); status.textContent = payload.available ? '' : 'Source artifact unavailable'; return true;
       } catch (error) {
         if (controller.signal.aborted || owner !== generation) return false;
         status.textContent = `${error.message || 'Stored context could not load.'}${saved ? ' · Previous retained context keeps its original dates.' : ''}`; return false;

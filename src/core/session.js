@@ -1,28 +1,36 @@
-import { HOME_VIEW, parseViewHash } from './navigation-state.js';
+import { HOME_VIEW, parseViewHash, serializeViewHash, workspaceTime, WorkspaceStateError } from './navigation-state.js';
 import { validateArea } from './local-area.js';
 export const SESSION_KEY = 'earth-observer:workspace:v2';
 export function safeStorage() { try { return globalThis.localStorage; } catch { return null; } }
-export function loadSession(storage = safeStorage()) {
+export function loadSession(storage = safeStorage(), options = {}) {
   try {
     const value = JSON.parse(storage?.getItem(SESSION_KEY) || 'null');
-    if (value?.version !== 2 || typeof value.view !== 'object' || !value.view) return null;
-    const view = parseViewHash(`#${new URLSearchParams(value.view)}`).view;
-    return { ...value, view, area: validateArea(value.area) };
+    if (![2, 3].includes(value?.version) || typeof value.view !== 'object' || !value.view) return null;
+    let view;
+    try { view = parseViewHash(`#${value.version === 3 ? 'v=4&' : ''}${new URLSearchParams(value.view)}`).view; }
+    catch (error) { return { ...value, view: { ...HOME_VIEW }, error: error.message, area: validateArea(value.area) }; }
+    let temporal; try { if (value.version === 3 && !value.temporal) throw new Error('Saved workspace time is missing.');
+      temporal = value.version === 3 ? workspaceTime(value.temporal, options) : { mode: 'live' }; }
+    catch (error) { return { ...value, view, error: error.message, area: validateArea(value.area) }; }
+    return { ...value, view, temporal, area: validateArea(value.area) };
   } catch { return null; }
 }
-export function initialWorkspace(hash, session, allowedIds) {
+export function initialWorkspace(hash, session, allowedIds, options = {}) {
   const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
-  const shared = ['lat', 'lon', 'layers'].some((key) => params.has(key));
+  const shared = ['v', 'lat', 'lon', 'layers', 'mode', 'at', 'lens', 'rate'].some((key) => params.has(key));
   if (shared) {
-    const parsed = parseViewHash(hash, allowedIds);
+    const parsed = parseViewHash(hash, allowedIds, options);
     const sameView = session && ['lat', 'lon', 'alt', 'heading', 'pitch', 'roll'].every((key) => Math.abs(parsed.view[key] - session.view[key]) < (key === 'alt' ? 2 : key === 'lat' || key === 'lon' ? .00002 : .03));
     return { ...parsed, area: sameView ? session.area : null, requestLocation: false, shared: true };
   }
-  if (session) return { view: session.view, area: session.area, layers: undefined, requestLocation: false, shared: false };
-  return { view: { ...HOME_VIEW }, area: null, layers: undefined, requestLocation: true, shared: false };
+  if (session?.error) throw new WorkspaceStateError(`Saved workspace could not restore: ${session.error}`);
+  if (session) return { view: session.view, area: session.area, temporal: workspaceTime(session.temporal || { mode: 'live' }, options), layers: undefined, requestLocation: false, shared: false };
+  return { view: { ...HOME_VIEW }, temporal: { mode: 'live' }, area: null, layers: undefined, requestLocation: true, shared: false };
 }
-export function saveSession(view, area, storage = safeStorage()) {
-  try { storage?.setItem(SESSION_KEY, JSON.stringify({ version: 2, view, area: validateArea(area), updatedAt: Date.now() })); } catch {}
+export function saveSession(view, area, storage = safeStorage(), temporal = { mode: 'live' }, options = {}) {
+  const selected = workspaceTime(temporal?.mode === 'live' ? { mode: 'live' } : temporal, options);
+  const camera = parseViewHash(serializeViewHash(view, [], {}, selected, options), [], options).view;
+  try { storage?.setItem(SESSION_KEY, JSON.stringify({ version: 3, view: camera, temporal: selected, area: validateArea(area), updatedAt: Date.now() })); } catch {}
 }
 export function locateVisitor({ geolocation = globalThis.navigator?.geolocation, timeout = 10000 } = {}) {
   if (!geolocation) return Promise.reject(new Error('Location is unavailable. Search for a city or coordinates.'));

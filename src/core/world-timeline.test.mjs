@@ -6,6 +6,7 @@ import { createSceneClock } from './scene-clock.js';
 import { worldHash } from './world-model.js';
 import { WORLD_SCENE_SCOPE } from './world-scene-controller.js';
 import { Entity } from 'cesium';
+import { createWorkspaceRestore } from './workspace-restore.js';
 
 class Element {
   constructor(tag, ownerDocument) { this.tagName = tag; this.ownerDocument = ownerDocument; this.children = []; this.listeners = new Map(); this.attributes = {}; this.dataset = {}; this._text = ''; }
@@ -85,6 +86,85 @@ test('context commits expose exact selected UTC and pause, while accelerated clo
   const lens = controls.find(element => element.id === 'timeline-lens'); lens.value = 'known-then'; lens.trigger('change');
   assert.equal(commits.at(-1).reason, 'lens'); assert.equal(timeline.getContextState().lens, 'known-then');
   timeline.destroy(); f.sceneClock.destroy();
+});
+
+test('workspace restoration retains paused millisecond UTC, lens and rate even outside imported coverage, and rate commits never become source-context ticks', async () => {
+  const f = fixture(), context = [], workspace = [], requests = [], at = '2024-09-01T12:00:00.123Z';
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef,
+    onContextCommit: state => context.push(state), onWorkspaceCommit: state => workspace.push(state), fetchImpl: async url => {
+      requests.push(url); const query = new URL(url, 'https://example.test').searchParams, selected = query.get('at');
+      if (query.has('metadata')) return response();
+      return response(selected, [], baseRange, { mode: 'as-known', knownAt: selected, knownMode: 'scene', complete: false,
+        coverage: { availableRange: baseRange, segments: [], gaps: [{ from: new Date(Date.parse(selected) - 7 * 86400000 + 1).toISOString(), to: selected, status: 'unavailable-at-cutoff' }],
+          complete: false, truncated: false, status: 'unavailable-at-cutoff' } });
+    } });
+  await timeline.restore({ mode: 'history', at, lens: 'known-then', rate: 86400 });
+  assert.equal(timeline.getContextState().at, at); assert.equal(timeline.getContextState().lens, 'known-then');
+  assert.equal(timeline.getContextState().rate, 86400); assert.equal(timeline.getContextState().playing, false); assert.equal(f.entities.size, 0);
+  assert.match(f.container.textContent, /No evidence for this period/);
+  assert.equal(new URL(requests.at(-1), 'https://example.test').searchParams.get('knownMode'), 'scene');
+  const rate = elements(f.container.parentElement).find(element => element.id === 'timeline-rate'), reads = requests.length, contexts = context.length;
+  rate.value = '60'; rate.trigger('change'); assert.equal(workspace.at(-1).reason, 'rate'); assert.equal(workspace.at(-1).at, at);
+  assert.equal(context.length, contexts); assert.equal(requests.length, reads); f.timing.advance(3000); await settle();
+  assert.equal(workspace.at(-1).reason, 'rate'); assert.equal(timeline.getContextState().at, at);
+  await timeline.restore({ mode: 'live' }); assert.equal(timeline.getContextState().mode, 'live'); assert.equal(f.entities.size, 0);
+  timeline.destroy(); f.sceneClock.destroy();
+});
+
+test('a newer Live or History restore cancels an older scene response without autoplay or source substitution', async () => {
+  const f = fixture(), pending = [], first = '2025-11-15T12:00:00.123Z', second = '2025-11-16T12:00:00.456Z';
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef, fetchImpl: async (url, init) => {
+    const query = new URL(url, 'https://example.test').searchParams;
+    if (query.has('metadata')) return response();
+    return new Promise(resolve => pending.push({ at: query.get('at'), resolve, signal: init.signal }));
+  } });
+  const older = timeline.restore({ mode: 'history', at: first, lens: 'reconstruction', rate: 3600 });
+  await waitFor(() => pending.length === 1, 'the first retained scene request');
+  await timeline.restore({ mode: 'live' }); assert.equal(pending[0].signal.aborted, true);
+  const latest = timeline.restore({ mode: 'history', at: second, lens: 'reconstruction', rate: 60 });
+  await waitFor(() => pending.length === 2, 'the newest retained scene request');
+  pending[1].resolve(response(second)); await latest; pending[0].resolve(response(first)); await older;
+  assert.equal(timeline.getContextState().at, second); assert.equal(timeline.getContextState().rate, 60);
+  assert.equal(timeline.getContextState().playing, false); assert.equal(timeline.getState().selection.at, second);
+  timeline.destroy(); f.sceneClock.destroy();
+});
+
+test('real user seek, lens and Live actions cancel workspace ownership before a delayed restore can reapply its original time', async () => {
+  for (const action of ['seek', 'lens', 'live']) {
+    const f = fixture(), gate = Promise.withResolvers(), requests = [], intents = [], old = '2025-11-15T12:00:00.123Z', chosen = '2025-11-16T12:00:00.456Z';
+    let owner;
+    const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef,
+      onWorkspaceIntent: value => { intents.push({ ...value, previousAt: timeline.getContextState().at }); owner.cancel({ cancelScene: false }); },
+      fetchImpl: async url => { requests.push(url); const query = new URL(url, 'https://example.test').searchParams; return response(query.get('at')); } });
+    owner = createWorkspaceRestore({ manager: { setTimelineMode: () => gate.promise, restore() { throw Error('Obsolete layers must not be applied'); } },
+      applyTemporal: value => timeline.prepareRestore(value), applyArea() {}, applyCamera() {}, getTimeline: () => timeline });
+    const pending = owner.restore({ temporal: { mode: 'history', at: old, lens: 'known-then', rate: 86400 }, view: {}, layers: [] });
+    assert.equal(requests.length, 0); assert.equal(intents.length, 0, 'Programmatic preparation cannot cancel its own owner');
+    if (action === 'seek') await timeline.seek(chosen);
+    else if (action === 'live') timeline.live();
+    else { const lens = elements(f.container.parentElement).find(element => element.id === 'timeline-lens'); lens.value = 'reconstruction'; lens.trigger('change'); await settle(); }
+    assert.equal(intents[0].previousAt, old, 'Cancellation runs before applying the new user time');
+    const state = timeline.getContextState(), transferred = requests.length; gate.resolve(); assert.equal(await pending, false); await settle();
+    assert.equal(timeline.getContextState().at, state.at); assert.equal(timeline.getContextState().lens, state.lens);
+    assert.equal(requests.length, transferred); assert.equal(timeline.getContextState().mode, action === 'live' ? 'live' : 'history');
+    if (action === 'seek') assert.equal(state.at, chosen);
+    if (action === 'lens') assert.equal(state.lens, 'reconstruction');
+    owner.destroy(); timeline.destroy(); f.sceneClock.destroy();
+  }
+});
+
+test('a future manual seek fails before changing UTC, source features, request ownership or committed persistence', async () => {
+  const f = fixture(), requests = [], commits = [], intents = [], at = '2025-11-15T12:00:00.123Z', p = await point('retainedbeforefuture', at);
+  const timeline = createTimeline({ ...f.timing, container: f.container, viewer: f.viewer, documentRef: f.documentRef,
+    onWorkspaceIntent: value => intents.push(value), onWorkspaceCommit: value => commits.push(value), fetchImpl: async url => {
+      requests.push(url); const query = new URL(url, 'https://example.test').searchParams;
+      return query.has('metadata') ? response() : response(query.get('at'), [p]);
+    } });
+  await timeline.seek(at); const clock = timeline.getContextState(), sourcePin = [...f.entities][0], reads = requests.length, writes = commits.length, actions = intents.length;
+  assert.equal(await timeline.seek('2099-01-01T00:00:00.000Z'), false);
+  assert.equal(timeline.getContextState().at, clock.at); assert.equal([...f.entities][0], sourcePin); assert.equal(f.entities.size, 1);
+  assert.equal(requests.length, reads); assert.equal(commits.length, writes); assert.equal(intents.length, actions);
+  assert.match(f.container.textContent, /Future History is unavailable/); timeline.destroy(); f.sceneClock.destroy();
 });
 
 test('calendar uses origin coverage across years, retains UTC through renewal, and crosses midnight without transferring an unchanged buffer', async () => {
