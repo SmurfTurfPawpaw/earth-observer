@@ -12,6 +12,7 @@ import { gdeltQueryUrl } from '../server/hosted/gdelt-query.js';
 import { collectionFactsDigest } from '../src/core/collection-facts.js';
 import { publishCollectionRevision } from './collection-updates.js';
 import { handleCollection } from './collection-api.js';
+import { SOURCE_PLUGINS } from './plugins/registry.js';
 import { readWorldEvents } from './world-model.js';
 import { readPreparedIntelligence, createHistoryHandler, PREPARED_INTELLIGENCE_KEY, PreparedBaselineConflict } from './history.js';
 
@@ -301,8 +302,11 @@ test('actual compact collector route repairs research admission after a lost bac
   assert.equal(response.status, 200); const compact = await response.json();
   assertCompact(compact, stamp(61_000), initial.prepared.inputDigest); assert.equal(compact.updatesPublished, false);
   assert.equal(compact.research.scheduled, true); assert.equal(compact.sourcePlugins.scheduled, true);
-  assert.equal(tasks.length, 2); assert.deepEqual(captures(f), before);
-  const research = (await Promise.all(tasks)).find(result => result?.mode === 'due-only');
+  assert.equal(tasks.length, 3); assert.deepEqual(captures(f), before);
+  const completedTasks = await Promise.all(tasks);
+  const plugins = completedTasks.find(result => Array.isArray(result?.results));
+  assert.deepEqual(plugins?.results.map(result => result.pluginId), SOURCE_PLUGINS.map(plugin => plugin.pluginId), 'the separate typed source wake owns its reviewed registry');
+  const research = completedTasks.find(result => result?.mode === 'due-only');
   assert.ok(research); assert.equal(research.admissionRepaired, true);
   assert.equal(research.jobAccepted, true); assert.equal(research.jobState, 'succeeded'); assert.equal(f.count('earth_investigation_jobs'), 1);
   f.clock(122_000); const idleTasks = [];

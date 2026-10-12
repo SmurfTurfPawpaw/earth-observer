@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { EC_PRESS_PLUGIN, collectEcPress, decodeEcPress, ecPressItems } from './ec-press.js';
 import { parseBoundedRssXml } from './bounded-rss.js';
 import { pluginBytesDigest, pluginFactsDigest, pluginJson } from '../../src/core/plugin-evidence.js';
 
-// Exact 7,100 original bytes acquired anonymously through collectEcPress on
-// 2026-10-12T00:19:20.108Z. Tests are offline and make no provider requests.
+// Retained source fixture acquired anonymously on 2026-10-12T00:19:20.108Z.
+// Git may normalize its XML line endings; adapter integrity uses the exact
+// supplied fixture bytes. Tests are offline and make no provider requests.
 const original = new Uint8Array(await readFile(new globalThis.URL('../../server/hosted/fixtures/ec-press-20261012.xml', import.meta.url)));
 const NOW = Date.parse('2026-10-12T01:00:00.000Z'), UTF8 = new TextEncoder();
 const escape = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
@@ -35,7 +37,7 @@ test('actual fixed feed produces compatible cited metadata with exact source ide
   assert.equal(EC_PRESS_PLUGIN.maxResponseBytes, 524288); assert.equal(EC_PRESS_PLUGIN.maxArtifactBytes, 65536);
   assert.equal(result.checkedAt, '2026-10-12T01:00:00.000Z'); assert.equal(result.sourceUpdatedAt, null); assert.equal(result.sourceVersion, 'RSS 2.0');
   assert.deepEqual(result.validators, { etag: null, lastModified: null }); assert.deepEqual(result.raw.bytes, original);
-  assert.equal(result.raw.sha256, '042779ee87820d013f9e2f929db8699ca03eb7c7d5b0092cf5606034a3113815');
+  assert.equal(result.raw.sha256, createHash('sha256').update(original).digest('hex'));
   assert.equal(result.raw.sha256, await pluginBytesDigest(original)); assert.equal(result.factsDigest, await pluginFactsDigest(result.canonicalFacts));
   assert.equal(result.canonicalFacts.items.length, 10); assert.deepEqual(ecPressItems(result.canonicalFacts), result.canonicalFacts.items);
   const statement = result.canonicalFacts.items.find(item => item.documentReference === 'statement_26_2127'); assert.ok(statement);

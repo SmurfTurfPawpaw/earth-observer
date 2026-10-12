@@ -1,8 +1,8 @@
 name: Refresh wind data
 
 on:
-  schedule:
-    - cron: '17 */6 * * *'
+  # The six-grid IFS acquisition gate currently fails; retain last-good assets
+  # and use explicit runs while its source validity is investigated.
   workflow_dispatch:
 
 concurrency:
